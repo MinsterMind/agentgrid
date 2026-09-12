@@ -1,0 +1,44 @@
+import { useEffect, useState } from "react";
+import type { Agent, Assignment, Decision, MemoryFile, RoleDef } from "../types";
+import { api } from "../api";
+import { PendingPrompt } from "./PendingPrompt";
+import { elapsed, usd } from "../format";
+
+type Entry = { ts: string; role: string; kind: string; text: string };
+
+export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, onOpenTerminal }: {
+  agent: Agent | null; role: RoleDef | undefined; assignment: Assignment | null;
+  onDecide: (agentId: string, toolUseId: string, d: Decision) => void; onCancel: (id: string) => void; onAck: (id: string) => void; onOpenTerminal: (id: string) => void;
+}) {
+  const [feed, setFeed] = useState<Entry[]>([]); const [memory, setMemory] = useState<MemoryFile[]>([]);
+  const asgId = assignment?.id; const activity = assignment?.activity; const agentId = agent?.id;
+
+  useEffect(() => { if (!asgId) { setFeed([]); return; } let live = true; api.transcript(asgId).then(f => live && setFeed(f.slice(-30))).catch(() => {}); return () => { live = false; }; }, [asgId, activity]);
+  useEffect(() => { if (!agentId) { setMemory([]); return; } let live = true; api.memory(agentId).then(m => live && setMemory(m)).catch(() => {}); return () => { live = false; }; }, [agentId, assignment?.state]);
+
+  if (!agent) return <aside className="side"><p className="hint">Select an agent to see details. Press 1–9 to jump.</p></aside>;
+  const a = assignment;
+  return (
+    <aside className="side" data-testid="side-panel">
+      <div className="hd"><div className="av" data-state={agent.state}>{role?.avatar ?? "🤖"}</div>
+        <div><div className="name">{agent.displayName} — {agent.role}</div><div className="repo">{agent.repo}{a ? ` · #${a.id}` : ""}</div></div></div>
+      {a && <>
+        <h4>Task</h4><div className="task">{a.prompt}</div>
+        <h4>Recent activity</h4>
+        <div className="transcript">{feed.map((e, i) => <div key={i} className={`e ${e.kind}`}>▸ <span>{e.text}</span></div>)}{feed.length === 0 && <div className="e">…</div>}</div>
+        {a.pending && <PendingPrompt pending={a.pending} onDecide={d => onDecide(agent.id, a.pending!.toolUseId, d)} />}
+        {a.state === "done" && <><h4>Outcome</h4><pre className="outcome">{a.outcome}</pre></>}
+        {a.state === "failed" && <><h4>Failed</h4><pre className="outcome err">{a.error}</pre></>}
+        <div className="row">
+          {a.sessionId && <button className="btn" onClick={() => onOpenTerminal(agent.id)}>Open in Terminal ↗</button>}
+          {(a.state === "working" || a.state === "waiting") && <button className="btn d" onClick={() => onCancel(agent.id)}>Cancel task</button>}
+          {(a.state === "done" || a.state === "failed") && <button className="btn p" onClick={() => onAck(agent.id)}>Ack → free</button>}
+        </div>
+        <div className="ft"><span>{elapsed(a.startedAt ?? a.createdAt)} · {a.turns} turns</span><span>{usd(a.costUsd)}</span></div>
+      </>}
+      {!a && <p className="hint">Idle. Type in the tile to assign work.</p>}
+      <h4>Memory ({memory.length})</h4>
+      <ul className="memory">{memory.map(m => <li key={m.file} title={m.description}>{m.name} <span className="dim">— {m.description}</span></li>)}</ul>
+    </aside>
+  );
+}
