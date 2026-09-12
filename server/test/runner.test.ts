@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -23,6 +23,10 @@ beforeEach(async () => {
   agentId = a.id;
   fake = makeFakeQuery(); captured = {};
   runner = new Runner(agentId, { store, queryFn: fake.queryFn, buildOptions });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("Runner", () => {
@@ -121,5 +125,69 @@ describe("Runner", () => {
 
   it("ack when not done/failed → Conflict", async () => {
     await expect(runner.ack()).rejects.toThrow(Conflict);
+  });
+
+  // --- review round 1 fixes: serialized writes, no unhandled rejections, no stale
+  // writes after finish. See runner.ts's `chain`/`enqueue`/`handleWriteError`.
+
+  it("no lost update: canUseTool parking write and answer's write settle in call order with no tick between them", async () => {
+    const asg = await runner.assign("t");
+    const p = captured.canUseTool!("Bash", { command: "ls" }, { signal: new AbortController().signal, toolUseID: "tu-1" } as any);
+    // No `await tick()` here: answer() is issued immediately after canUseTool, while
+    // the parking write may still be in flight. The serialized write chain must still
+    // apply both writes in order once everything settles.
+    await runner.answer("tu-1", { kind: "allow" });
+    expect(await p).toEqual({ behavior: "allow" });
+    expect(store.getAssignment(asg.id)).toMatchObject({ state: "working", pending: null });
+    expect(store.getAgent(agentId).state).toBe("working");
+  });
+
+  it("a store write failure during the parking write does not produce an unhandled rejection, and fails the assignment", async () => {
+    const asg = await runner.assign("t");
+    let unhandled: unknown = null;
+    const onUnhandled = (err: unknown) => { unhandled = err; };
+    process.once("unhandledRejection", onUnhandled);
+
+    const original = store.updateAssignment.bind(store);
+    let threw = false;
+    vi.spyOn(store, "updateAssignment").mockImplementation(async (id, patch) => {
+      if (!threw && "pending" in patch) { threw = true; throw new Error("disk full"); }
+      return original(id, patch);
+    });
+
+    // Fire-and-forget from the SDK's perspective; never awaited by the caller (the SDK
+    // itself would await it, but nothing here ever resolves it because the parking
+    // write fails before the permission is ever recorded).
+    void captured.canUseTool!("Bash", { command: "rm x" }, { signal: new AbortController().signal, toolUseID: "tu-1" } as any);
+    await tick(); await tick();
+
+    process.removeListener("unhandledRejection", onUnhandled);
+    expect(unhandled).toBeNull();
+    expect(store.getAssignment(asg.id)).toMatchObject({ state: "failed", error: "disk full" });
+    expect(store.getAgent(agentId).state).toBe("failed");
+  });
+
+  it("cancel while a patch write is mid-flight: the stale write does not survive finish", async () => {
+    const asg = await runner.assign("t");
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const original = store.updateAssignment.bind(store);
+    vi.spyOn(store, "updateAssignment").mockImplementation(async (id, patch) => {
+      if ("activity" in patch) await gate; // hold the activity write in flight
+      return original(id, patch);
+    });
+
+    fake.emit(text("stale in-flight update"));
+    await tick(); // consume() picks up the message; its patch({activity}) write is now hung on `gate`
+
+    const cancelPromise = runner.cancel(); // finish() is queued behind the hung write
+    release(); // let the hung activity write actually land
+    await cancelPromise;
+
+    const final = store.getAssignment(asg.id);
+    expect(final).toMatchObject({ state: "failed", error: "cancelled", pending: null });
+    expect(final.activity).not.toBe("stale in-flight update");
+    expect(final.activity).toBe("");
+    expect(store.getAgent(agentId).state).toBe("failed");
   });
 });
