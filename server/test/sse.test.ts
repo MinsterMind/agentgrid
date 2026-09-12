@@ -30,4 +30,31 @@ describe("SSE", () => {
     expect(text).toContain('event: change\ndata: {"type":"agent","agent":{"id":"coder@hrns"');
     res.destroy(); server.close();
   });
+
+  it("cleans up listeners and does not crash when the client connection drops", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "ag-"));
+    const store = new Store(home, path.resolve("roles")); await store.init();
+    const app = createApp({ store, manager: new Manager(store, { queryFn: makeFakeQuery().queryFn }) });
+    const server = http.createServer(app); await new Promise<void>(r => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as any).port;
+
+    let uncaught: unknown = null;
+    const onUncaught = (err: unknown) => { uncaught = err; };
+    process.once("uncaughtException", onUncaught);
+
+    const clientReq = http.get(`http://127.0.0.1:${port}/api/events`);
+    const res = await new Promise<http.IncomingMessage>(r => clientReq.on("response", r));
+    res.setEncoding("utf8"); res.on("data", () => {});
+    await new Promise(r => setTimeout(r, 30));
+
+    clientReq.destroy();
+    await new Promise(r => setTimeout(r, 30));
+    await store.createAgent({ role: "coder", repo: "/x/hrns" });
+    await new Promise(r => setTimeout(r, 30));
+
+    expect(uncaught).toBeNull();
+    expect(store.listenerCount("event")).toBe(0);
+    process.removeListener("uncaughtException", onUncaught);
+    server.close();
+  });
 });
