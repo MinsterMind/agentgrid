@@ -3,6 +3,7 @@ import path from "node:path";
 import { Store } from "../store/store.js";
 import { Manager } from "../runner/manager.js";
 import { sseHandler } from "./sse.js";
+import { shellQuote } from "../shell.js";
 import type { Agent, Assignment, Decision } from "../types.js";
 
 export interface AppDeps {
@@ -59,7 +60,7 @@ export function createApp(deps: AppDeps) {
     const agent = store.getAgent(req.params.id as string);
     const asg = agent.currentAssignmentId ? store.getAssignment(agent.currentAssignmentId) : null;
     if (!asg?.sessionId) throw new BadRequest("no session to open");
-    const command = `cd ${JSON.stringify(agent.repo)} && claude --resume ${asg.sessionId}`;
+    const command = `cd ${shellQuote(agent.repo)} && claude --resume ${shellQuote(asg.sessionId)}`;
     if (deps.openTerminal) await deps.openTerminal(agent.repo, asg.sessionId);
     res.json({ command, opened: Boolean(deps.openTerminal) });
   }));
@@ -68,6 +69,8 @@ export function createApp(deps: AppDeps) {
     const agent = store.getAgent(asg.agentId);
     res.json(deps.transcript ? await deps.transcript(asg, agent) : []);
   }));
+
+  app.use("/api", (_req, res) => res.status(404).json({ error: "not found" }));
 
   if (deps.staticDir) {
     app.use(express.static(deps.staticDir));

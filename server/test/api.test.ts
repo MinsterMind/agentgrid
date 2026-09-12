@@ -6,7 +6,7 @@ import path from "node:path";
 import { Store } from "../src/store/store.js";
 import { Manager } from "../src/runner/manager.js";
 import { createApp } from "../src/api/app.js";
-import { makeFakeQuery, success } from "./helpers/fakeQuery.js";
+import { makeFakeQuery, success, init } from "./helpers/fakeQuery.js";
 import type { Options, CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 
 const tick = () => new Promise(r => setTimeout(r, 5));
@@ -71,5 +71,20 @@ describe("API", () => {
     const { body: agent } = await request(app).post("/api/agents").send({ role: "coder", repo: "/x/hrns" });
     expect((await request(app).get(`/api/agents/${agent.id}/memory`).expect(200)).body).toEqual([]);
     await request(app).get("/api/assignments/a99/transcript").expect(404);
+  });
+
+  it("unknown /api routes return JSON 404", async () => {
+    const res = await request(app).get("/api/nope").expect(404);
+    expect(res.body).toEqual({ error: "not found" });
+    expect(res.headers["content-type"]).toMatch(/application\/json/);
+  });
+
+  it("open-terminal quotes the repo and sessionId for POSIX shells", async () => {
+    const { body: agent } = await request(app).post("/api/agents").send({ role: "coder", repo: "/tmp/it's $(x)" });
+    await request(app).post(`/api/agents/${agent.id}/assign`).send({ prompt: "go" });
+    fake.emit(init("sess-1"));
+    await tick();
+    const res = await request(app).post(`/api/agents/${agent.id}/open-terminal`).expect(200);
+    expect(res.body.command).toBe("cd '/tmp/it'\\''s $(x)' && claude --resume 'sess-1'");
   });
 });
