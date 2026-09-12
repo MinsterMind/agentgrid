@@ -26,7 +26,15 @@ describe.skipIf(!live)("live SDK", () => {
     await until(() => store.getAssignment(asg.id).pending?.kind === "permission");
     await mgr.answer(agent.id, store.getAssignment(asg.id).pending!.toolUseId, { kind: "allow" });
     // memory write may also prompt (Write tool) — allow anything further
-    await until(() => { const a = store.getAssignment(asg.id); if (a.pending) void mgr.answer(agent.id, a.pending.toolUseId, { kind: "allow" }); return a.state === "done" || a.state === "failed"; });
+    const answered = new Set<string>();
+    await until(() => {
+      const a = store.getAssignment(asg.id);
+      if (a.pending && !answered.has(a.pending.toolUseId)) {
+        answered.add(a.pending.toolUseId);
+        void mgr.answer(agent.id, a.pending.toolUseId, { kind: "allow" }).catch(() => {});
+      }
+      return a.state === "done" || a.state === "failed";
+    });
 
     const done = store.getAssignment(asg.id);
     expect(done.state).toBe("done");

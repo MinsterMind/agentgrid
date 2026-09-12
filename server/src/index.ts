@@ -29,7 +29,15 @@ async function serve() {
   await store.init();
   const manager = new Manager(store, process.env.AGENTGRID_FAKE ? { queryFn: fakeQuery, buildOptions: (_r, a, e) => ({ cwd: a.repo, canUseTool: e.canUseTool, abortController: e.abortController }) } : {});
   await manager.recoverOnStart();
-  watch(store.rolesDir, () => void store.reloadRoles().catch(err => console.error("roles reload failed:", err.message)));
+  let rolesReloadTimer: NodeJS.Timeout | null = null;
+  const rolesWatcher = watch(store.rolesDir, () => {
+    if (rolesReloadTimer) clearTimeout(rolesReloadTimer);
+    // Debounce: editors often emit a burst of events (write + rename) for one save.
+    rolesReloadTimer = setTimeout(() => {
+      void store.reloadRoles().catch(err => console.error("roles reload failed:", err.message));
+    }, 100);
+  });
+  rolesWatcher.on("error", err => console.error("roles watcher:", err.message));
   const app = createApp({ store, manager, transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), openTerminal, staticDir: uiDist });
   const port = Number(process.env.AGENTGRID_PORT ?? 4800);
   http.createServer(app).listen(port, "127.0.0.1", () => console.log(`AgentGrid on http://127.0.0.1:${port}  (data: ${resolveHome()}${uiDist ? "" : ", UI not built"})`));
