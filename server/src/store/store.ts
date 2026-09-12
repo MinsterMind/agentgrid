@@ -11,8 +11,9 @@ export class Conflict extends Error { status = 409; }
 
 const NAMES = ["Ada", "Rhea", "Cody", "Tess", "Dev", "Demi", "Kai", "Ravi", "Maya", "Tom", "Ira", "Max", "Nia", "Ola", "Zed"];
 
+let seq = 0;
 async function writeAtomic(file: string, data: unknown) {
-  const tmp = `${file}.${process.pid}.tmp`;
+  const tmp = `${file}.${process.pid}.${++seq}.tmp`;
   await writeFile(tmp, JSON.stringify(data, null, 2));
   await rename(tmp, file);
 }
@@ -119,7 +120,8 @@ export class Store extends EventEmitter {
     const all = [...this.assignments.values()];
     const active = all.filter(a => a.state === "working" || a.state === "waiting");
     const rest = all.filter(a => !(a.state === "working" || a.state === "waiting"))
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit);
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || Number(b.id.slice(1)) - Number(a.id.slice(1)))
+      .slice(0, limit);
     return [...active, ...rest];
   }
   getAssignment(id: string): Assignment {

@@ -68,3 +68,48 @@ describe("Store agents", () => {
     expect(await store.listMemory(a.id)).toEqual([{ file: "x.md", name: "x-fact", description: "a fact" }]);
   });
 });
+
+describe("Store assignments", () => {
+  it("creates with sequential ids, working state, and emits", async () => {
+    const a = await store.createAgent({ role: "coder", repo: "/x/y" });
+    const s1 = await store.createAssignment({ agentId: a.id, prompt: "do x" });
+    const s2 = await store.createAssignment({ agentId: a.id, prompt: "do y" });
+    expect([s1.id, s2.id]).toEqual(["a1", "a2"]);
+    expect(s1).toMatchObject({ state: "working", pending: null, costUsd: 0, turns: 0, sessionId: null });
+    expect(events.filter(e => e.type === "assignment")).toHaveLength(2);
+  });
+
+  it("continues the id counter after restart", async () => {
+    const a = await store.createAgent({ role: "coder", repo: "/x/y" });
+    await store.createAssignment({ agentId: a.id, prompt: "p" });
+    const s2 = new Store(home, defaults); await s2.init();
+    const next = await s2.createAssignment({ agentId: a.id, prompt: "q" });
+    expect(next.id).toBe("a2");
+  });
+
+  it("lists active first, then most recent finished up to limit", async () => {
+    const a = await store.createAgent({ role: "coder", repo: "/x/y" });
+    const s1 = await store.createAssignment({ agentId: a.id, prompt: "1" });
+    const s2 = await store.createAssignment({ agentId: a.id, prompt: "2" });
+    const s3 = await store.createAssignment({ agentId: a.id, prompt: "3" });
+    await store.updateAssignment(s1.id, { state: "done" });
+    await store.updateAssignment(s2.id, { state: "failed" });
+    const list = store.listAssignments(1);
+    expect(list.map(x => x.id)).toEqual([s3.id, s2.id]);
+  });
+
+  it("rejects unknown agent / assignment", async () => {
+    await expect(store.createAssignment({ agentId: "nope", prompt: "p" })).rejects.toThrow(NotFound);
+    expect(() => store.getAssignment("a99")).toThrow(NotFound);
+  });
+
+  it("survives 20 concurrent updateAssignment calls without temp-file collisions", async () => {
+    const a = await store.createAgent({ role: "coder", repo: "/x/y" });
+    const s = await store.createAssignment({ agentId: a.id, prompt: "p" });
+    await Promise.all(
+      Array.from({ length: 20 }, (_, i) => store.updateAssignment(s.id, { turns: i + 1 }))
+    );
+    const onDisk = JSON.parse(await readFile(path.join(home, "assignments", `${s.id}.json`), "utf8"));
+    expect(onDisk).toEqual(store.getAssignment(s.id));
+  });
+});
