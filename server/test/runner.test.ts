@@ -5,6 +5,7 @@ import path from "node:path";
 import { Store, Conflict } from "../src/store/store.js";
 import { Runner, type BuildOptions } from "../src/runner/runner.js";
 import { makeFakeQuery, init, text, toolUse, success, errorResult } from "./helpers/fakeQuery.js";
+import { until } from "./helpers/until.js";
 import type { Options, CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 
 const tick = () => new Promise(r => setTimeout(r, 5));
@@ -37,9 +38,11 @@ describe("Runner", () => {
     expect(fake.calls[0].prompt).toContain("- [k](k.md) — hook");
     expect(fake.calls[0].prompt).toContain("<task>\nFix the bug\n</task>");
     expect(fake.calls[0].options.cwd).toBe("/tmp/repo");
-    fake.emit(init("sess-1")); fake.emit(text("Looking at src/")); await tick();
+    fake.emit(init("sess-1")); fake.emit(text("Looking at src/"));
+    await until(() => store.getAssignment(asg.id).activity === "Looking at src/");
     expect(store.getAssignment(asg.id)).toMatchObject({ sessionId: "sess-1", activity: "Looking at src/", startedAt: expect.any(String) });
-    fake.emit(toolUse("Bash", { command: "npm test" })); await tick();
+    fake.emit(toolUse("Bash", { command: "npm test" }));
+    await until(() => store.getAssignment(asg.id).activity === "Bash: npm test");
     expect(store.getAssignment(asg.id).activity).toBe("Bash: npm test");
   });
 
@@ -50,7 +53,8 @@ describe("Runner", () => {
 
   it("success result → done with outcome/cost/turns; ack → free", async () => {
     const asg = await runner.assign("t");
-    fake.emit(success("DONE all good", 1.25, 7)); fake.end(); await tick();
+    fake.emit(success("DONE all good", 1.25, 7)); fake.end();
+    await until(() => store.getAgent(agentId).state === "done");
     expect(store.getAssignment(asg.id)).toMatchObject({ state: "done", outcome: "DONE all good", costUsd: 1.25, turns: 7, endedAt: expect.any(String) });
     expect(store.getAgent(agentId).state).toBe("done");
     await runner.ack();
@@ -59,21 +63,23 @@ describe("Runner", () => {
 
   it("error result → failed with error", async () => {
     const asg = await runner.assign("t");
-    fake.emit(errorResult("error_max_turns")); fake.end(); await tick();
+    fake.emit(errorResult("error_max_turns")); fake.end();
+    await until(() => store.getAgent(agentId).state === "failed");
     expect(store.getAssignment(asg.id)).toMatchObject({ state: "failed", error: "error_max_turns" });
     expect(store.getAgent(agentId).state).toBe("failed");
   });
 
   it("thrown error → failed with message", async () => {
     const asg = await runner.assign("t");
-    fake.fail(new Error("boom")); await tick();
+    fake.fail(new Error("boom"));
+    await until(() => store.getAssignment(asg.id).state === "failed");
     expect(store.getAssignment(asg.id)).toMatchObject({ state: "failed", error: "boom" });
   });
 
   it("permission: canUseTool parks → waiting with pending; allow resumes", async () => {
     const asg = await runner.assign("t");
     const p = captured.canUseTool!("Bash", { command: "rm x" }, { signal: new AbortController().signal, toolUseID: "tu-1", suggestions: [{ type: "addRules" }] } as any);
-    await tick();
+    await until(() => store.getAgent(agentId).state === "waiting");
     expect(store.getAgent(agentId).state).toBe("waiting");
     expect(store.getAssignment(asg.id).pending).toEqual({ kind: "permission", toolUseId: "tu-1", toolName: "Bash", input: { command: "rm x" }, suggestions: [{ type: "addRules" }] });
     await runner.answer("tu-1", { kind: "allow" });
@@ -96,7 +102,7 @@ describe("Runner", () => {
     const asg = await runner.assign("t");
     const input = { questions: [{ question: "Which?", header: "H", options: [{ label: "a", description: "" }, { label: "b", description: "" }], multiSelect: false }] };
     const p = captured.canUseTool!("AskUserQuestion", input, { signal: new AbortController().signal, toolUseID: "tu-q" } as any);
-    await tick();
+    await until(() => store.getAssignment(asg.id).pending?.kind === "question");
     expect(store.getAssignment(asg.id).pending?.kind).toBe("question");
     await runner.answer("tu-q", { kind: "answers", answers: { "Which?": "b" } });
     expect(await p).toEqual({ behavior: "allow", updatedInput: { ...input, answers: { "Which?": "b" } } });
@@ -110,7 +116,8 @@ describe("Runner", () => {
   it("cancel → failed(cancelled), keeps sessionId, aborts query", async () => {
     const asg = await runner.assign("t");
     fake.emit(init("sess-9")); await tick();
-    await runner.cancel(); await tick();
+    await runner.cancel();
+    await until(() => store.getAgent(agentId).state === "failed");
     expect(fake.calls[0].options.abortController!.signal.aborted).toBe(true);
     expect(store.getAssignment(asg.id)).toMatchObject({ state: "failed", error: "cancelled", sessionId: "sess-9" });
     expect(store.getAgent(agentId).state).toBe("failed");
@@ -159,7 +166,7 @@ describe("Runner", () => {
     // itself would await it, but nothing here ever resolves it because the parking
     // write fails before the permission is ever recorded).
     void captured.canUseTool!("Bash", { command: "rm x" }, { signal: new AbortController().signal, toolUseID: "tu-1" } as any);
-    await tick(); await tick();
+    await until(() => store.getAgent(agentId).state === "failed");
 
     process.removeListener("unhandledRejection", onUnhandled);
     expect(unhandled).toBeNull();

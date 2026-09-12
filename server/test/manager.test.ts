@@ -5,9 +5,9 @@ import path from "node:path";
 import { Store, NotFound } from "../src/store/store.js";
 import { Manager } from "../src/runner/manager.js";
 import { makeFakeQuery, success } from "./helpers/fakeQuery.js";
+import { until } from "./helpers/until.js";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
 
-const tick = () => new Promise(r => setTimeout(r, 5));
 let home: string; let store: Store; let fake: ReturnType<typeof makeFakeQuery>; let mgr: Manager;
 const buildOptions = (_r: any, a: any, e: any) => ({ cwd: a.repo, abortController: e.abortController, canUseTool: e.canUseTool } as Options);
 
@@ -22,7 +22,8 @@ describe("Manager", () => {
   it("routes assign/ack to a per-agent runner", async () => {
     const a = await store.createAgent({ role: "coder", repo: "/x/one" });
     const asg = await mgr.assign(a.id, "p");
-    fake.emit(success("ok")); fake.end(); await tick();
+    fake.emit(success("ok")); fake.end();
+    await until(() => store.getAgent(a.id).state === "done");
     expect(store.getAssignment(asg.id).state).toBe("done");
     await mgr.ack(a.id);
     expect(store.getAgent(a.id).state).toBe("free");
@@ -47,7 +48,8 @@ describe("Manager", () => {
   it("archive cancels a running assignment first", async () => {
     const a = await store.createAgent({ role: "coder", repo: "/x/one" });
     const asg = await mgr.assign(a.id, "p");
-    await mgr.archive(a.id); await tick();
+    await mgr.archive(a.id);
+    await until(() => store.getAssignment(asg.id).state === "failed");
     expect(store.getAssignment(asg.id)).toMatchObject({ state: "failed", error: "cancelled" });
     expect(() => store.getAgent(a.id)).toThrow(NotFound);
   });

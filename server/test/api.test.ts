@@ -7,9 +7,9 @@ import { Store } from "../src/store/store.js";
 import { Manager } from "../src/runner/manager.js";
 import { createApp } from "../src/api/app.js";
 import { makeFakeQuery, success, init } from "./helpers/fakeQuery.js";
+import { until } from "./helpers/until.js";
 import type { Options, CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 
-const tick = () => new Promise(r => setTimeout(r, 5));
 let app: ReturnType<typeof createApp>; let store: Store; let fake: ReturnType<typeof makeFakeQuery>;
 let canUseTool: CanUseTool | undefined;
 
@@ -46,14 +46,15 @@ describe("API", () => {
     await request(app).post(`/api/agents/${agent.id}/assign`).send({ prompt: "again" }).expect(409);
 
     const p = canUseTool!("Bash", { command: "ls" }, { signal: new AbortController().signal, toolUseID: "tu-1" } as any);
-    await tick();
+    await until(() => store.getAgent(agent.id).state === "waiting");
     expect((await request(app).get("/api/state")).body.agents[0].state).toBe("waiting");
     await request(app).post(`/api/agents/${agent.id}/answer`).send({ toolUseId: "zzz", decision: { kind: "allow" } }).expect(409);
     await request(app).post(`/api/agents/${agent.id}/answer`).send({ toolUseId: "tu-1", decision: { kind: "allow" } }).expect(204);
     expect(await p).toEqual({ behavior: "allow" });
 
     await request(app).post(`/api/agents/${agent.id}/ack`).expect(409);
-    fake.emit(success("fin")); fake.end(); await tick();
+    fake.emit(success("fin")); fake.end();
+    await until(() => store.getAgent(agent.id).state === "done");
     await request(app).post(`/api/agents/${agent.id}/ack`).expect(204);
     expect((await request(app).get("/api/state")).body.agents[0].state).toBe("free");
   });
@@ -62,7 +63,7 @@ describe("API", () => {
     const { body: agent } = await request(app).post("/api/agents").send({ role: "coder", repo: "/x/hrns" });
     const { body: asg } = await request(app).post(`/api/agents/${agent.id}/assign`).send({ prompt: "go" });
     await request(app).post(`/api/agents/${agent.id}/cancel`).expect(204);
-    await tick();
+    await until(() => store.getAssignment(asg.id).state === "failed");
     expect((await request(app).get("/api/state")).body.assignments.find((a: any) => a.id === asg.id).state).toBe("failed");
     await request(app).post(`/api/agents/${agent.id}/cancel`).expect(409);
   });
@@ -81,9 +82,9 @@ describe("API", () => {
 
   it("open-terminal quotes the repo and sessionId for POSIX shells", async () => {
     const { body: agent } = await request(app).post("/api/agents").send({ role: "coder", repo: "/tmp/it's $(x)" });
-    await request(app).post(`/api/agents/${agent.id}/assign`).send({ prompt: "go" });
+    const { body: asg } = await request(app).post(`/api/agents/${agent.id}/assign`).send({ prompt: "go" });
     fake.emit(init("sess-1"));
-    await tick();
+    await until(() => store.getAssignment(asg.id).sessionId === "sess-1");
     const res = await request(app).post(`/api/agents/${agent.id}/open-terminal`).expect(200);
     expect(res.body.command).toBe("cd '/tmp/it'\\''s $(x)' && claude --resume 'sess-1'");
   });
