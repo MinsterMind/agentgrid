@@ -1,3 +1,5 @@
+process.env.TZ = "Asia/Kolkata";
+
 import { describe, it, expect } from "vitest";
 import { reducer, initial, assignmentFor, counts, todaySpend, waitingIds } from "../src/state/reducer";
 import type { Agent, Assignment } from "../src/types";
@@ -35,5 +37,17 @@ describe("reducer", () => {
     expect(counts(s)).toEqual({ free: 1, working: 0, waiting: 1, done: 1, failed: 0 });
     expect(todaySpend(s)).toBe(2);
     expect(waitingIds(s)).toEqual(["a"]);
+  });
+  it("todaySpend uses local calendar day, not UTC day", () => {
+    // now = 2026-09-12T01:00:00+05:30 == 2026-09-11T19:30:00Z
+    const now = new Date("2026-09-12T01:00:00+05:30");
+    const a = agent("a", "done", "a1"), b = agent("b", "done", "a2");
+    const s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [a, b], assignments: [
+      // local 12 Sep 01:30 -> counts as "today" relative to `now` (local 12 Sep)
+      asg("a1", "a", { state: "done", costUsd: 3, createdAt: "2026-09-11T20:00:00Z" }),
+      // local 11 Sep 23:30 -> does not count as "today" relative to `now` (local 12 Sep)
+      asg("a2", "b", { state: "done", costUsd: 5, createdAt: "2026-09-11T18:00:00Z" }),
+    ] } });
+    expect(todaySpend(s, now)).toBe(3);
   });
 });

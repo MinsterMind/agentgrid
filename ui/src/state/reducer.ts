@@ -38,9 +38,9 @@ export const counts = (s: UiState): Record<AgentState, number> => {
   return c;
 };
 
-export const todaySpend = (s: UiState): number => {
-  const today = new Date().toISOString().slice(0, 10);
-  return Object.values(s.assignments).filter(a => a.createdAt.slice(0, 10) === today).reduce((n, a) => n + a.costUsd, 0);
+export const todaySpend = (s: UiState, now = new Date()): number => {
+  const today = now.toDateString();
+  return Object.values(s.assignments).filter(a => new Date(a.createdAt).toDateString() === today).reduce((n, a) => n + a.costUsd, 0);
 };
 
 export const waitingIds = (s: UiState): string[] => s.agents.filter(a => a.state === "waiting").map(a => a.id);
