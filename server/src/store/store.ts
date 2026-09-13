@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdir, readdir, readFile, writeFile, rename, rm } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import matter from "gray-matter";
 import { paths } from "./paths.js";
@@ -95,7 +95,15 @@ export class Store extends EventEmitter {
   }
   async archiveAgent(id: string): Promise<void> {
     this.getAgent(id);
-    await rename(this.p.agentDir(id), path.join(this.p.archived, id));
+    // The same live id can be reused after an earlier archive (createAgent only checks
+    // live ids for collisions), so a prior archive dir may already sit at `_archived/id`.
+    // Never rename onto it — that would either fail (ENOTEMPTY) or silently clobber the
+    // previous agent's memory. Suffix with a timestamp instead so both are preserved.
+    let target = path.join(this.p.archived, id);
+    if (await stat(target).then(() => true, () => false)) {
+      target = path.join(this.p.archived, `${id}.${Date.now()}`);
+    }
+    await rename(this.p.agentDir(id), target);
     await rm(this.p.agentFile(id));
     this.agents.delete(id);
     this.emit("event", { type: "agent-removed", id } satisfies GridEvent);

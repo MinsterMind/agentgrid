@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtemp, writeFile, mkdir, readFile, stat } from "node:fs/promises";
+import { mkdtemp, writeFile, mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Store, NotFound } from "../src/store/store.js";
@@ -59,6 +59,25 @@ describe("Store agents", () => {
     expect(() => store.getAgent(a.id)).toThrow(NotFound);
     expect((await stat(path.join(home, "agents", "_archived", a.id, "memory", "MEMORY.md"))).isFile()).toBe(true);
     expect(events.at(-1)).toEqual({ type: "agent-removed", id: a.id });
+  });
+
+  it("archives, then re-creates and re-archives the same id without clobbering the earlier archive", async () => {
+    const a1 = await store.createAgent({ role: "coder", repo: "/x/hrns" });
+    await writeFile(path.join(store.memoryDir(a1.id), "MEMORY.md"), "- first");
+    await store.archiveAgent(a1.id);
+
+    const a2 = await store.createAgent({ role: "coder", repo: "/x/hrns" });
+    expect(a2.id).toBe(a1.id); // id freed up by the archive, reused
+    await writeFile(path.join(store.memoryDir(a2.id), "MEMORY.md"), "- second");
+    await expect(store.archiveAgent(a2.id)).resolves.toBeUndefined();
+
+    const archivedEntries = await readdir(path.join(home, "agents", "_archived"));
+    expect(archivedEntries.length).toBe(2);
+    const first = await readFile(path.join(home, "agents", "_archived", a1.id, "memory", "MEMORY.md"), "utf8");
+    expect(first).toBe("- first");
+    const secondDir = archivedEntries.find(e => e !== a1.id)!;
+    const second = await readFile(path.join(home, "agents", "_archived", secondDir, "memory", "MEMORY.md"), "utf8");
+    expect(second).toBe("- second");
   });
 
   it("lists memory files with frontmatter", async () => {
