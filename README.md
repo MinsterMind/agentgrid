@@ -9,6 +9,8 @@ A local dashboard for running a roster of Claude Code agents in parallel. Each t
 
 Roles live in `~/.agentgrid/roles/*.md` (defaults copied on first run). Data in `~/.agentgrid/`.
 
+Set `AGENTGRID_PORT` to run on a port other than 4800 (e.g. if it's already in use). Set `AGENTGRID_HOME` to store data somewhere other than `~/.agentgrid/`.
+
 ## Develop
     npm test                              # unit tests (server + ui)
     npm run test:live -w server           # real SDK integration test (costs cents)

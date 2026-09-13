@@ -40,7 +40,19 @@ async function serve() {
   rolesWatcher.on("error", err => console.error("roles watcher:", err.message));
   const app = createApp({ store, manager, transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), openTerminal, staticDir: uiDist });
   const port = Number(process.env.AGENTGRID_PORT ?? 4800);
-  http.createServer(app).listen(port, "127.0.0.1", () => console.log(`AgentGrid on http://127.0.0.1:${port}  (data: ${resolveHome()}${uiDist ? "" : ", UI not built"})`));
+  const server = http.createServer(app);
+  // Without this handler, a bind failure (most commonly EADDRINUSE — some other
+  // process, or a previous `agentgrid serve`, already holds the port) surfaces as a
+  // raw uncaught-exception stack trace. Report it plainly and exit instead.
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`port ${port} already in use — set AGENTGRID_PORT to another port`);
+    } else {
+      console.error(err.message);
+    }
+    process.exit(1);
+  });
+  server.listen(port, "127.0.0.1", () => console.log(`AgentGrid on http://127.0.0.1:${port}  (data: ${resolveHome()}${uiDist ? "" : ", UI not built"})`));
 }
 
 const cmd = process.argv[2];
