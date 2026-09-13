@@ -18,6 +18,13 @@ export class Runner {
   private parked = new Map<string, Parked>();
   private abort: AbortController | null = null;
   private assignmentId: string | null = null;
+  // Set synchronously at the top of assign(), before any await, and cleared in a
+  // `finally` once assign() is done setting up. `agent.state !== "free"` alone isn't
+  // enough to prevent a double-assign: it's read synchronously but the agent's state
+  // isn't written back to "working" until after several awaits, so two concurrent
+  // assign() calls on the same free agent can both pass that check before either
+  // writes. This flag closes that window (see review round 2, finding 2).
+  private assigning = false;
   // Serializes every store write this Runner makes (patch + finish) so writes for a
   // given assignment always land in call order, never interleaved/raced against
   // each other. See task-6 review round 1, findings 1 & 3.
@@ -29,23 +36,29 @@ export class Runner {
 
   async assign(prompt: string): Promise<Assignment> {
     const { store } = this.deps;
+    if (this.assigning) throw new Conflict(`agent ${this.agentId} is being assigned`);
     const agent = store.getAgent(this.agentId);
     if (agent.state !== "free") throw new Conflict(`agent ${this.agentId} is ${agent.state}`);
-    const role = store.getRole(agent.role);
-    const assignment = await store.createAssignment({ agentId: this.agentId, prompt });
-    this.assignmentId = assignment.id;
-    await store.updateAgent(this.agentId, { state: "working", currentAssignmentId: assignment.id });
+    this.assigning = true;
+    try {
+      const role = store.getRole(agent.role);
+      const assignment = await store.createAssignment({ agentId: this.agentId, prompt });
+      this.assignmentId = assignment.id;
+      await store.updateAgent(this.agentId, { state: "working", currentAssignmentId: assignment.id });
 
-    const fullPrompt = assemblePrompt({ memoryDir: store.memoryDir(this.agentId), index: await store.readMemoryIndex(this.agentId), task: prompt });
-    this.abort = new AbortController();
-    const options = this.deps.buildOptions(role, agent, { canUseTool: this.canUseTool, abortController: this.abort });
-    // Fire-and-forget by design (the stream is consumed in the background), but never
-    // bare: any failure that escapes consume()'s own try/catch is logged, not left to
-    // become an unhandled rejection that could take down the process.
-    void this.consume(this.deps.queryFn({ prompt: fullPrompt, options }), assignment.id).catch(err => {
-      console.error(`[runner:${this.agentId}] unexpected consume failure`, err);
-    });
-    return assignment;
+      const fullPrompt = assemblePrompt({ memoryDir: store.memoryDir(this.agentId), index: await store.readMemoryIndex(this.agentId), task: prompt });
+      this.abort = new AbortController();
+      const options = this.deps.buildOptions(role, agent, { canUseTool: this.canUseTool, abortController: this.abort });
+      // Fire-and-forget by design (the stream is consumed in the background), but never
+      // bare: any failure that escapes consume()'s own try/catch is logged, not left to
+      // become an unhandled rejection that could take down the process.
+      void this.consume(this.deps.queryFn({ prompt: fullPrompt, options }), assignment.id).catch(err => {
+        console.error(`[runner:${this.agentId}] unexpected consume failure`, err);
+      });
+      return assignment;
+    } finally {
+      this.assigning = false;
+    }
   }
 
   private canUseTool: CanUseTool = (toolName, input, opts) => {
@@ -66,7 +79,6 @@ export class Runner {
   async answer(toolUseId: string, decision: Decision): Promise<void> {
     const parked = this.parked.get(toolUseId);
     if (!parked) throw new Conflict(`no pending prompt ${toolUseId} on ${this.agentId}`);
-    this.parked.delete(toolUseId);
     const { pending } = parked;
     let result: PermissionResult;
     switch (decision.kind) {
@@ -75,8 +87,16 @@ export class Runner {
       case "deny": result = { behavior: "deny", message: decision.message ?? "denied by user" }; break;
       case "answers": result = { behavior: "allow", updatedInput: { ...pending.input, answers: decision.answers, ...(decision.response ? { response: decision.response } : {}) } }; break;
     }
-    await this.patch({ pending: null, state: "working" }, "working");
-    parked.resolve(result);
+    // Resolve the parked SDK promise (and drop the parked entry) in `finally` so the
+    // SDK always gets an answer even if the store write throws — previously the entry
+    // was deleted and the resolve happened only after `patch` succeeded, so a failed
+    // write left the SDK's canUseTool call hanging forever (review round 2, finding 5).
+    try {
+      await this.patch({ pending: null, state: "working" }, "working");
+    } finally {
+      this.parked.delete(toolUseId);
+      parked.resolve(result);
+    }
   }
 
   async cancel(): Promise<void> {
@@ -168,6 +188,11 @@ export class Runner {
     const id = this.assignmentId;
     if (!id) return Promise.resolve();
     this.assignmentId = null;
+    // On the failure path, make sure the SDK subprocess actually stops: previously the
+    // AbortController was just dropped (nulled) here without ever firing, so a failure
+    // detected from e.g. the result stream (rather than via cancel()) could leave the
+    // subprocess running. Harmless to call again if cancel() already aborted it.
+    if (patch.state === "failed") this.abort?.abort();
     this.abort = null;
     const endedAt = new Date().toISOString();
     return this.enqueue(async () => {

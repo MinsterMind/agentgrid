@@ -51,6 +51,20 @@ describe("Runner", () => {
     await expect(runner.assign("two")).rejects.toThrow(Conflict);
   });
 
+  it("concurrent assign on a free agent launches exactly one SDK session; the loser gets Conflict", async () => {
+    const results = await Promise.allSettled([runner.assign("a"), runner.assign("b")]);
+    const fulfilled = results.filter(r => r.status === "fulfilled");
+    const rejected = results.filter(r => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(Conflict);
+    expect(fake.calls).toHaveLength(1);
+    const asg = (fulfilled[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof runner.assign>>>).value;
+    const assignmentsForAgent = [store.getAssignment(asg.id)];
+    expect(assignmentsForAgent).toHaveLength(1);
+    expect(store.getAgent(agentId)).toMatchObject({ state: "working", currentAssignmentId: asg.id });
+  });
+
   it("success result → done with outcome/cost/turns; ack → free", async () => {
     const asg = await runner.assign("t");
     fake.emit(success("DONE all good", 1.25, 7)); fake.end();
@@ -61,12 +75,17 @@ describe("Runner", () => {
     expect(store.getAgent(agentId)).toMatchObject({ state: "free", currentAssignmentId: null });
   });
 
-  it("error result → failed with error", async () => {
+  it("error result → failed with error, and aborts the SDK subprocess", async () => {
     const asg = await runner.assign("t");
+    const controller = fake.calls[0].options.abortController!;
     fake.emit(errorResult("error_max_turns")); fake.end();
     await until(() => store.getAgent(agentId).state === "failed");
     expect(store.getAssignment(asg.id)).toMatchObject({ state: "failed", error: "error_max_turns" });
     expect(store.getAgent(agentId).state).toBe("failed");
+    // finish() must fire the abort itself on the failure path (review round 2, finding
+    // 6) — this failure arrived via the result stream, not via cancel(), so nothing
+    // else would have aborted the subprocess.
+    expect(controller.signal.aborted).toBe(true);
   });
 
   it("thrown error → failed with message", async () => {
@@ -111,6 +130,22 @@ describe("Runner", () => {
   it("answer with unknown toolUseId → Conflict", async () => {
     await runner.assign("t");
     await expect(runner.answer("nope", { kind: "allow" })).rejects.toThrow(Conflict);
+  });
+
+  it("answer still resolves the parked SDK promise even when the store write fails", async () => {
+    await runner.assign("t");
+    const p = captured.canUseTool!("Bash", { command: "rm x" }, { signal: new AbortController().signal, toolUseID: "tu-1" } as any);
+    await until(() => store.getAgent(agentId).state === "waiting");
+
+    vi.spyOn(store, "updateAssignment").mockImplementationOnce(async () => { throw new Error("disk full"); });
+    await expect(runner.answer("tu-1", { kind: "allow" })).rejects.toThrow("disk full");
+    // The SDK's canUseTool promise must still resolve (not hang forever) even though
+    // the store write that would normally clear `pending` threw (review round 2,
+    // finding 5).
+    expect(await p).toEqual({ behavior: "allow" });
+    // And the toolUseId is no longer parked, so a duplicate answer is rejected as
+    // unknown rather than resolving a second time.
+    await expect(runner.answer("tu-1", { kind: "deny" })).rejects.toThrow(Conflict);
   });
 
   it("cancel → failed(cancelled), keeps sessionId, aborts query", async () => {
@@ -178,14 +213,19 @@ describe("Runner", () => {
     const asg = await runner.assign("t");
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
+    let activityWriteStarted = false;
     const original = store.updateAssignment.bind(store);
     vi.spyOn(store, "updateAssignment").mockImplementation(async (id, patch) => {
-      if ("activity" in patch) await gate; // hold the activity write in flight
+      if ("activity" in patch) { activityWriteStarted = true; await gate; } // hold the activity write in flight
       return original(id, patch);
     });
 
     fake.emit(text("stale in-flight update"));
-    await tick(); // consume() picks up the message; its patch({activity}) write is now hung on `gate`
+    // Poll for the actual condition (the activity write has entered the mock and is
+    // now hung on `gate`) instead of a fixed-delay tick() — deterministic regardless of
+    // how long consume() takes to pick up the message under load (review round 2,
+    // finding 7).
+    await until(() => activityWriteStarted);
 
     const cancelPromise = runner.cancel(); // finish() is queued behind the hung write
     release(); // let the hung activity write actually land
