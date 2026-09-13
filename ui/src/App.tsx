@@ -24,11 +24,13 @@ export function App() {
       const prev = prevStates.current[a.id];
       if (prev && prev !== a.state) {
         const asg = assignmentFor(s, a);
-        if (a.state === "waiting") notifyWaiting(a.displayName, asg?.pending?.kind === "question" ? "has a question" : `wants to run ${asg?.pending?.toolName ?? "a tool"}`);
+        if (prev === "working" && a.state === "waiting") notifyWaiting(a.displayName, asg?.pending?.kind === "question" ? "has a question" : `wants to run ${asg?.pending?.toolName ?? "a tool"}`);
         if (a.state === "done" || a.state === "failed") notifyFinished(a.displayName, a.state === "done");
       }
       prevStates.current[a.id] = a.state;
     }
+    const liveIds = new Set(s.agents.map(a => a.id));
+    for (const id of Object.keys(prevStates.current)) if (!liveIds.has(id)) delete prevStates.current[id];
     setTitleCount(waitingIds(s).length);
   }, [s]);
 
@@ -46,8 +48,8 @@ export function App() {
     allow: () => { if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "allow" }); },
     deny: () => { if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "deny" }); },
     open: () => { if (selected && selectedAsg?.sessionId) void openTerminal(selected.id); },
-    escape: () => { setSpawnOpen(false); dispatch({ type: "select", id: null }); },
-  }), [s.agents, selected, selectedAsg, decide, openTerminal]));
+    escape: () => { if (spawnOpen) { setSpawnOpen(false); return; } dispatch({ type: "select", id: null }); },
+  }), [s.agents, selected, selectedAsg, decide, openTerminal, spawnOpen]));
 
   return (
     <div className="app">
