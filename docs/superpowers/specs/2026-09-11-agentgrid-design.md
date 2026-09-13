@@ -192,7 +192,7 @@ Uniform tile grid on the left (order = creation order, never re-sorted), detail 
 - `SpawnDialog` — pick role, repo path (recent paths remembered), auto-suggested first name (editable).
 - `AgentGrid` — the tiles.
 - `AgentTile` — avatar, first name, role, repo basename; state ring colour (free grey/dimmed, working blue, waiting amber + glow + badge, done green, failed red); activity line; footer `#id · elapsed · $cost`. Free tiles carry an inline assign textarea. Click selects.
-- `SidePanel` — task text, activity feed (last ~30 events), `PendingPrompt` when waiting, action row (Open in Terminal, Cancel, Ack), memory file list (read-only), outcome/error when done/failed.
+- `SidePanel` — task text, activity feed (last ~30 events), `PendingPrompt` when waiting, action row (Open in Terminal, Cancel, Ack), Delete agent (free/done/failed only) → archives, memory file list (read-only), outcome/error when done/failed.
 - `PendingPrompt` — permission variant (Allow / Always allow / Deny, showing the command or edit summary) and question variant (option buttons per question, multi-select where flagged, free-text fallback). Optimistic: tile returns to `working` on submit.
 
 ### 7.3 Attention

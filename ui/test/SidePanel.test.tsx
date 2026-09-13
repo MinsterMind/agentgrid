@@ -13,7 +13,7 @@ const role: RoleDef = { name: "devops", avatar: "🛠️", model: "m", effort: "
 const agent: Agent = { id: "devops@hrns", role: "devops", repo: "/u/hrns", displayName: "Dev", createdAt: "", state: "waiting", currentAssignmentId: "a41" };
 const asg: Assignment = { id: "a41", agentId: "devops@hrns", prompt: "Restart staging", createdAt: "", startedAt: null, endedAt: null, sessionId: "s1", state: "waiting",
   activity: "x", pending: { kind: "permission", toolUseId: "t1", toolName: "Bash", input: { command: "kubectl rollout restart" }, suggestions: [] }, outcome: null, error: null, turns: 2, costUsd: 0.3 };
-const fns = { onDecide: vi.fn(), onCancel: vi.fn(), onAck: vi.fn(), onOpenTerminal: vi.fn() };
+const fns = { onDecide: vi.fn(), onCancel: vi.fn(), onAck: vi.fn(), onOpenTerminal: vi.fn(), onDelete: vi.fn() };
 beforeEach(() => vi.clearAllMocks());
 
 describe("SidePanel", () => {
@@ -38,5 +38,23 @@ describe("SidePanel", () => {
   it("empty selection shows a hint", () => {
     render(<SidePanel agent={null} role={undefined} assignment={null} {...fns} />);
     expect(screen.getByText(/select an agent/i)).toBeInTheDocument();
+  });
+
+  it("free agent shows Delete agent; clicking it calls onDelete with the agent id", async () => {
+    const free = { ...agent, state: "free" as const, currentAssignmentId: null };
+    render(<SidePanel agent={free} role={role} assignment={null} {...fns} />);
+    const btn = screen.getByRole("button", { name: /delete agent/i });
+    await userEvent.click(btn);
+    expect(fns.onDelete).toHaveBeenCalledWith("devops@hrns");
+  });
+
+  it("done agent shows Delete agent alongside Ack", async () => {
+    render(<SidePanel agent={{ ...agent, state: "done" }} role={role} assignment={{ ...asg, state: "done", pending: null, outcome: "ok" }} {...fns} />);
+    expect(screen.getByRole("button", { name: /delete agent/i })).toBeInTheDocument();
+  });
+
+  it("working/waiting agent has no Delete agent button", () => {
+    render(<SidePanel agent={agent} role={role} assignment={asg} {...fns} />); // agent.state is "waiting"
+    expect(screen.queryByRole("button", { name: /delete agent/i })).not.toBeInTheDocument();
   });
 });
