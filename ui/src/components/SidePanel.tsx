@@ -6,9 +6,9 @@ import { elapsed, usd } from "../format";
 
 type Entry = { ts: string; role: string; kind: string; text: string };
 
-export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, onOpenTerminal, onTranscript, onDelete }: {
+export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, onOpenTerminal, onTranscript, onDelete, hasSession }: {
   agent: Agent | null; role: RoleDef | undefined; assignment: Assignment | null;
-  onDecide: (agentId: string, toolUseId: string, d: Decision) => void; onCancel: (id: string) => void; onAck: (id: string) => void; onOpenTerminal: (id: string) => void; onTranscript?: (id: string) => void; onDelete: (id: string) => void;
+  onDecide: (agentId: string, toolUseId: string, d: Decision) => void; onCancel: (id: string) => void; onAck: (id: string) => void; onOpenTerminal: (id: string) => void; onTranscript?: (id: string) => void; onDelete: (id: string) => void; hasSession?: boolean;
 }) {
   const [feed, setFeed] = useState<Entry[]>([]); const [memory, setMemory] = useState<MemoryFile[]>([]);
   const asgId = assignment?.id; const activity = assignment?.activity; const agentId = agent?.id;
@@ -44,7 +44,7 @@ export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, 
       {!a && <>
         <p className="hint">Idle. Type in the tile to assign work.</p>
         <div className="row">
-          {agent.resumeSessionId && onTranscript && <button className="btn" onClick={() => onTranscript(agent.id)}>Transcript</button>}
+          {(agent.resumeSessionId || hasSession) && onTranscript && <button className="btn" onClick={() => onTranscript(agent.id)}>Transcript</button>}
           {canDelete && <button className="btn d" onClick={() => onDelete(agent.id)}>Delete agent</button>}
         </div>
       </>}

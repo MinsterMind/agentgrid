@@ -64,7 +64,7 @@ test("sessions panel: adopt a past session and assign to it", async ({ page }) =
 test("transcript view shows the full conversation for an agent", async ({ page }) => {
   await page.goto("/");
   const tile = page.getByTestId(/^tile-/).first();          // agent from the first test, already done+acked or free
-  await tile.click();
+  await tile.locator(".hd").click();
   await page.getByRole("button", { name: "Transcript" }).click();
   const tx = page.locator(".dialog.tx");
   await expect(tx).toBeVisible();
