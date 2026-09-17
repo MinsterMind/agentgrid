@@ -63,5 +63,6 @@
     "category": "Development",
     "icon": "build/icon.png"
   },
-  "executableName": "AgentGrid"
+  "executableName": "AgentGrid",
+  "afterPack": "scripts/afterPack.cjs"
 }

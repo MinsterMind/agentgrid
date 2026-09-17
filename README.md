@@ -35,11 +35,13 @@ Under the hood it is a thin layer over the official [Claude Agent SDK](https://c
 
 Download the latest **AgentGrid-<version>-arm64.dmg** (Apple Silicon) or **-x64.dmg** (Intel) from [Releases](https://github.com/MinsterMind/agentgrid/releases), open it and drag AgentGrid to Applications. Linux: the `.AppImage` (`chmod +x`, then run).
 
-The app is not code-signed yet, so on first launch macOS will say it "cannot be opened". Either **right-click the app → Open → Open**, or run once:
+The app is not signed with an Apple Developer ID yet, so macOS will refuse the first launch ("cannot be opened" / "unidentified developer"). Run this once after copying it to Applications:
 
 ```bash
 xattr -d com.apple.quarantine /Applications/AgentGrid.app
 ```
+
+(Right-click → Open → Open also works on most macOS versions.) If you ever see **"AgentGrid is damaged"**, that's a broken signature from a pre-0.1.1 build — download the current release.
 
 AgentGrid starts its own local server inside the app and picks up your login shell's environment (PATH, tokens) so `claude` and your project hooks work exactly as in a terminal. **Settings** menu: browse root for Spawn, data directory, restart server.
 
