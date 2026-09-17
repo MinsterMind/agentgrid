@@ -95,7 +95,7 @@ describe("API", () => {
 describe("GET /api/fs", () => {
   it("lists the browse root by default and descends with ?path", async () => {
     const root = await request(app).get("/api/fs").expect(200);
-    expect(root.body).toEqual({ path: browseRoot, parent: null, entries: [{ name: "repo", path: path.join(browseRoot, "repo"), isRepo: true }] });
+    expect(root.body).toEqual({ root: browseRoot, path: browseRoot, parent: null, entries: [{ name: "repo", path: path.join(browseRoot, "repo"), isRepo: true }] });
     const sub = await request(app).get("/api/fs").query({ path: path.join(browseRoot, "repo") }).expect(200);
     expect(sub.body.parent).toBe(browseRoot);
   });

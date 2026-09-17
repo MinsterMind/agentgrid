@@ -41,7 +41,7 @@ npm run build
 npm run serve            # → http://127.0.0.1:4800
 ```
 
-1. Click **+ Spawn**, pick a role and an absolute path to a repo. The agent appears on the grid as *free*.
+1. Click **+ Spawn**, pick a role and browse to a repo (git repos are badged; one click selects). The agent appears on the grid as *free*.
 2. Type a task into its tile and press **⏎**. The tile turns blue (*working*) and shows what the agent is doing.
 3. When it needs you, the tile glows amber (*needs you*). Click it: the side panel shows the permission or question — **Allow / Always allow / Deny**, or pick an answer. Or press `a` / `d`.
 4. When it finishes the tile turns green (*done*) with a summary; failed tasks turn red. Press **Ack → free** to put the agent back in the pool.
@@ -99,6 +99,7 @@ The tab title shows `(N) AgentGrid` while N agents need you; the "● N need you
 |---|---|---|
 | `AGENTGRID_PORT` | `4800` | Listen port (always bound to `127.0.0.1`) |
 | `AGENTGRID_HOME` | `~/.agentgrid` | Data directory |
+| `AGENTGRID_BROWSE_ROOT` | `~` | Top of the folder tree the Spawn dialog can browse (e.g. your projects directory) |
 | `AGENTGRID_FAKE` | unset | `1` → scripted runner that never calls the API (for demos/tests) |
 
 There is no authentication: the server listens on loopback only. Don't expose it.

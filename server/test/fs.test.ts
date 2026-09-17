@@ -18,6 +18,7 @@ beforeEach(async () => {
 describe("listDir", () => {
   it("lists only visible directories, repos first then alphabetical, with parent", async () => {
     const r = await listDir(root, undefined);
+    expect(r.root).toBe(root);
     expect(r.path).toBe(root);
     expect(r.parent).toBeNull();
     expect(r.entries).toEqual([

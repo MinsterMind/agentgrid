@@ -4,8 +4,8 @@ import path from "node:path";
 export class OutsideRoot extends Error { status = 400; }
 export class NotFoundDir extends Error { status = 404; }
 
-export interface DirEntry { name: string; path: string; isRepo: boolean }
-export interface DirListing { path: string; parent: string | null; entries: DirEntry[] }
+import type { DirEntry, DirListing } from "./types.js";
+export type { DirEntry, DirListing };
 
 /** List the subdirectories of `target` (default: root), confined to `root`. Hidden dirs are skipped; git repos sort first. */
 export async function listDir(root: string, target: string | undefined): Promise<DirListing> {
@@ -24,5 +24,5 @@ export async function listDir(root: string, target: string | undefined): Promise
     entries.push({ name: d.name, path: full, isRepo });
   }
   entries.sort((a, b) => Number(b.isRepo) - Number(a.isRepo) || a.name.localeCompare(b.name));
-  return { path: dir, parent: dir === base ? null : path.dirname(dir), entries };
+  return { root: base, path: dir, parent: dir === base ? null : path.dirname(dir), entries };
 }

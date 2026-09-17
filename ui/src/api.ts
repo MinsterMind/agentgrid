@@ -1,4 +1,4 @@
-import type { Agent, Assignment, Decision, GridEvent, GridState, MemoryFile } from "./types";
+import type { Agent, Assignment, Decision, DirListing, GridEvent, GridState, MemoryFile } from "./types";
 
 async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
@@ -23,5 +23,6 @@ export const api = {
   ack: (id: string) => call<void>("POST", `/api/agents/${encodeURIComponent(id)}/ack`),
   openTerminal: (id: string) => call<{ command: string; opened: boolean }>("POST", `/api/agents/${encodeURIComponent(id)}/open-terminal`),
   memory: (id: string) => call<MemoryFile[]>("GET", `/api/agents/${encodeURIComponent(id)}/memory`),
+  listDir: (path?: string) => call<DirListing>("GET", `/api/fs${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   transcript: (assignmentId: string) => call<Array<{ ts: string; role: string; kind: string; text: string }>>("GET", `/api/assignments/${assignmentId}/transcript`),
 };

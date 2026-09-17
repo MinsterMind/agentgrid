@@ -63,3 +63,6 @@ export type GridEvent =
   | { type: "roles"; roles: RoleDef[] };
 
 export interface GridState { roles: RoleDef[]; agents: Agent[]; assignments: Assignment[] }
+
+export interface DirEntry { name: string; path: string; isRepo: boolean }
+export interface DirListing { root: string; path: string; parent: string | null; entries: DirEntry[] }

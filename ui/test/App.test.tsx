@@ -9,6 +9,7 @@ import type { Agent, GridEvent, GridState, RoleDef } from "../src/types";
 vi.mock("../src/api", () => ({
   api: {
     subscribe: vi.fn(),
+    listDir: vi.fn(() => Promise.resolve({ root: "/", path: "/", parent: null, entries: [] })),
     answer: vi.fn(() => Promise.resolve()),
     assign: vi.fn(() => Promise.resolve({})),
     cancel: vi.fn(() => Promise.resolve()),
