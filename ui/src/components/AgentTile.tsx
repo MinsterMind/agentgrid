@@ -19,7 +19,7 @@ export function AgentTile({ agent, role, assignment, selected, index, recent, on
       <span className="idx">{index < 9 ? index + 1 : ""}</span>
       <div className="hd">
         <div className="av">{role?.avatar ?? "🤖"}</div>
-        <div><div className="name">{agent.displayName} — {agent.role}</div><div className="repo">{basename(agent.repo)}</div></div>
+        <div><div className="name">{agent.displayName} — {agent.role}{agent.resumeSessionId && <span title="Continues an adopted Claude Code session"> 🔗</span>}</div><div className="repo">{basename(agent.repo)}</div></div>
       </div>
       {line !== null && <div className="act">{agent.state === "working" && <span className="dot" />}{line}</div>}
       {agent.state === "free" && <AssignBox agentId={agent.id} recent={recent} onSubmit={onAssign} />}

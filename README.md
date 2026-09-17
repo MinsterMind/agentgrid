@@ -46,6 +46,7 @@ npm run serve            # → http://127.0.0.1:4800
 3. When it needs you, the tile glows amber (*needs you*). Click it: the side panel shows the permission or question — **Allow / Always allow / Deny**, or pick an answer. Or press `a` / `d`.
 4. When it finishes the tile turns green (*done*) with a summary; failed tasks turn red. Press **Ack → free** to put the agent back in the pool.
 5. **Open in Terminal** at any point opens `claude --resume <session>` in Terminal/iTerm for the full conversation.
+6. **Sessions** (top bar) lists every Claude Code session on the machine — live terminal and background sessions with their status, plus recent history. **Adopt** a past session to put it on the grid: that agent then *continues that conversation* with every prompt you assign (🔗 on the tile). Background sessions get **Attach in Terminal**.
 
 Everything lives in `~/.agentgrid/` as plain files — roles, agents, assignments, and each agent's memory.
 
@@ -119,6 +120,7 @@ Layout: `server/` (Node + TypeScript: file store, one `Runner` per agent around 
 ## Limitations (v1)
 
 - One task per agent at a time; no queues, no agent-to-agent handoff.
+- Prompts can't be injected into a session that is currently open in a terminal — close it, then adopt it.
 - Restarting the server marks in-flight tasks as failed (their sessions can still be resumed in a terminal).
 - Cost is known only when a task finishes.
 - Dark theme only; desktop-width layout.

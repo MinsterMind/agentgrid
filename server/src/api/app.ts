@@ -6,6 +6,7 @@ import { sseHandler } from "./sse.js";
 import { shellQuote } from "../shell.js";
 import { listDir } from "../fs.js";
 import { pickFolder } from "../picker.js";
+import { attachCommand } from "../terminal.js";
 import { listAllSessions, type LiveSession, type HistorySession } from "../sessions.js";
 import os from "node:os";
 import type { Agent, Assignment, Decision } from "../types.js";
@@ -15,6 +16,8 @@ export interface AppDeps {
   manager: Manager;
   transcript?: (assignment: Assignment, agent: Agent) => Promise<unknown[]>;
   openTerminal?: (repo: string, sessionId: string) => Promise<void>;
+  /** Run an arbitrary shell command in a new terminal window (used for `claude attach`). */
+  runInTerminal?: (shell: string) => Promise<void>;
   staticDir?: string;
   /** Root the repo browser may list; defaults to the home directory. */
   browseRoot?: string;
@@ -59,6 +62,15 @@ export function createApp(deps: AppDeps) {
     if (!info) throw new NotFound(`session ${sid}`);
     if (!info.canAdopt) throw new Conflict(info.agentId ? `session already on the grid as ${info.agentId}` : "session is live in a terminal — close it first");
     res.status(201).json(await store.createAgent({ role, repo: info.cwd, displayName, resumeSessionId: sid }));
+  }));
+  app.post("/api/sessions/:sessionId/attach", wrap(async (req, res) => {
+    const sid = req.params.sessionId as string;
+    const info = (await sessions()).find(s => s.sessionId === sid);
+    if (!info) throw new NotFound(`session ${sid}`);
+    if (!info.bgId) throw new BadRequest("only background sessions can be attached");
+    const command = attachCommand(info.bgId);
+    if (deps.runInTerminal) await deps.runInTerminal(command);
+    res.json({ command, opened: Boolean(deps.runInTerminal) });
   }));
   app.post("/api/fs/pick", wrap(async (_req, res) => {
     const pick = deps.pickFolder ?? pickFolder;

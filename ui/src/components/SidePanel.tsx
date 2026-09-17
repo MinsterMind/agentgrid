@@ -24,7 +24,7 @@ export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, 
   return (
     <aside className="side" data-testid="side-panel">
       <div className="hd"><div className="av" data-state={agent.state}>{role?.avatar ?? "🤖"}</div>
-        <div><div className="name">{agent.displayName} — {agent.role}</div><div className="repo">{agent.repo}{a ? ` · #${a.id}` : ""}</div></div></div>
+        <div><div className="name">{agent.displayName} — {agent.role}</div><div className="repo">{agent.repo}{a ? ` · #${a.id}` : ""}</div>{agent.resumeSessionId && <div className="repo">🔗 continues session {agent.resumeSessionId.slice(0, 8)}…</div>}</div></div>
       {a && <>
         <h4>Task</h4><div className="task">{a.prompt}</div>
         <h4>Recent activity</h4>

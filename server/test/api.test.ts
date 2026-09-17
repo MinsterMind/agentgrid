@@ -127,6 +127,16 @@ describe("sessions", () => {
     expect(res.body.map((s: any) => [s.sessionId, s.kind, s.canAdopt])).toEqual([["s-live", "interactive", false], ["s-old", "history", true]]);
   });
 
+  it("attach opens `claude attach <bgId>` for background sessions only", async () => {
+    const ran: string[] = [];
+    const a = createApp({ store, manager: new Manager(store, { queryFn: fake.queryFn }), runInTerminal: async c => { ran.push(c); },
+      sessions: { live: async () => [...live, { sessionId: "s-bg", cwd: "/x/bg", name: "bg", kind: "background" as const, status: "blocked" as const, startedAt: 1, bgId: "d85e" }], history: async () => [] } });
+    expect((await request(a).post("/api/sessions/s-bg/attach").expect(200)).body).toEqual({ command: "claude attach 'd85e'", opened: true });
+    expect(ran).toEqual(["claude attach 'd85e'"]);
+    await request(a).post("/api/sessions/s-live/attach").expect(400);
+    await request(a).post("/api/sessions/nope/attach").expect(404);
+  });
+
   it("adopt creates an agent bound to the session; guards live/duplicate/unknown", async () => {
     const a = mk();
     await request(a).post("/api/sessions/s-old/adopt").send({}).expect(400);

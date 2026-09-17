@@ -42,3 +42,21 @@ test("spawn dialog browses folders confined to the browse root", async ({ page }
   await dialog.getByRole("button", { name: "Spawn", exact: true }).click();
   await expect(page.getByTestId("tile-architect@myrepo")).toBeVisible();
 });
+
+test("sessions panel: adopt a past session and assign to it", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Sessions" }).click();
+  const recent = page.getByTestId("sessions-recent");
+  await expect(recent).toContainText("Earlier work (fake)");
+  await recent.getByRole("button", { name: "Adopt into grid" }).click();
+  const tile = page.locator(".tile.selected");
+  await expect(tile).toBeVisible();
+  await expect(tile).toContainText("🔗");
+  await tile.getByPlaceholder(/assign work/i).fill("continue where we left off");
+  await tile.getByPlaceholder(/assign work/i).press("Enter");
+  await expect(tile).toHaveAttribute("data-state", "waiting");
+  await page.getByRole("button", { name: "Allow", exact: true }).click();
+  await expect(tile).toHaveAttribute("data-state", "done");
+  await page.getByRole("button", { name: "Sessions" }).click();
+  await expect(page.getByTestId("sessions-recent")).toContainText("on grid as");
+});

@@ -66,3 +66,11 @@ button.pill:disabled { opacity:.6; }
 .tag { margin-left:8px; font-size:10px; padding:1px 6px; border-radius:99px; background:#14532d; color:#bbf7d0; }
 .row.quick { margin-top:0; }
 .pathrow { margin-top:0; flex-wrap:nowrap; } .pathrow input { flex:1; min-width:0; }
+.dialog.wide { width:720px; max-width:95vw; max-height:85vh; overflow:auto; }
+.dialog h4 { margin:10px 0 4px; font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; }
+.sessions { list-style:none; margin:0; padding:0; }
+.sessions li { display:flex; align-items:center; gap:8px; padding:5px 4px; border-bottom:1px solid var(--line); font-size:12px; }
+.sessions .title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sessions .st { font-size:11px; min-width:62px; } .st.busy { color:#93c5fd; } .st.idle { color:#86efac; } .st.blocked { color:#ffd166; } .st.ended { color:var(--dim2); }
+.sessions select { background:#0f1115; border:1px solid #2b3140; color:var(--fg); border-radius:6px; padding:3px 6px; font:inherit; font-size:11px; }
+.tag.own { background:#1e3a8a; color:#bfdbfe; }

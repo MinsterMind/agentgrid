@@ -5,6 +5,7 @@ import { AgentGrid } from "./components/AgentGrid";
 import { SidePanel } from "./components/SidePanel";
 import { TopBar } from "./components/TopBar";
 import { SpawnDialog } from "./components/SpawnDialog";
+import { SessionsPanel } from "./components/SessionsPanel";
 import { useKeyboard } from "./hooks/useKeyboard";
 import { notifyFinished, notifyWaiting, setTitleCount, settings } from "./notify";
 import type { Decision } from "./types";
@@ -12,6 +13,7 @@ import type { Decision } from "./types";
 export function App() {
   const [s, dispatch] = useReducer(reducer, initial);
   const [spawnOpen, setSpawnOpen] = useState(false);
+  const [sessionsOpen, setSessionsOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const prevStates = useRef<Record<string, string>>({});
   const showErr = (e: unknown) => { setToast((e as Error).message); setTimeout(() => setToast(null), 4000); };
@@ -48,12 +50,12 @@ export function App() {
     allow: () => { if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "allow" }); },
     deny: () => { if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "deny" }); },
     open: () => { if (selected && selectedAsg?.sessionId) void openTerminal(selected.id); },
-    escape: () => { if (spawnOpen) { setSpawnOpen(false); return; } dispatch({ type: "select", id: null }); },
-  }), [s.agents, selected, selectedAsg, decide, openTerminal, spawnOpen]));
+    escape: () => { if (sessionsOpen) { setSessionsOpen(false); return; } if (spawnOpen) { setSpawnOpen(false); return; } dispatch({ type: "select", id: null }); },
+  }), [s.agents, selected, selectedAsg, decide, openTerminal, spawnOpen, sessionsOpen]));
 
   return (
     <div className="app">
-      <TopBar counts={counts(s)} spend={todaySpend(s)} connected={s.connected} waitingCount={waitingIds(s).length} onCycleWaiting={cycleWaiting} onSpawn={() => setSpawnOpen(true)} />
+      <TopBar counts={counts(s)} spend={todaySpend(s)} connected={s.connected} waitingCount={waitingIds(s).length} onCycleWaiting={cycleWaiting} onSpawn={() => setSpawnOpen(true)} onSessions={() => setSessionsOpen(true)} />
       <div className="split">
         <AgentGrid agents={s.agents} roles={s.roles} assignments={s.assignments} selectedId={s.selectedId} recentFor={recentFor}
           onSelect={id => dispatch({ type: "select", id })}
@@ -68,6 +70,8 @@ export function App() {
         <span className="dim">keys: 1–9 select · a allow · d deny · o terminal · esc</span>
       </footer>
       {spawnOpen && <SpawnDialog roles={s.roles} recentRepos={recentRepos} onSpawn={async i => { const a = await api.createAgent(i); dispatch({ type: "select", id: a.id }); }} onClose={() => setSpawnOpen(false)} />}
+      {sessionsOpen && <SessionsPanel roles={s.roles} agentNames={Object.fromEntries(s.agents.map(a => [a.id, a.displayName]))}
+        onAdopted={id => { setSessionsOpen(false); dispatch({ type: "select", id }); }} onClose={() => setSessionsOpen(false)} />}
       {toast && <div className="toast">{toast}</div>}
     </div>
   );
