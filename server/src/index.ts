@@ -38,7 +38,7 @@ async function serve() {
     }, 100);
   });
   rolesWatcher.on("error", err => console.error("roles watcher:", err.message));
-  const app = createApp({ store, manager, transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), openTerminal, runInTerminal, staticDir: uiDist, browseRoot: process.env.AGENTGRID_BROWSE_ROOT,
+  const app = createApp({ store, manager, transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }), openTerminal, runInTerminal, staticDir: uiDist, browseRoot: process.env.AGENTGRID_BROWSE_ROOT,
     // Fake mode serves a canned session list so the UI/e2e can exercise adoption without Claude Code.
     ...(process.env.AGENTGRID_FAKE ? { sessions: { live: async () => [], history: async () => [{ sessionId: "fake-old-session", cwd: "/tmp", title: "Earlier work (fake)", lastActiveAt: Date.now() }] } } : {}) });
   const port = Number(process.env.AGENTGRID_PORT ?? 4800);

@@ -149,3 +149,22 @@ describe("sessions", () => {
     expect(list.body.find((s: any) => s.sessionId === "s-old")).toMatchObject({ agentId: "coder@old", canAdopt: false });
   });
 });
+
+describe("GET /api/agents/:id/transcript", () => {
+  it("resolves the session from the current assignment, else resumeSessionId, else last assignment", async () => {
+    const seen: string[] = [];
+    const a = createApp({ store, manager: new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, ag, e) => ({ cwd: ag.repo, abortController: e.abortController }) as Options }),
+      fullTranscript: async (_cwd, sid) => { seen.push(sid); return [{ kind: "text", text: `from ${sid}` }]; } });
+    const adopted = await store.createAgent({ role: "coder", repo: "/x/one", resumeSessionId: "s-adopted" });
+    expect((await request(a).get(`/api/agents/${adopted.id}/transcript`).expect(200)).body).toEqual({ sessionId: "s-adopted", entries: [{ kind: "text", text: "from s-adopted" }] });
+    const fresh = await store.createAgent({ role: "coder", repo: "/x/two" });
+    expect((await request(a).get(`/api/agents/${fresh.id}/transcript`).expect(200)).body).toEqual({ sessionId: null, entries: [] });
+    const { body: asg } = await request(a).post(`/api/agents/${fresh.id}/assign`).send({ prompt: "go" }).expect(201);
+    fake.emit(init("s-run")); await until(() => store.getAssignment(asg.id).sessionId === "s-run");
+    expect((await request(a).get(`/api/agents/${fresh.id}/transcript`).expect(200)).body.sessionId).toBe("s-run");
+    fake.emit(success("done")); fake.end(); await until(() => store.getAgent(fresh.id).state === "done");
+    await request(a).post(`/api/agents/${fresh.id}/ack`).expect(204);
+    expect((await request(a).get(`/api/agents/${fresh.id}/transcript`).expect(200)).body.sessionId).toBe("s-run"); // last assignment
+    await request(a).get("/api/agents/nope/transcript").expect(404);
+  });
+});

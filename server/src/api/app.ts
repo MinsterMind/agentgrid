@@ -15,6 +15,8 @@ export interface AppDeps {
   store: Store;
   manager: Manager;
   transcript?: (assignment: Assignment, agent: Agent) => Promise<unknown[]>;
+  /** Full, untruncated transcript of a session in a repo. */
+  fullTranscript?: (cwd: string, sessionId: string) => Promise<unknown[]>;
   openTerminal?: (repo: string, sessionId: string) => Promise<void>;
   /** Run an arbitrary shell command in a new terminal window (used for `claude attach`). */
   runInTerminal?: (shell: string) => Promise<void>;
@@ -106,6 +108,14 @@ export function createApp(deps: AppDeps) {
     const command = `cd ${shellQuote(agent.repo)} && claude --resume ${shellQuote(asg.sessionId)}`;
     if (deps.openTerminal) await deps.openTerminal(agent.repo, asg.sessionId);
     res.json({ command, opened: Boolean(deps.openTerminal) });
+  }));
+  app.get("/api/agents/:id/transcript", wrap(async (req, res) => {
+    const agent = store.getAgent(req.params.id as string);
+    const current = agent.currentAssignmentId ? store.getAssignment(agent.currentAssignmentId) : null;
+    const last = store.listAssignments(Number.MAX_SAFE_INTEGER).filter(a => a.agentId === agent.id && a.sessionId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    const sessionId = current?.sessionId ?? agent.resumeSessionId ?? last?.sessionId ?? null;
+    if (!sessionId) { res.json({ sessionId: null, entries: [] }); return; }
+    res.json({ sessionId, entries: deps.fullTranscript ? await deps.fullTranscript(agent.repo, sessionId) : [] });
   }));
   app.get("/api/assignments/:id/transcript", wrap(async (req, res) => {
     const asg = store.getAssignment(req.params.id as string);
