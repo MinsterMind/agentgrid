@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import request from "supertest";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Store } from "../src/store/store.js";
@@ -10,7 +10,7 @@ import { makeFakeQuery, success, init } from "./helpers/fakeQuery.js";
 import { until } from "./helpers/until.js";
 import type { Options, CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 
-let app: ReturnType<typeof createApp>; let store: Store; let fake: ReturnType<typeof makeFakeQuery>;
+let app: ReturnType<typeof createApp>; let browseRoot: string; let store: Store; let fake: ReturnType<typeof makeFakeQuery>;
 let canUseTool: CanUseTool | undefined;
 
 beforeEach(async () => {
@@ -18,7 +18,9 @@ beforeEach(async () => {
   store = new Store(home, path.resolve("roles")); await store.init();
   fake = makeFakeQuery();
   const manager = new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, a, e) => { canUseTool = e.canUseTool; return { cwd: a.repo, abortController: e.abortController } as Options; } });
-  app = createApp({ store, manager });
+  browseRoot = await realpath(await mkdtemp(path.join(tmpdir(), "browse-")));
+  await mkdir(path.join(browseRoot, "repo", ".git"), { recursive: true });
+  app = createApp({ store, manager, browseRoot });
 });
 
 describe("API", () => {
@@ -87,5 +89,18 @@ describe("API", () => {
     await until(() => store.getAssignment(asg.id).sessionId === "sess-1");
     const res = await request(app).post(`/api/agents/${agent.id}/open-terminal`).expect(200);
     expect(res.body.command).toBe("cd '/tmp/it'\\''s $(x)' && claude --resume 'sess-1'");
+  });
+});
+
+describe("GET /api/fs", () => {
+  it("lists the browse root by default and descends with ?path", async () => {
+    const root = await request(app).get("/api/fs").expect(200);
+    expect(root.body).toEqual({ path: browseRoot, parent: null, entries: [{ name: "repo", path: path.join(browseRoot, "repo"), isRepo: true }] });
+    const sub = await request(app).get("/api/fs").query({ path: path.join(browseRoot, "repo") }).expect(200);
+    expect(sub.body.parent).toBe(browseRoot);
+  });
+  it("400 outside root, 404 missing", async () => {
+    await request(app).get("/api/fs").query({ path: "/" }).expect(400);
+    await request(app).get("/api/fs").query({ path: path.join(browseRoot, "nope") }).expect(404);
   });
 });

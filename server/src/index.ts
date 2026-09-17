@@ -38,7 +38,7 @@ async function serve() {
     }, 100);
   });
   rolesWatcher.on("error", err => console.error("roles watcher:", err.message));
-  const app = createApp({ store, manager, transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), openTerminal, staticDir: uiDist });
+  const app = createApp({ store, manager, transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), openTerminal, staticDir: uiDist, browseRoot: process.env.AGENTGRID_BROWSE_ROOT });
   const port = Number(process.env.AGENTGRID_PORT ?? 4800);
   const server = http.createServer(app);
   // Without this handler, a bind failure (most commonly EADDRINUSE — some other

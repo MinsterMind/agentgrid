@@ -4,6 +4,8 @@ import { Store } from "../store/store.js";
 import { Manager } from "../runner/manager.js";
 import { sseHandler } from "./sse.js";
 import { shellQuote } from "../shell.js";
+import { listDir } from "../fs.js";
+import os from "node:os";
 import type { Agent, Assignment, Decision } from "../types.js";
 
 export interface AppDeps {
@@ -12,6 +14,8 @@ export interface AppDeps {
   transcript?: (assignment: Assignment, agent: Agent) => Promise<unknown[]>;
   openTerminal?: (repo: string, sessionId: string) => Promise<void>;
   staticDir?: string;
+  /** Root the repo browser may list; defaults to the home directory. */
+  browseRoot?: string;
 }
 
 class BadRequest extends Error { status = 400; }
@@ -34,6 +38,11 @@ export function createApp(deps: AppDeps) {
 
   app.get("/api/state", wrap((_req, res) => res.json(store.getState())));
   app.get("/api/events", sseHandler(store));
+  app.get("/api/fs", wrap(async (req, res) => {
+    const p = req.query.path;
+    if (p !== undefined && typeof p !== "string") throw new BadRequest("path must be a string");
+    res.json(await listDir(deps.browseRoot ?? os.homedir(), p));
+  }));
 
   app.post("/api/agents", wrap(async (req, res) => {
     const { role, repo, displayName } = req.body ?? {};
