@@ -19,7 +19,7 @@ interface Entry { pty: PtyLike; viewer: { onData: (d: string) => void; onEnd: (r
 /** The server may itself have been started from inside a Claude Code session; never leak that context into the embedded one. */
 export function cleanEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(base)) if (!/^(CLAUDE_CODE_|CLAUDECODE)/.test(k)) env[k] = v;
+  for (const [k, v] of Object.entries(base)) if (!/^CLAUDE/i.test(k)) env[k] = v;
   return { ...env, TERM: "xterm-256color", COLORTERM: "truecolor" };
 }
 

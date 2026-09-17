@@ -71,7 +71,7 @@ describe("PtyManager", () => {
 
 describe("cleanEnv", () => {
   it("drops Claude Code session markers and forces a colour terminal", () => {
-    const env = cleanEnv({ PATH: "/bin", CLAUDE_CODE_CHILD_SESSION: "1", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli", HOME: "/h" });
+    const env = cleanEnv({ PATH: "/bin", CLAUDE_CODE_CHILD_SESSION: "1", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli", CLAUDE_PID: "1", CLAUDE_EFFORT: "low", CLAUDE_CODE_BRIDGE_SESSION_ID: "x", HOME: "/h" });
     expect(env).toEqual({ PATH: "/bin", HOME: "/h", TERM: "xterm-256color", COLORTERM: "truecolor" });
   });
 });
