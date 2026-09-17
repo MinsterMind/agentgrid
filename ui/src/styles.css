@@ -74,3 +74,13 @@ button.pill:disabled { opacity:.6; }
 .sessions .st { font-size:11px; min-width:62px; } .st.busy { color:#93c5fd; } .st.idle { color:#86efac; } .st.blocked { color:#ffd166; } .st.ended { color:var(--dim2); }
 .sessions select { background:#0f1115; border:1px solid #2b3140; color:var(--fg); border-radius:6px; padding:3px 6px; font:inherit; font-size:11px; }
 .tag.own { background:#1e3a8a; color:#bfdbfe; }
+.dialog.tx { width:900px; height:85vh; display:flex; flex-direction:column; overflow:hidden; }
+.tx-body { flex:1; overflow:auto; padding:6px 4px; font-size:12.5px; line-height:1.5; }
+.tx-entry { display:flex; gap:10px; padding:4px 0; border-bottom:1px solid #1b1f27; }
+.tx-ts { color:var(--dim2); font-family:ui-monospace, monospace; font-size:10px; min-width:64px; padding-top:3px; }
+.tx-text { white-space:pre-wrap; word-break:break-word; flex:1; }
+.tx-who { display:inline-block; font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:var(--dim); margin-right:8px; min-width:44px; }
+.tx-entry.user .tx-text { color:#dbeafe; } .tx-entry.user .tx-who { color:#93c5fd; }
+.tx-tool, .tx-result { flex:1; font-family:ui-monospace, monospace; font-size:11px; }
+.tx-tool summary { color:#ffd166; cursor:pointer; } .tx-result summary { color:var(--dim); cursor:pointer; }
+.tx-tool pre, .tx-result pre { white-space:pre-wrap; word-break:break-word; background:#0f1115; border-radius:6px; padding:8px; margin:4px 0 0; max-height:320px; overflow:auto; }

@@ -60,3 +60,15 @@ test("sessions panel: adopt a past session and assign to it", async ({ page }) =
   await page.getByRole("button", { name: "Sessions" }).click();
   await expect(page.getByTestId("sessions-recent")).toContainText("on grid as");
 });
+
+test("transcript view shows the full conversation for an agent", async ({ page }) => {
+  await page.goto("/");
+  const tile = page.getByTestId(/^tile-/).first();          // agent from the first test, already done+acked or free
+  await tile.click();
+  await page.getByRole("button", { name: "Transcript" }).click();
+  const tx = page.locator(".dialog.tx");
+  await expect(tx).toBeVisible();
+  await expect(tx).toContainText("transcript");
+  await page.keyboard.press("Escape");
+  await expect(tx).toHaveCount(0);
+});

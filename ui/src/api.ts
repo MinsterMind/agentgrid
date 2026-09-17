@@ -1,5 +1,7 @@
 import type { Agent, Assignment, Decision, DirListing, GridEvent, GridState, MemoryFile, SessionInfo } from "./types";
 
+export interface TranscriptEntry { ts: string; role: "user" | "assistant"; kind: "text" | "tool_use" | "tool_result"; text: string; tool?: string; input?: unknown }
+
 async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `${res.status} ${res.statusText}`);
@@ -28,5 +30,6 @@ export const api = {
   attachSession: (sessionId: string) => call<{ command: string; opened: boolean }>("POST", `/api/sessions/${encodeURIComponent(sessionId)}/attach`),
   pickFolder: () => call<{ path: string } | undefined>("POST", "/api/fs/pick"),
   listDir: (path?: string) => call<DirListing>("GET", `/api/fs${path ? `?path=${encodeURIComponent(path)}` : ""}`),
+  agentTranscript: (agentId: string) => call<{ sessionId: string | null; entries: TranscriptEntry[] }>("GET", `/api/agents/${encodeURIComponent(agentId)}/transcript`),
   transcript: (assignmentId: string) => call<Array<{ ts: string; role: string; kind: string; text: string }>>("GET", `/api/assignments/${assignmentId}/transcript`),
 };

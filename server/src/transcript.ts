@@ -32,7 +32,8 @@ export async function readTranscript(cwd: string, sessionId: string, opts: strin
     for (const b of Array.isArray(content) ? content : []) {
       if (b.type === "text" && b.text?.trim()) out.push({ ts, role, kind: "text", text: b.text });
       else if (b.type === "tool_use") {
-        const v = b.input?.command ?? b.input?.file_path ?? b.input?.pattern ?? b.input?.description ?? "";
+        const inp = b.input ?? {};
+        const v = inp.command ?? inp.file_path ?? inp.pattern ?? inp.description ?? Object.values(inp).find(x => typeof x === "string") ?? "";
         const text = v ? `${b.name}: ${full ? String(v) : String(v).slice(0, 200)}` : b.name;
         out.push(full ? { ts, role, kind: "tool_use", text, tool: b.name, input: b.input ?? {} } : { ts, role, kind: "tool_use", text });
       } else if (b.type === "tool_result") { const t = str(b.content); out.push({ ts, role, kind: "tool_result", text: full ? t : t.slice(0, 500) }); }

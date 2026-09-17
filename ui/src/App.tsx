@@ -6,6 +6,7 @@ import { SidePanel } from "./components/SidePanel";
 import { TopBar } from "./components/TopBar";
 import { SpawnDialog } from "./components/SpawnDialog";
 import { SessionsPanel } from "./components/SessionsPanel";
+import { TranscriptView } from "./components/TranscriptView";
 import { useKeyboard } from "./hooks/useKeyboard";
 import { notifyFinished, notifyWaiting, setTitleCount, settings } from "./notify";
 import type { Decision } from "./types";
@@ -14,6 +15,7 @@ export function App() {
   const [s, dispatch] = useReducer(reducer, initial);
   const [spawnOpen, setSpawnOpen] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [transcriptFor, setTranscriptFor] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const prevStates = useRef<Record<string, string>>({});
   const showErr = (e: unknown) => { setToast((e as Error).message); setTimeout(() => setToast(null), 4000); };
@@ -50,8 +52,8 @@ export function App() {
     allow: () => { if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "allow" }); },
     deny: () => { if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "deny" }); },
     open: () => { if (selected && selectedAsg?.sessionId) void openTerminal(selected.id); },
-    escape: () => { if (sessionsOpen) { setSessionsOpen(false); return; } if (spawnOpen) { setSpawnOpen(false); return; } dispatch({ type: "select", id: null }); },
-  }), [s.agents, selected, selectedAsg, decide, openTerminal, spawnOpen, sessionsOpen]));
+    escape: () => { if (transcriptFor) { setTranscriptFor(null); return; } if (sessionsOpen) { setSessionsOpen(false); return; } if (spawnOpen) { setSpawnOpen(false); return; } dispatch({ type: "select", id: null }); },
+  }), [s.agents, selected, selectedAsg, decide, openTerminal, spawnOpen, sessionsOpen, transcriptFor]));
 
   return (
     <div className="app">
@@ -61,7 +63,7 @@ export function App() {
           onSelect={id => dispatch({ type: "select", id })}
           onAssign={(id, prompt) => api.assign(id, prompt).then(() => dispatch({ type: "select", id })).catch(showErr)} />
         <SidePanel agent={selected} role={s.roles.find(r => r.name === selected?.role)} assignment={selectedAsg}
-          onDecide={decide} onCancel={id => api.cancel(id).catch(showErr)} onAck={id => api.ack(id).catch(showErr)} onOpenTerminal={openTerminal}
+          onDecide={decide} onCancel={id => api.cancel(id).catch(showErr)} onAck={id => api.ack(id).catch(showErr)} onOpenTerminal={openTerminal} onTranscript={id => setTranscriptFor(id)}
           onDelete={id => api.deleteAgent(id).catch(showErr)} />
       </div>
       <footer className="foot">
@@ -72,6 +74,8 @@ export function App() {
       {spawnOpen && <SpawnDialog roles={s.roles} recentRepos={recentRepos} onSpawn={async i => { const a = await api.createAgent(i); dispatch({ type: "select", id: a.id }); }} onClose={() => setSpawnOpen(false)} />}
       {sessionsOpen && <SessionsPanel roles={s.roles} agentNames={Object.fromEntries(s.agents.map(a => [a.id, a.displayName]))}
         onAdopted={id => { setSessionsOpen(false); dispatch({ type: "select", id }); }} onClose={() => setSessionsOpen(false)} />}
+      {transcriptFor && (() => { const ag = s.agents.find(a => a.id === transcriptFor); if (!ag) return null;
+        return <TranscriptView agent={ag} activity={assignmentFor(s, ag)?.activity ?? ""} onClose={() => setTranscriptFor(null)} />; })()}
       {toast && <div className="toast">{toast}</div>}
     </div>
   );

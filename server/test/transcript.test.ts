@@ -19,6 +19,7 @@ describe("transcript", () => {
       { type: "user", timestamp: "t1", message: { role: "user", content: "do it" } },
       { type: "assistant", timestamp: "t2", message: { role: "assistant", content: [{ type: "text", text: "ok" }, { type: "tool_use", name: "Bash", input: { command: "ls" } }] } },
       { type: "user", timestamp: "t3", message: { role: "user", content: [{ type: "tool_result", content: "a.txt" }] } },
+      { type: "assistant", timestamp: "t4", message: { role: "assistant", content: [{ type: "tool_use", name: "Skill", input: { skill: "eod-journal" } }] } },
       { type: "summary", summary: "x" },
     ].map(l => JSON.stringify(l)).join("\n");
     await writeFile(path.join(dir, "s1.jsonl"), lines);
@@ -27,6 +28,7 @@ describe("transcript", () => {
       { ts: "t2", role: "assistant", kind: "text", text: "ok" },
       { ts: "t2", role: "assistant", kind: "tool_use", text: "Bash: ls" },
       { ts: "t3", role: "user", kind: "tool_result", text: "a.txt" },
+      { ts: "t4", role: "assistant", kind: "tool_use", text: "Skill: eod-journal" },
     ]);
   });
   it("returns [] when the file is missing", async () => {
