@@ -25,6 +25,8 @@ export interface Agent {
   createdAt: string;     // ISO
   state: AgentState;
   currentAssignmentId: string | null;
+  /** When set, every assignment resumes this Claude Code session instead of starting fresh (adopted sessions). */
+  resumeSessionId?: string;
 }
 
 export type Pending =
@@ -66,3 +68,20 @@ export interface GridState { roles: RoleDef[]; agents: Agent[]; assignments: Ass
 
 export interface DirEntry { name: string; path: string; isRepo: boolean }
 export interface DirListing { root: string; path: string; parent: string | null; entries: DirEntry[] }
+
+export type SessionKind = "interactive" | "background" | "history";
+export type SessionStatus = "busy" | "idle" | "blocked" | "ended";
+export interface SessionInfo {
+  sessionId: string;
+  cwd: string;
+  title: string;
+  kind: SessionKind;
+  status: SessionStatus;
+  /** Live: process start; history: last activity. Epoch ms. */
+  at: number;
+  /** Background sessions: the short id `claude attach` takes. */
+  bgId?: string;
+  /** Set when a grid agent owns this session (adopted, or produced by an assignment). */
+  agentId?: string;
+  canAdopt: boolean;
+}

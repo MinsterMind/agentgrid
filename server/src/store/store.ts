@@ -79,8 +79,11 @@ export class Store extends EventEmitter {
     if (!a) throw new NotFound(`agent ${id}`);
     return a;
   }
-  async createAgent(input: { role: string; repo: string; displayName?: string }): Promise<Agent> {
+  async createAgent(input: { role: string; repo: string; displayName?: string; resumeSessionId?: string }): Promise<Agent> {
     this.getRole(input.role);
+    if (input.resumeSessionId && [...this.agents.values()].some(a => a.resumeSessionId === input.resumeSessionId)) {
+      throw new Conflict(`session ${input.resumeSessionId} is already adopted`);
+    }
     const base = `${input.role}@${path.basename(input.repo)}`;
     let id = base; let n = 2;
     while (this.agents.has(id)) id = `${base}-${n++}`;
@@ -88,6 +91,7 @@ export class Store extends EventEmitter {
       id, role: input.role, repo: input.repo,
       displayName: input.displayName?.trim() || NAMES[this.agents.size % NAMES.length],
       createdAt: new Date().toISOString(), state: "free", currentAssignmentId: null,
+      ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
     };
     await mkdir(this.p.memoryDir(id), { recursive: true });
     await writeAtomic(this.p.agentFile(id), agent);
@@ -164,6 +168,13 @@ export class Store extends EventEmitter {
     this.assignments.set(id, next);
     this.emit("event", { type: "assignment", assignment: next } satisfies GridEvent);
     return next;
+  }
+
+  /** assignmentId → sessionId for every assignment that has one. */
+  assignmentSessionIds(): Map<string, string> {
+    const m = new Map<string, string>();
+    for (const a of this.assignments.values()) if (a.sessionId) m.set(a.id, a.sessionId);
+    return m;
   }
 
   getState(): GridState {

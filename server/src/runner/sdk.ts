@@ -19,5 +19,6 @@ export const buildOptions: BuildOptions = (role, agent, extra) => {
     abortController: extra.abortController,
   };
   if (role.maxBudgetUsd !== undefined) o.maxBudgetUsd = role.maxBudgetUsd;
+  if (agent.resumeSessionId) o.resume = agent.resumeSessionId;
   return o;
 };

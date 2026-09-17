@@ -19,3 +19,11 @@ describe("buildOptions", () => {
     expect(o.canUseTool).toBe(canUseTool);
   });
 });
+
+describe("buildOptions resume", () => {
+  it("adds resume for adopted sessions only", () => {
+    const extra = { canUseTool: async () => ({ behavior: "allow" as const }), abortController: new AbortController() };
+    expect(buildOptions(role, agent, extra).resume).toBeUndefined();
+    expect(buildOptions(role, { ...agent, resumeSessionId: "sess-42" }, extra).resume).toBe("sess-42");
+  });
+});

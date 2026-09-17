@@ -1,11 +1,12 @@
 import express, { type Request, type Response, type NextFunction } from "express";
 import path from "node:path";
-import { Store } from "../store/store.js";
+import { Store, NotFound, Conflict } from "../store/store.js";
 import { Manager } from "../runner/manager.js";
 import { sseHandler } from "./sse.js";
 import { shellQuote } from "../shell.js";
 import { listDir } from "../fs.js";
 import { pickFolder } from "../picker.js";
+import { listAllSessions, type LiveSession, type HistorySession } from "../sessions.js";
 import os from "node:os";
 import type { Agent, Assignment, Decision } from "../types.js";
 
@@ -19,6 +20,8 @@ export interface AppDeps {
   browseRoot?: string;
   /** Native folder chooser; resolves null on cancel. Defaults to the macOS picker. */
   pickFolder?: (startDir: string) => Promise<string | null>;
+  /** Session sources (tests inject stubs). */
+  sessions?: { live: () => Promise<LiveSession[]>; history: () => Promise<HistorySession[]> };
 }
 
 class BadRequest extends Error { status = 400; }
@@ -45,6 +48,17 @@ export function createApp(deps: AppDeps) {
     const p = req.query.path;
     if (p !== undefined && typeof p !== "string") throw new BadRequest("path must be a string");
     res.json(await listDir(deps.browseRoot ?? os.homedir(), p));
+  }));
+  const sessions = () => listAllSessions(store.listAgents(), store.assignmentSessionIds(), deps.sessions);
+  app.get("/api/sessions", wrap(async (_req, res) => res.json(await sessions())));
+  app.post("/api/sessions/:sessionId/adopt", wrap(async (req, res) => {
+    const { role, displayName } = req.body ?? {};
+    if (typeof role !== "string") throw new BadRequest("role is required");
+    const sid = req.params.sessionId as string;
+    const info = (await sessions()).find(s => s.sessionId === sid);
+    if (!info) throw new NotFound(`session ${sid}`);
+    if (!info.canAdopt) throw new Conflict(info.agentId ? `session already on the grid as ${info.agentId}` : "session is live in a terminal — close it first");
+    res.status(201).json(await store.createAgent({ role, repo: info.cwd, displayName, resumeSessionId: sid }));
   }));
   app.post("/api/fs/pick", wrap(async (_req, res) => {
     const pick = deps.pickFolder ?? pickFolder;

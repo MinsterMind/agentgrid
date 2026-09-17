@@ -116,3 +116,26 @@ describe("POST /api/fs/pick", () => {
     result = "boom"; await request(a).post("/api/fs/pick").expect(501);
   });
 });
+
+describe("sessions", () => {
+  const live = [{ sessionId: "s-live", cwd: "/x/live", name: "term", kind: "interactive" as const, status: "idle" as const, startedAt: 5 }];
+  const history = [{ sessionId: "s-live", cwd: "/x/live", title: "t", lastActiveAt: 1 }, { sessionId: "s-old", cwd: "/x/old", title: "old work", lastActiveAt: 9 }];
+  const mk = () => createApp({ store, manager: new Manager(store, { queryFn: fake.queryFn }), sessions: { live: async () => live, history: async () => history } });
+
+  it("GET /api/sessions merges live + history", async () => {
+    const res = await request(mk()).get("/api/sessions").expect(200);
+    expect(res.body.map((s: any) => [s.sessionId, s.kind, s.canAdopt])).toEqual([["s-live", "interactive", false], ["s-old", "history", true]]);
+  });
+
+  it("adopt creates an agent bound to the session; guards live/duplicate/unknown", async () => {
+    const a = mk();
+    await request(a).post("/api/sessions/s-old/adopt").send({}).expect(400);
+    await request(a).post("/api/sessions/nope/adopt").send({ role: "coder" }).expect(404);
+    await request(a).post("/api/sessions/s-live/adopt").send({ role: "coder" }).expect(409);
+    const res = await request(a).post("/api/sessions/s-old/adopt").send({ role: "coder", displayName: "Old" }).expect(201);
+    expect(res.body).toMatchObject({ id: "coder@old", repo: "/x/old", resumeSessionId: "s-old", displayName: "Old", state: "free" });
+    await request(a).post("/api/sessions/s-old/adopt").send({ role: "reviewer" }).expect(409);
+    const list = await request(a).get("/api/sessions").expect(200);
+    expect(list.body.find((s: any) => s.sessionId === "s-old")).toMatchObject({ agentId: "coder@old", canAdopt: false });
+  });
+});
