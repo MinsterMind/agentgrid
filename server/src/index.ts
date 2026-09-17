@@ -9,6 +9,9 @@ import { createApp } from "./api/app.js";
 import { resolveHome } from "./store/paths.js";
 import { readTranscript } from "./transcript.js";
 import { openTerminal, runInTerminal } from "./terminal.js";
+import { PtyManager } from "./pty.js";
+import { attachPtyWebSocket } from "./api/ws.js";
+import { listAllSessions } from "./sessions.js";
 import type { QueryFn } from "./runner/runner.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -38,11 +41,15 @@ async function serve() {
     }, 100);
   });
   rolesWatcher.on("error", err => console.error("roles watcher:", err.message));
+  // Fake mode serves a canned session list so the UI/e2e can exercise adoption without Claude Code.
+  const fakeSessions = process.env.AGENTGRID_FAKE ? { live: async () => [], history: async () => [{ sessionId: "fake-old-session", cwd: "/tmp", title: "Earlier work (fake)", lastActiveAt: Date.now() }] } : undefined;
+  const ptys = new PtyManager();
   const app = createApp({ store, manager, transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }), openTerminal, runInTerminal, staticDir: uiDist, browseRoot: process.env.AGENTGRID_BROWSE_ROOT,
-    // Fake mode serves a canned session list so the UI/e2e can exercise adoption without Claude Code.
-    ...(process.env.AGENTGRID_FAKE ? { sessions: { live: async () => [], history: async () => [{ sessionId: "fake-old-session", cwd: "/tmp", title: "Earlier work (fake)", lastActiveAt: Date.now() }] } } : {}) });
+    ...(fakeSessions ? { sessions: fakeSessions } : {}) });
   const port = Number(process.env.AGENTGRID_PORT ?? 4800);
   const server = http.createServer(app);
+  attachPtyWebSocket(server, { store, ptys, sessions: () => listAllSessions(store.listAgents(), store.assignmentSessionIds(), fakeSessions) });
+  for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { ptys.closeAll(); process.exit(0); });
   // Without this handler, a bind failure (most commonly EADDRINUSE — some other
   // process, or a previous `agentgrid serve`, already holds the port) surfaces as a
   // raw uncaught-exception stack trace. Report it plainly and exit instead.

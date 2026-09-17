@@ -3,8 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "bin": { "agentgrid": "./dist/index.js" },
+  "bin": {
+    "agentgrid": "./dist/index.js"
+  },
   "scripts": {
+    "postinstall": "chmod +x ../node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true",
     "build": "tsc -p tsconfig.json",
     "serve": "tsx src/index.ts serve",
     "test": "vitest run",
@@ -13,12 +16,15 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.268",
     "express": "^5.1.0",
-    "gray-matter": "^4.0.3"
+    "gray-matter": "^4.0.3",
+    "node-pty": "^1.1.0",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/express": "^5.0.1",
     "@types/node": "^22.15.0",
     "@types/supertest": "^6.0.3",
+    "@types/ws": "^8.18.1",
     "supertest": "^7.1.0",
     "tsx": "^4.19.0",
     "typescript": "^5.8.0",
