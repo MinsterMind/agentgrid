@@ -104,3 +104,15 @@ describe("GET /api/fs", () => {
     await request(app).get("/api/fs").query({ path: path.join(browseRoot, "nope") }).expect(404);
   });
 });
+
+describe("POST /api/fs/pick", () => {
+  it("returns the chosen path, 204 on cancel, and passes through picker failures", async () => {
+    const calls: string[] = [];
+    let result: string | null = "/picked/repo";
+    const a = createApp({ store, manager: new Manager(store, { queryFn: fake.queryFn }), browseRoot, pickFolder: async d => { calls.push(d); if (result === "boom") throw Object.assign(new Error("boom"), { status: 501 }); return result; } });
+    expect((await request(a).post("/api/fs/pick").expect(200)).body).toEqual({ path: "/picked/repo" });
+    expect(calls).toEqual([browseRoot]);
+    result = null; await request(a).post("/api/fs/pick").expect(204);
+    result = "boom"; await request(a).post("/api/fs/pick").expect(501);
+  });
+});

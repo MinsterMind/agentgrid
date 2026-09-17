@@ -5,6 +5,7 @@ import { Manager } from "../runner/manager.js";
 import { sseHandler } from "./sse.js";
 import { shellQuote } from "../shell.js";
 import { listDir } from "../fs.js";
+import { pickFolder } from "../picker.js";
 import os from "node:os";
 import type { Agent, Assignment, Decision } from "../types.js";
 
@@ -16,6 +17,8 @@ export interface AppDeps {
   staticDir?: string;
   /** Root the repo browser may list; defaults to the home directory. */
   browseRoot?: string;
+  /** Native folder chooser; resolves null on cancel. Defaults to the macOS picker. */
+  pickFolder?: (startDir: string) => Promise<string | null>;
 }
 
 class BadRequest extends Error { status = 400; }
@@ -42,6 +45,11 @@ export function createApp(deps: AppDeps) {
     const p = req.query.path;
     if (p !== undefined && typeof p !== "string") throw new BadRequest("path must be a string");
     res.json(await listDir(deps.browseRoot ?? os.homedir(), p));
+  }));
+  app.post("/api/fs/pick", wrap(async (_req, res) => {
+    const pick = deps.pickFolder ?? pickFolder;
+    const chosen = await pick(deps.browseRoot ?? os.homedir());
+    if (chosen === null) res.status(204).end(); else res.json({ path: chosen });
   }));
 
   app.post("/api/agents", wrap(async (req, res) => {
