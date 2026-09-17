@@ -16,6 +16,13 @@ export interface Handle { write(d: string): void; resize(c: number, r: number): 
 
 interface Entry { pty: PtyLike; viewer: { onData: (d: string) => void; onEnd: (reason: string) => void; sub: { dispose(): void } } | null }
 
+/** The server may itself have been started from inside a Claude Code session; never leak that context into the embedded one. */
+export function cleanEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(base)) if (!/^(CLAUDE_CODE_|CLAUDECODE)/.test(k)) env[k] = v;
+  return { ...env, TERM: "xterm-256color", COLORTERM: "truecolor" };
+}
+
 const realSpawn: SpawnFn = (file, args, opts) => nodePty.spawn(file, args, opts);
 
 /**
@@ -31,7 +38,7 @@ export class PtyManager {
   attach(sessionId: string, opts: OpenOptions, onData: (d: string) => void, onEnd: (reason: string) => void): Handle {
     let entry = this.entries.get(sessionId);
     if (!entry) {
-      const pty = this.spawn("claude", opts.argv, { name: "xterm-256color", cols: opts.cols, rows: opts.rows, cwd: opts.cwd, env: { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" } });
+      const pty = this.spawn("claude", opts.argv, { name: "xterm-256color", cols: opts.cols, rows: opts.rows, cwd: opts.cwd, env: cleanEnv() });
       entry = { pty, viewer: null };
       this.entries.set(sessionId, entry);
       pty.onExit(({ exitCode }) => {

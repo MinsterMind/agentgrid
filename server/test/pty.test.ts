@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { PtyManager, type PtyLike, type SpawnFn } from "../src/pty.js";
+import { PtyManager, cleanEnv, type PtyLike, type SpawnFn } from "../src/pty.js";
 
 /** Fake pty: records writes/resizes, lets tests emit output and exit. */
 class FakePty extends EventEmitter implements PtyLike {
@@ -66,5 +66,12 @@ describe("PtyManager", () => {
     mgr.attach("b", { cwd: "/r", argv: [], cols: 80, rows: 24 }, () => {}, () => {});
     mgr.closeAll();
     expect(spawned.every(s => s.pty.killed)).toBe(true);
+  });
+});
+
+describe("cleanEnv", () => {
+  it("drops Claude Code session markers and forces a colour terminal", () => {
+    const env = cleanEnv({ PATH: "/bin", CLAUDE_CODE_CHILD_SESSION: "1", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli", HOME: "/h" });
+    expect(env).toEqual({ PATH: "/bin", HOME: "/h", TERM: "xterm-256color", COLORTERM: "truecolor" });
   });
 });
