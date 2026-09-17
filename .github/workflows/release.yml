@@ -44,7 +44,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with: { path: installers, merge-multiple: true }
       - run: ls -la installers
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: installers/*
-          generate_release_notes: true
+      - name: Publish release with gh (reliable for large assets)
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "AgentGrid ${TAG#v}" --generate-notes
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" installers/* --clobber
