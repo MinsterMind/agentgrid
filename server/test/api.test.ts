@@ -173,3 +173,24 @@ describe("GET /api/agents/:id/transcript", () => {
     await request(a).get("/api/agents/nope/transcript").expect(404);
   });
 });
+
+describe("adopt with takeover", () => {
+  it("closes the terminal session, refreshes live list, then adopts", async () => {
+    let list = [{ sessionId: "s-tty", cwd: "/x/tty", name: "tty", kind: "interactive" as const, status: "idle" as const, startedAt: 1, pid: 777 }];
+    const killed: number[] = [];
+    store.setLiveSessions(list);
+    const a = createApp({ store, manager: new Manager(store, { queryFn: fake.queryFn }), killSession: pid => { killed.push(pid); list = []; }, sessions: { live: async () => list, history: async () => [] } });
+    const res = await request(a).post("/api/sessions/s-tty/adopt").send({ role: "coder", takeover: true }).expect(201);
+    expect(killed).toEqual([777]);
+    expect(res.body).toMatchObject({ resumeSessionId: "s-tty", repo: "/x/tty" });
+    expect(store.isLive("s-tty")).toBe(false);
+    // and now the embedded terminal may resume it
+    await request(a).post(`/api/agents/${res.body.id}/assign`).send({ prompt: "x" }).expect(201);
+  });
+  it("without takeover a live terminal session is adopted but stays live", async () => {
+    store.setLiveSessions([{ sessionId: "s-tty", cwd: "/x/tty", name: "tty", kind: "interactive" as const, status: "idle" as const, startedAt: 1, pid: 777 }]);
+    const a = createApp({ store, manager: new Manager(store, { queryFn: fake.queryFn }), killSession: () => { throw new Error("should not kill"); }, sessions: { live: async () => store.rawLiveSessions(), history: async () => [] } });
+    await request(a).post("/api/sessions/s-tty/adopt").send({ role: "coder" }).expect(201);
+    expect(store.isLive("s-tty")).toBe(true);
+  });
+});

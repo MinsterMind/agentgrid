@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseLiveSessions, mergeSessions, LiveSessionWatcher, type LiveSession, type HistorySession } from "../src/sessions.js";
+import { parseLiveSessions, mergeSessions, LiveSessionWatcher, takeOverSession, processAlive, type LiveSession, type HistorySession } from "../src/sessions.js";
 import type { Agent } from "../src/types.js";
 
 const agent = (id: string, resumeSessionId?: string, currentAssignmentId: string | null = null): Agent =>
@@ -14,8 +14,8 @@ describe("parseLiveSessions", () => {
     ]);
     expect(parseLiveSessions(json)).toEqual<LiveSession[]>([
       { sessionId: "s-bg", cwd: "/a", name: "bg task", kind: "background", status: "blocked", startedAt: 1, bgId: "d85e" },
-      { sessionId: "s-it", cwd: "/b", name: "hrns-7e", kind: "interactive", status: "busy", startedAt: 2 },
-      { sessionId: "s-idle", cwd: "/c", name: "x", kind: "interactive", status: "idle", startedAt: 3 },
+      { sessionId: "s-it", cwd: "/b", name: "hrns-7e", kind: "interactive", status: "busy", startedAt: 2, pid: 1 },
+      { sessionId: "s-idle", cwd: "/c", name: "x", kind: "interactive", status: "idle", startedAt: 3, pid: 2 },
     ]);
   });
   it("tolerates garbage", () => {
@@ -69,5 +69,24 @@ describe("LiveSessionWatcher", () => {
     const w = new LiveSessionWatcher(async () => { if (fail) throw new Error("x"); return [mk("a")]; }, () => {}, 1000);
     await w.poll(); fail = true; await w.poll();
     expect(w.isLive("a")).toBe(true);
+  });
+});
+
+describe("takeOverSession", () => {
+  const it0: LiveSession = { sessionId: "s", cwd: "/a", name: "s", kind: "interactive", status: "idle", startedAt: 1, pid: 4242 };
+  it("kills the pid and resolves once the session leaves the live list", async () => {
+    let polls = 0; const killed: number[] = [];
+    const out = await takeOverSession(it0, { kill: pid => killed.push(pid), fetch: async () => (++polls < 3 ? [it0] : []), stepMs: 1 });
+    expect(killed).toEqual([4242]); expect(polls).toBe(3); expect(out).toEqual([]);
+  });
+  it("times out with a 504 if the session never closes", async () => {
+    await expect(takeOverSession(it0, { kill: () => {}, fetch: async () => [it0], timeoutMs: 5, stepMs: 1 })).rejects.toMatchObject({ status: 504 });
+  });
+  it("refuses background sessions and pid-less ones", async () => {
+    await expect(takeOverSession({ ...it0, kind: "background" }, { fetch: async () => [] })).rejects.toMatchObject({ status: 400 });
+    await expect(takeOverSession({ ...it0, pid: undefined }, { fetch: async () => [] })).rejects.toMatchObject({ status: 409 });
+  });
+  it("processAlive: own pid alive, absurd pid dead, unknown counts alive", () => {
+    expect(processAlive(process.pid)).toBe(true); expect(processAlive(2 ** 22 - 7)).toBe(false); expect(processAlive(undefined)).toBe(true);
   });
 });

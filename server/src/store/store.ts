@@ -182,6 +182,7 @@ export class Store extends EventEmitter {
   /** Live Claude Code sessions (from the watcher), annotated against current agents. */
   liveSessions(): SessionInfo[] { return mergeSessions(this.live, [], this.listAgents(), this.assignmentSessionIds()); }
   isLive(sessionId: string): boolean { return this.live.some(l => l.sessionId === sessionId); }
+  rawLiveSessions(): LiveSession[] { return this.live; }
   setLiveSessions(live: LiveSession[]): void {
     this.live = live;
     this.emit("event", { type: "sessions", sessions: this.liveSessions() } satisfies GridEvent);
