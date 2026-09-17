@@ -28,6 +28,8 @@ test("spawn dialog browses folders confined to the browse root", async ({ page }
   await page.goto("/");
   await page.getByRole("button", { name: "+ Spawn" }).click();
   const dialog = page.locator(".dialog");
+  await expect(dialog.getByRole("button", { name: "⬆ up" })).toHaveCount(0);   // collapsed by default
+  await dialog.getByRole("button", { name: /show folder list/i }).click();
   await expect(dialog.getByRole("button", { name: "⬆ up" })).toBeDisabled();
   await expect(dialog.getByRole("button", { name: /myrepo/ })).toContainText("git");
   await dialog.getByRole("button", { name: "plain" }).click();            // descend into a non-repo folder

@@ -65,3 +65,4 @@ button.pill:disabled { opacity:.6; }
 .folder.repo { color:#e6ffe9; }
 .tag { margin-left:8px; font-size:10px; padding:1px 6px; border-radius:99px; background:#14532d; color:#bbf7d0; }
 .row.quick { margin-top:0; }
+.pathrow { margin-top:0; flex-wrap:nowrap; } .pathrow input { flex:1; min-width:0; }

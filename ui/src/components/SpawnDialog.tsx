@@ -8,9 +8,18 @@ export function SpawnDialog({ roles, recentRepos, onSpawn, onClose }: {
   const [role, setRole] = useState(roles[0]?.name ?? ""); const [repo, setRepo] = useState(recentRepos[0] ?? "");
   const [name, setName] = useState(""); const [err, setErr] = useState<string | null>(null);
   const [listing, setListing] = useState<DirListing | null>(null); const [browseErr, setBrowseErr] = useState<string | null>(null);
+  const [panelOpen, setPanelOpen] = useState(false); const [picking, setPicking] = useState(false);
 
   const browse = (path?: string) => api.listDir(path).then(l => { setListing(l); setBrowseErr(null); }).catch(e => setBrowseErr((e as Error).message));
-  useEffect(() => { void browse(); }, []);
+  useEffect(() => { if (panelOpen && !listing) void browse(); }, [panelOpen]);
+
+  // Native picker first (macOS); on any failure fall back to the inline panel.
+  const pick = async () => {
+    setPicking(true);
+    try { const r = await api.pickFolder(); if (r?.path) setRepo(r.path); }
+    catch { setPanelOpen(true); }
+    finally { setPicking(false); }
+  };
 
   const submit = async () => {
     if (!role || !repo.startsWith("/")) { setErr("Pick a role and an absolute repo path"); return; }
@@ -28,12 +37,17 @@ export function SpawnDialog({ roles, recentRepos, onSpawn, onClose }: {
       <div className="dialog" onClick={e => e.stopPropagation()}>
         <h3>Spawn agent</h3>
         <label>Role<select value={role} onChange={e => setRole(e.target.value)}>{roles.map(r => <option key={r.name} value={r.name}>{r.avatar} {r.name}</option>)}</select></label>
-        <label>Repo path<input list="recent-repos" value={repo} placeholder="/Users/you/project" onChange={e => setRepo(e.target.value)} />
+        <label>Repo path
+          <div className="row pathrow">
+            <input list="recent-repos" value={repo} placeholder="/Users/you/project" onChange={e => setRepo(e.target.value)} />
+            <button className="btn" onClick={pick} disabled={picking}>{picking ? "Choosing…" : "Browse…"}</button>
+            <button className="btn sm" title={panelOpen ? "Hide folder list" : "Show folder list"} aria-label={panelOpen ? "Hide folder list" : "Show folder list"} onClick={() => setPanelOpen(o => !o)}>{panelOpen ? "▴" : "▾"}</button>
+          </div>
           <datalist id="recent-repos">{recentRepos.map(r => <option key={r} value={r} />)}</datalist></label>
         {recentRepos.length > 0 && (
           <div className="row quick">{recentRepos.map(r => <button key={r} className={`btn ${repo === r ? "on" : ""}`} onClick={() => setRepo(r)} title={r}>{r.split("/").pop()}</button>)}</div>
         )}
-        <div className="browser">
+        {panelOpen && <div className="browser">
           <div className="crumbs">
             <button className="btn" disabled={!listing?.parent} onClick={() => listing?.parent && browse(listing.parent)}>⬆ up</button>
             {crumbs.map((c, i) => <span key={c.path}>{i > 0 && <span className="dim">/</span>}<button className="crumb" onClick={() => browse(c.path)}>{c.seg}</button></span>)}
@@ -52,7 +66,7 @@ export function SpawnDialog({ roles, recentRepos, onSpawn, onClose }: {
             {!listing && !browseErr && <li className="dim">Loading…</li>}
           </ul>
           {browseErr && <div className="err">{browseErr}</div>}
-        </div>
+        </div>}
         <label>Name (optional)<input value={name} placeholder="auto" onChange={e => setName(e.target.value)} /></label>
         {err && <div className="err">{err}</div>}
         <div className="row"><button className="btn p" onClick={submit}>Spawn</button><button className="btn" onClick={onClose}>Cancel</button></div>

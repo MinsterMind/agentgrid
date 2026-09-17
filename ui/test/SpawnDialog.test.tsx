@@ -15,22 +15,47 @@ const tree: Record<string, { root: string; path: string; parent: string | null; 
   "/home/u/work/hrns": { root: "/home/u", path: "/home/u/work/hrns", parent: "/home/u/work", entries: [] },
 };
 tree["/home/u"] = tree[""];
-vi.mock("../src/api", () => ({ api: { listDir: vi.fn(async (p?: string) => tree[p ?? ""]) } }));
+const pickFolder = vi.fn<() => Promise<{ path: string } | undefined>>();
+vi.mock("../src/api", () => ({ api: { listDir: vi.fn(async (p?: string) => tree[p ?? ""]), pickFolder: () => pickFolder() } }));
 
 const roles: RoleDef[] = [{ name: "coder", avatar: "👩‍💻", model: "m", effort: "high", permissionMode: "default", settingSources: [], allowedTools: [], maxTurns: 1, prompt: "" }];
 const props = () => ({ roles, recentRepos: [], onSpawn: vi.fn(async () => {}), onClose: vi.fn() });
-beforeEach(() => vi.clearAllMocks());
+const openPanel = () => userEvent.click(screen.getByRole("button", { name: /show folder list/i }));
+beforeEach(() => { vi.clearAllMocks(); pickFolder.mockReset(); });
+
+describe("SpawnDialog native picker", () => {
+  it("panel is collapsed by default; Browse… uses the native picker and fills the path", async () => {
+    pickFolder.mockResolvedValue({ path: "/home/u/payments" });
+    render(<SpawnDialog {...props()} />);
+    expect(screen.queryByRole("button", { name: /payments/ })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Browse…" }));
+    expect(screen.getByPlaceholderText("/Users/you/project")).toHaveValue("/home/u/payments");
+    expect(screen.queryByRole("button", { name: /^work$/ })).toBeNull(); // still collapsed
+  });
+  it("cancelling the native picker leaves the field alone", async () => {
+    pickFolder.mockResolvedValue(undefined);
+    render(<SpawnDialog {...props()} />);
+    await userEvent.click(screen.getByRole("button", { name: "Browse…" }));
+    expect(screen.getByPlaceholderText("/Users/you/project")).toHaveValue("");
+  });
+  it("falls back to the inline panel when the native picker is unavailable", async () => {
+    pickFolder.mockRejectedValue(new Error("native folder picker is macOS only"));
+    render(<SpawnDialog {...props()} />);
+    await userEvent.click(screen.getByRole("button", { name: "Browse…" }));
+    expect(await screen.findByRole("button", { name: /payments/ })).toBeInTheDocument();
+  });
+});
 
 describe("SpawnDialog repo browser", () => {
   it("lists the root on open with repos badged", async () => {
-    render(<SpawnDialog {...props()} />);
+    render(<SpawnDialog {...props()} />); await openPanel();
     await waitFor(() => expect(screen.getByRole("button", { name: /payments/ })).toBeInTheDocument());
     expect(screen.getByRole("button", { name: /payments/ })).toHaveTextContent("git");
     expect(screen.getByRole("button", { name: /^work$/ })).not.toHaveTextContent("git");
   });
 
   it("clicking a plain folder descends; breadcrumb and up navigate back", async () => {
-    render(<SpawnDialog {...props()} />);
+    render(<SpawnDialog {...props()} />); await openPanel();
     await userEvent.click(await screen.findByRole("button", { name: /^work$/ }));
     expect(await screen.findByRole("button", { name: /hrns/ })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "⬆ up" }));
@@ -44,7 +69,7 @@ describe("SpawnDialog repo browser", () => {
 
   it("clicking a repo folder fills the path field; spawn uses it", async () => {
     const p = props();
-    render(<SpawnDialog {...p} />);
+    render(<SpawnDialog {...p} />); await openPanel();
     await userEvent.click(await screen.findByRole("button", { name: /payments/ }));
     expect(screen.getByPlaceholderText("/Users/you/project")).toHaveValue("/home/u/payments");
     await userEvent.click(screen.getByRole("button", { name: "Spawn" }));
@@ -52,7 +77,7 @@ describe("SpawnDialog repo browser", () => {
   });
 
   it("'Use this folder' selects the current directory", async () => {
-    render(<SpawnDialog {...props()} />);
+    render(<SpawnDialog {...props()} />); await openPanel();
     await userEvent.click(await screen.findByRole("button", { name: /^work$/ }));
     await screen.findByRole("button", { name: /hrns/ });
     await userEvent.click(screen.getByRole("button", { name: /use this folder/i }));

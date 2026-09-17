@@ -23,6 +23,7 @@ export const api = {
   ack: (id: string) => call<void>("POST", `/api/agents/${encodeURIComponent(id)}/ack`),
   openTerminal: (id: string) => call<{ command: string; opened: boolean }>("POST", `/api/agents/${encodeURIComponent(id)}/open-terminal`),
   memory: (id: string) => call<MemoryFile[]>("GET", `/api/agents/${encodeURIComponent(id)}/memory`),
+  pickFolder: () => call<{ path: string } | undefined>("POST", "/api/fs/pick"),
   listDir: (path?: string) => call<DirListing>("GET", `/api/fs${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   transcript: (assignmentId: string) => call<Array<{ ts: string; role: string; kind: string; text: string }>>("GET", `/api/assignments/${assignmentId}/transcript`),
 };
