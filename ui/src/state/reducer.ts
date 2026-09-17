@@ -1,23 +1,25 @@
-import type { Agent, AgentState, Assignment, GridEvent, GridState, RoleDef } from "../types";
+import type { Agent, AgentState, Assignment, GridEvent, GridState, RoleDef, SessionInfo } from "../types";
 
-export interface UiState { roles: RoleDef[]; agents: Agent[]; assignments: Record<string, Assignment>; selectedId: string | null; connected: boolean }
+export interface UiState { roles: RoleDef[]; agents: Agent[]; assignments: Record<string, Assignment>; liveSessions: SessionInfo[]; selectedId: string | null; connected: boolean }
 export type Action =
   | { type: "snapshot"; state: GridState }
   | { type: "change"; event: GridEvent }
   | { type: "select"; id: string | null }
   | { type: "connected"; value: boolean };
 
-export const initial: UiState = { roles: [], agents: [], assignments: {}, selectedId: null, connected: false };
+export const initial: UiState = { roles: [], agents: [], assignments: {}, liveSessions: [], selectedId: null, connected: false };
 
 export function reducer(s: UiState, a: Action): UiState {
   switch (a.type) {
     case "snapshot":
       return { ...s, roles: a.state.roles, agents: a.state.agents,
         assignments: Object.fromEntries(a.state.assignments.map(x => [x.id, x])),
+        liveSessions: a.state.liveSessions ?? [],
         selectedId: a.state.agents.some(x => x.id === s.selectedId) ? s.selectedId : null };
     case "change": {
       const e = a.event;
       if (e.type === "roles") return { ...s, roles: e.roles };
+      if (e.type === "sessions") return { ...s, liveSessions: e.sessions };
       if (e.type === "assignment") return { ...s, assignments: { ...s.assignments, [e.assignment.id]: e.assignment } };
       if (e.type === "agent-removed") return { ...s, agents: s.agents.filter(x => x.id !== e.id), selectedId: s.selectedId === e.id ? null : s.selectedId };
       const i = s.agents.findIndex(x => x.id === e.agent.id);
@@ -44,3 +46,15 @@ export const todaySpend = (s: UiState, now = new Date()): number => {
 };
 
 export const waitingIds = (s: UiState): string[] => s.agents.filter(a => a.state === "waiting").map(a => a.id);
+
+/** Live sessions not yet represented by a grid agent — shown as ghost tiles. */
+export const unclaimedLiveSessions = (s: UiState): SessionInfo[] => {
+  const owned = new Set<string>();
+  for (const a of s.agents) if (a.resumeSessionId) owned.add(a.resumeSessionId);
+  for (const x of Object.values(s.assignments)) if (x.sessionId) owned.add(x.sessionId);
+  return s.liveSessions.filter(l => !l.agentId && !owned.has(l.sessionId));
+};
+
+/** The live session an adopted agent is bound to, if its process is currently running. */
+export const liveSessionFor = (s: UiState, agent: Agent): SessionInfo | null =>
+  agent.resumeSessionId ? s.liveSessions.find(l => l.sessionId === agent.resumeSessionId) ?? null : null;

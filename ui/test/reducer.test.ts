@@ -1,7 +1,7 @@
 process.env.TZ = "Asia/Kolkata";
 
 import { describe, it, expect } from "vitest";
-import { reducer, initial, assignmentFor, counts, todaySpend, waitingIds } from "../src/state/reducer";
+import { reducer, initial, assignmentFor, counts, todaySpend, waitingIds, unclaimedLiveSessions, liveSessionFor } from "../src/state/reducer";
 import type { Agent, Assignment } from "../src/types";
 
 const agent = (id: string, state: Agent["state"] = "free", cur: string | null = null): Agent =>
@@ -12,13 +12,13 @@ const asg = (id: string, agentId: string, extra: Partial<Assignment> = {}): Assi
 
 describe("reducer", () => {
   it("snapshot replaces state, keeps selection", () => {
-    const s = reducer({ ...initial, selectedId: "a" }, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [asg("a1", "a")] } });
+    const s = reducer({ ...initial, selectedId: "a" }, { type: "snapshot", state: { roles: [], liveSessions: [], agents: [agent("a")], assignments: [asg("a1", "a")] } });
     expect(s.agents.map(a => a.id)).toEqual(["a"]);
     expect(s.assignments.a1.id).toBe("a1");
     expect(s.selectedId).toBe("a");
   });
   it("change: agent upsert preserves order; removal clears selection", () => {
-    let s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a"), agent("b")], assignments: [] } });
+    let s = reducer(initial, { type: "snapshot", state: { roles: [], liveSessions: [], agents: [agent("a"), agent("b")], assignments: [] } });
     s = reducer(s, { type: "change", event: { type: "agent", agent: agent("a", "working", "a1") } });
     expect(s.agents.map(a => a.id)).toEqual(["a", "b"]);
     expect(s.agents[0].state).toBe("working");
@@ -30,7 +30,7 @@ describe("reducer", () => {
   });
   it("selectors", () => {
     const a = agent("a", "waiting", "a1"), b = agent("b", "done", "a2"), c = agent("c");
-    const s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [a, b, c],
+    const s = reducer(initial, { type: "snapshot", state: { roles: [], liveSessions: [], agents: [a, b, c],
       assignments: [asg("a1", "a", { state: "waiting", costUsd: 0.5 }), asg("a2", "b", { state: "done", costUsd: 1.5 }), asg("a0", "b", { state: "done", costUsd: 9, createdAt: "2020-01-01T00:00:00Z" })] } });
     expect(assignmentFor(s, a)?.id).toBe("a1");
     expect(assignmentFor(s, c)).toBeNull();
@@ -42,12 +42,24 @@ describe("reducer", () => {
     // now = 2026-09-12T01:00:00+05:30 == 2026-09-11T19:30:00Z
     const now = new Date("2026-09-12T01:00:00+05:30");
     const a = agent("a", "done", "a1"), b = agent("b", "done", "a2");
-    const s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [a, b], assignments: [
+    const s = reducer(initial, { type: "snapshot", state: { roles: [], liveSessions: [], agents: [a, b], assignments: [
       // local 12 Sep 01:30 -> counts as "today" relative to `now` (local 12 Sep)
       asg("a1", "a", { state: "done", costUsd: 3, createdAt: "2026-09-11T20:00:00Z" }),
       // local 11 Sep 23:30 -> does not count as "today" relative to `now` (local 12 Sep)
       asg("a2", "b", { state: "done", costUsd: 5, createdAt: "2026-09-11T18:00:00Z" }),
     ] } });
     expect(todaySpend(s, now)).toBe(3);
+  });
+});
+
+describe("live sessions", () => {
+  const live = (id: string, agentId?: string) => ({ sessionId: id, cwd: "/w/x", title: id, kind: "interactive" as const, status: "idle" as const, at: 1, canAdopt: !agentId, ...(agentId ? { agentId } : {}) });
+  it("snapshot + sessions event update liveSessions; unclaimed excludes owned ones", () => {
+    let s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [{ ...agent("a"), resumeSessionId: "s-a" }], assignments: [asg("a1", "b", { sessionId: "s-b" })], liveSessions: [live("s-a"), live("s-b"), live("s-c"), live("s-d", "z")] } });
+    expect(unclaimedLiveSessions(s).map(l => l.sessionId)).toEqual(["s-c"]);
+    expect(liveSessionFor(s, { ...agent("a"), resumeSessionId: "s-a" })?.sessionId).toBe("s-a");
+    expect(liveSessionFor(s, agent("q"))).toBeNull();
+    s = reducer(s, { type: "change", event: { type: "sessions", sessions: [live("s-e")] } });
+    expect(unclaimedLiveSessions(s).map(l => l.sessionId)).toEqual(["s-e"]);
   });
 });

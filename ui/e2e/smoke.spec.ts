@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 
 test("spawn → assign → answer permission → ack", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByText("No agents yet")).toBeVisible();
+  await expect(page.getByTestId(/^tile-/)).toHaveCount(0);           // no agents yet (live-session ghost tiles may exist)
   await page.getByRole("button", { name: "+ Spawn" }).click();
   await page.getByPlaceholder("/Users/you/project").fill("/tmp");
   await page.getByRole("button", { name: "Spawn", exact: true }).click();
@@ -87,4 +87,19 @@ test("terminal tab embeds a live session in the side panel", async ({ page }) =>
   await expect(pane.locator(".xterm")).toContainText("hello from the browser");
   await page.getByRole("button", { name: "Details" }).click();
   await expect(pane).toHaveCount(0);
+});
+
+test("live sessions appear on the grid by default and can be pulled in", async ({ page }) => {
+  await page.goto("/");
+  const ghost = page.getByTestId("session-fake-live-bg");
+  await expect(ghost).toBeVisible();
+  await expect(ghost).toContainText("Fake background task");
+  await expect(ghost).toContainText("blocked");
+  await ghost.getByRole("button", { name: "Pull in" }).click();
+  await expect(ghost).toHaveCount(0);                       // no longer a ghost — it's an agent now
+  const tile = page.locator(".tile.selected");
+  await expect(tile).toContainText("🔗");
+  await expect(tile.getByTestId("live-note")).toContainText("live in background");
+  await page.getByRole("button", { name: "Terminal" }).click();   // attaches to the background session
+  await expect(page.getByTestId("terminal-pane").locator(".xterm")).toContainText("claude attach fake1");
 });

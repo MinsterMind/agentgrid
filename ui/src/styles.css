@@ -95,3 +95,7 @@ button.pill:disabled { opacity:.6; }
 .st-live { color:#86efac; } .st-off { color:var(--dim2); }
 .termhost { flex:1; min-height:0; background:#0f1115; border-radius:6px; padding:4px; }
 .termhost .xterm { height:100%; }
+.tile.ghost { border-style:dashed; opacity:.9; --ring:#64748b; }
+.tile.ghost[data-state="busy"] { --ring:var(--blue); } .tile.ghost[data-state="blocked"] { --ring:var(--amber); } .tile.ghost[data-state="idle"] { --ring:var(--green); }
+.badge.live { background:#334155; color:#e2e8f0; }
+.tile.ghost select { background:#0f1115; border:1px solid #2b3140; color:var(--fg); border-radius:6px; padding:3px 6px; font:inherit; font-size:11px; flex:1; }

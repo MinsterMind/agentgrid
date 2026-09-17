@@ -48,7 +48,8 @@ npm run serve            # → http://127.0.0.1:4800
 5. **Open in Terminal** at any point opens `claude --resume <session>` in Terminal/iTerm for the full conversation.
 6. **Terminal** tab (side panel) embeds the real Claude Code TUI for that agent's session — type, answer prompts, use slash commands — exactly as in a terminal. ⤢ widens it. Available whenever the agent isn't mid-task.
 7. **Transcript** (side panel) shows the agent's full session — every prompt, reply, tool call and result, live while it works — the same conversation you'd see in the terminal.
-8. **Sessions** (top bar) lists every Claude Code session on the machine — live terminal and background sessions with their status, plus recent history. **Adopt** a past session to put it on the grid: that agent then *continues that conversation* with every prompt you assign (🔗 on the tile). Background sessions get **Attach in Terminal**.
+8. **Live sessions are on the grid by default.** Any Claude Code session running on the machine (terminal or background) shows up as a dashed *ghost tile* with its status; **Pull in** turns it into an agent bound to that session. While the terminal is still open the tile says *live in terminal* (assign is disabled; background sessions can be attached in the Terminal tab); close it and the agent takes over the conversation.
+9. **Sessions** (top bar) lists every Claude Code session on the machine — live terminal and background sessions with their status, plus recent history. **Adopt** a past session to put it on the grid: that agent then *continues that conversation* with every prompt you assign (🔗 on the tile). Background sessions get **Attach in Terminal**.
 
 Everything lives in `~/.agentgrid/` as plain files — roles, agents, assignments, and each agent's memory.
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { api } from "./api";
-import { reducer, initial, assignmentFor, counts, todaySpend, waitingIds } from "./state/reducer";
+import { reducer, initial, assignmentFor, counts, todaySpend, waitingIds, unclaimedLiveSessions, liveSessionFor } from "./state/reducer";
 import { AgentGrid } from "./components/AgentGrid";
 import { SidePanel } from "./components/SidePanel";
 import { TopBar } from "./components/TopBar";
@@ -64,9 +64,11 @@ export function App() {
       <div className="split">
         <AgentGrid agents={s.agents} roles={s.roles} assignments={s.assignments} selectedId={s.selectedId} recentFor={recentFor}
           onSelect={id => dispatch({ type: "select", id })}
-          onAssign={(id, prompt) => api.assign(id, prompt).then(() => dispatch({ type: "select", id })).catch(showErr)} />
+          onAssign={(id, prompt) => api.assign(id, prompt).then(() => dispatch({ type: "select", id })).catch(showErr)}
+          liveSessions={unclaimedLiveSessions(s)} liveFor={ag => liveSessionFor(s, ag)}
+          onPullIn={(sid, role) => api.adoptSession(sid, { role }).then(a => dispatch({ type: "select", id: a.id })).catch(showErr)} />
         <SidePanel agent={selected} role={s.roles.find(r => r.name === selected?.role)} assignment={selectedAsg}
-          onDecide={decide} onCancel={id => api.cancel(id).catch(showErr)} onAck={id => api.ack(id).catch(showErr)} onOpenTerminal={openTerminal} onTranscript={id => setTranscriptFor(id)} hasSession={!!selected && Object.values(s.assignments).some(a => a.agentId === selected.id && a.sessionId)} terminalSessionId={terminalSessionId}
+          onDecide={decide} onCancel={id => api.cancel(id).catch(showErr)} onAck={id => api.ack(id).catch(showErr)} onOpenTerminal={openTerminal} onTranscript={id => setTranscriptFor(id)} hasSession={!!selected && Object.values(s.assignments).some(a => a.agentId === selected.id && a.sessionId)} terminalSessionId={terminalSessionId} live={selected ? liveSessionFor(s, selected) : null}
           onDelete={id => api.deleteAgent(id).catch(showErr)} />
       </div>
       <footer className="foot">
