@@ -16,8 +16,8 @@ describe("SessionTile", () => {
     const onPullIn = vi.fn(async () => {});
     render(<SessionTile session={live} roles={roles} onPullIn={onPullIn} />);
     const tile = screen.getByTestId("session-s-live");
-    expect(tile).toHaveClass("ghost"); expect(tile).toHaveAttribute("data-state", "busy");
-    expect(tile).toHaveTextContent("hrns-7e"); expect(tile).toHaveTextContent("hrns · terminal"); expect(tile).toHaveTextContent("busy");
+    expect(tile).toHaveClass("livecard"); expect(tile).toHaveAttribute("data-state", "busy");
+    expect(tile).toHaveTextContent("hrns-7e"); expect(tile).toHaveTextContent("hrns"); expect(tile).toHaveTextContent("tty"); expect(tile).toHaveTextContent("busy");
     await userEvent.selectOptions(screen.getByLabelText("Role"), "reviewer");
     await userEvent.click(screen.getByRole("button", { name: "Pull in" }));
     expect(onPullIn).toHaveBeenCalledWith("s-live", "reviewer");

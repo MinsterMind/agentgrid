@@ -8,17 +8,16 @@ export function SessionTile({ session, roles, onPullIn }: { session: SessionInfo
   const [busy, setBusy] = useState(false);
   const bg = session.kind === "background";
   return (
-    <div className="tile ghost" data-state={session.status} data-testid={`session-${session.sessionId}`}>
-      <span className="badge live">{session.status}</span>
-      <div className="hd">
-        <div className="av">{bg ? "⏳" : "🖥️"}</div>
-        <div><div className="name" title={session.sessionId}>{session.title}</div><div className="repo" title={session.cwd}>{basename(session.cwd)} · {bg ? "background" : "terminal"}</div></div>
-      </div>
-      <div className="act dim">Live Claude Code session · {elapsed(new Date(session.at).toISOString())}</div>
-      <div className="row" onClick={e => e.stopPropagation()}>
+    <div className="livecard" data-state={session.status} data-testid={`session-${session.sessionId}`}>
+      <span className={`dot ${session.status}`} title={session.status} />
+      <span className="kind">{bg ? "bg" : "tty"}</span>
+      <span className="ltitle" title={session.sessionId}>{session.title}</span>
+      <span className="lrepo" title={session.cwd}>{basename(session.cwd)}</span>
+      <span className="lmeta">{session.status} · {elapsed(new Date(session.at).toISOString())}</span>
+      <span className="lactions" onClick={e => e.stopPropagation()}>
         <select value={role} onChange={e => setRole(e.target.value)} aria-label="Role">{roles.map(r => <option key={r.name} value={r.name}>{r.avatar} {r.name}</option>)}</select>
         <button className="btn p sm" disabled={busy} onClick={async () => { setBusy(true); try { await onPullIn(session.sessionId, role); } finally { setBusy(false); } }}>Pull in</button>
-      </div>
+      </span>
     </div>
   );
 }

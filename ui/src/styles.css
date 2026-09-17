@@ -109,3 +109,15 @@ button.pill:disabled { opacity:.6; }
 .tile[data-state="working"] { border-left-color:var(--blue); } .tile[data-state="waiting"] { border-left-color:var(--amber); }
 .tile[data-state="done"] { border-left-color:var(--green); } .tile[data-state="failed"] { border-left-color:var(--red); } .tile[data-state="free"] { border-left-color:var(--grey); }
 .tile.ghost { background:#12151b; }
+/* Live sessions: compact terminal-style rows, distinct from agent tiles */
+.strip { display:flex; flex-direction:column; gap:6px; }
+.livecard { display:flex; align-items:center; gap:10px; padding:7px 10px; background:#0b0d11; border:1px solid #1f2937; border-radius:6px; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; color:#cbd5e1; }
+.livecard .dot { width:8px; height:8px; border-radius:50%; background:#64748b; flex:none; }
+.livecard .dot.busy { background:var(--blue); box-shadow:0 0 6px var(--blue); animation:blink 1.2s infinite; }
+.livecard .dot.idle { background:var(--green); } .livecard .dot.blocked { background:var(--amber); box-shadow:0 0 6px var(--amber); }
+.livecard .kind { font-size:10px; color:#94a3b8; border:1px solid #334155; border-radius:4px; padding:0 5px; flex:none; }
+.livecard .ltitle { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#e2e8f0; }
+.livecard .lrepo { color:#7dd3fc; flex:none; } .livecard .lmeta { color:#64748b; flex:none; font-size:11px; }
+.livecard .lactions { display:flex; gap:6px; align-items:center; flex:none; }
+.livecard select { background:#0f1115; border:1px solid #2b3140; color:var(--fg); border-radius:6px; padding:2px 6px; font:inherit; font-size:11px; }
+.section.live { border-left-color:#1f2937; margin-top:6px; }

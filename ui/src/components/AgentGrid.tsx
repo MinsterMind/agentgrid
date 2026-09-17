@@ -14,12 +14,6 @@ export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, o
   let index = 0;
   return (
     <div className="board">
-      {liveSessions.length > 0 && (
-        <section className="section live" data-testid="section-live">
-          <h3 className="sect">Live Claude Code sessions <span className="count">{liveSessions.length}</span><span className="sub">not on the grid yet — pull them in</span></h3>
-          <div className="grid">{liveSessions.map(l => <SessionTile key={l.sessionId} session={l} roles={roles} onPullIn={onPullIn ?? (async () => {})} />)}</div>
-        </section>
-      )}
       {sections.map(sec => (
         <section key={sec.key} className={`section ${sec.key}`} data-testid={`section-${sec.key}`}>
           <h3 className="sect">{sec.title} <span className="count">{sec.agents.length}</span></h3>
@@ -32,6 +26,12 @@ export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, o
           </div>
         </section>
       ))}
+      {liveSessions.length > 0 && (
+        <section className="section live" data-testid="section-live">
+          <h3 className="sect">Live Claude Code sessions <span className="count">{liveSessions.length}</span><span className="sub">running outside the grid · newest first</span></h3>
+          <div className="strip">{[...liveSessions].sort((a, b) => b.at - a.at).map(l => <SessionTile key={l.sessionId} session={l} roles={roles} onPullIn={onPullIn ?? (async () => {})} />)}</div>
+        </section>
+      )}
       {agents.length === 0 && liveSessions.length === 0 && <div className="empty">No agents yet — press <b>+ Spawn</b> to add one.</div>}
     </div>
   );
