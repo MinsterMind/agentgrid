@@ -12,10 +12,19 @@ export class Conflict extends Error { status = 409; }
 const NAMES = ["Ada", "Rhea", "Cody", "Tess", "Dev", "Demi", "Kai", "Ravi", "Maya", "Tom", "Ira", "Max", "Nia", "Ola", "Zed"];
 
 let seq = 0;
-async function writeAtomic(file: string, data: unknown) {
-  const tmp = `${file}.${process.pid}.${++seq}.tmp`;
-  await writeFile(tmp, JSON.stringify(data, null, 2));
-  await rename(tmp, file);
+// Writes to the same file are chained so two renames can never land out of order
+// relative to the in-memory update that follows each one.
+const writeChains = new Map<string, Promise<void>>();
+function writeAtomic(file: string, data: unknown): Promise<void> {
+  const prev = writeChains.get(file) ?? Promise.resolve();
+  const next = prev.catch(() => {}).then(async () => {
+    const tmp = `${file}.${process.pid}.${++seq}.tmp`;
+    await writeFile(tmp, JSON.stringify(data, null, 2));
+    await rename(tmp, file);
+  });
+  writeChains.set(file, next);
+  next.finally(() => { if (writeChains.get(file) === next) writeChains.delete(file); }).catch(() => {});
+  return next;
 }
 
 export class Store extends EventEmitter {
