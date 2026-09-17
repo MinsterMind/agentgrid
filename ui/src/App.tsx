@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { api } from "./api";
 import { reducer, initial, assignmentFor, counts, todaySpend, waitingIds, unclaimedLiveSessions, liveSessionFor } from "./state/reducer";
+import { visualOrder } from "./state/sections";
 import { AgentGrid } from "./components/AgentGrid";
 import { SidePanel } from "./components/SidePanel";
 import { TopBar } from "./components/TopBar";
@@ -51,7 +52,7 @@ export function App() {
   const openTerminal = useCallback((id: string) => api.openTerminal(id).then(r => { if (!r.opened) { navigator.clipboard?.writeText(r.command); setToast(`Copied: ${r.command}`); setTimeout(() => setToast(null), 6000); } }).catch(showErr), []);
 
   useKeyboard(useMemo(() => ({
-    select: (i: number) => { const a = s.agents[i]; if (a) dispatch({ type: "select", id: a.id }); },
+    select: (i: number) => { const a = visualOrder(s.agents)[i]; if (a) dispatch({ type: "select", id: a.id }); },
     allow: () => { if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "allow" }); },
     deny: () => { if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "deny" }); },
     open: () => { if (selected && selectedAsg?.sessionId) void openTerminal(selected.id); },

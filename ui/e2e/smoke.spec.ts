@@ -77,7 +77,7 @@ test("terminal tab embeds a live session in the side panel", async ({ page }) =>
   await page.goto("/");
   const tile = page.getByTestId(/^tile-/).first();
   await tile.locator(".hd").click();
-  await page.getByRole("button", { name: "Terminal" }).click();
+  await page.getByRole("button", { name: "Terminal", exact: true }).click();
   const pane = page.getByTestId("terminal-pane");
   await expect(pane).toBeVisible();
   await expect(pane).toContainText("● live");
@@ -100,6 +100,6 @@ test("live sessions appear on the grid by default and can be pulled in", async (
   const tile = page.locator(".tile.selected");
   await expect(tile).toContainText("🔗");
   await expect(tile.getByTestId("live-note")).toContainText("live in background");
-  await page.getByRole("button", { name: "Terminal" }).click();   // attaches to the background session
+  await page.getByRole("button", { name: "Terminal", exact: true }).click();   // attaches to the background session
   await expect(page.getByTestId("terminal-pane").locator(".xterm")).toContainText("claude attach fake1");
 });
