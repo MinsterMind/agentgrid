@@ -50,4 +50,13 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
             || gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "AgentGrid ${TAG#v}" --generate-notes
-          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" installers/* --clobber
+          # GitHub's asset upload API returns intermittent 500s on large files — upload one at a time with retries.
+          for f in installers/*; do
+            n=$(basename "$f")
+            for try in 1 2 3 4 5; do
+              if gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets -q '[.assets[].name]|join(",")' | grep -q "$n"; then echo "$n present"; break; fi
+              echo "upload $n (try $try)"
+              gh release upload "$TAG" -R "$GITHUB_REPOSITORY" "$f" --clobber && break || sleep $((try*30))
+            done
+          done
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name'
