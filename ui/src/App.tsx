@@ -40,6 +40,9 @@ export function App() {
 
   const selected = s.agents.find(a => a.id === s.selectedId) ?? null;
   const selectedAsg = selected ? assignmentFor(s, selected) : null;
+  // Session the side-panel Terminal tab opens: the running assignment's, else the adopted one, else the latest finished one.
+  const terminalSessionId = selected ? (selectedAsg?.sessionId ?? selected.resumeSessionId
+    ?? Object.values(s.assignments).filter(a => a.agentId === selected.id && a.sessionId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]?.sessionId ?? null) : null;
   const recentRepos = useMemo(() => [...new Set(s.agents.map(a => a.repo))], [s.agents]);
   const recentFor = useCallback((id: string) => [...new Set(Object.values(s.assignments).filter(a => a.agentId === id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(a => a.prompt))].slice(0, 8), [s.assignments]);
 
@@ -63,7 +66,7 @@ export function App() {
           onSelect={id => dispatch({ type: "select", id })}
           onAssign={(id, prompt) => api.assign(id, prompt).then(() => dispatch({ type: "select", id })).catch(showErr)} />
         <SidePanel agent={selected} role={s.roles.find(r => r.name === selected?.role)} assignment={selectedAsg}
-          onDecide={decide} onCancel={id => api.cancel(id).catch(showErr)} onAck={id => api.ack(id).catch(showErr)} onOpenTerminal={openTerminal} onTranscript={id => setTranscriptFor(id)} hasSession={!!selected && Object.values(s.assignments).some(a => a.agentId === selected.id && a.sessionId)}
+          onDecide={decide} onCancel={id => api.cancel(id).catch(showErr)} onAck={id => api.ack(id).catch(showErr)} onOpenTerminal={openTerminal} onTranscript={id => setTranscriptFor(id)} hasSession={!!selected && Object.values(s.assignments).some(a => a.agentId === selected.id && a.sessionId)} terminalSessionId={terminalSessionId}
           onDelete={id => api.deleteAgent(id).catch(showErr)} />
       </div>
       <footer className="foot">

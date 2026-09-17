@@ -8,11 +8,15 @@ export interface WsDeps { store: Store; ptys: PtyManager; sessions: () => Promis
 
 /** Where and how to start `claude` for a session id: attach for background sessions, resume otherwise. */
 export async function resolveLaunch(sessionId: string, deps: WsDeps): Promise<{ cwd: string; argv: string[] } | { error: string; code: number }> {
+  const bySession = new Map<string, string>(); // sessionId → agentId, via any assignment that ran it
+  for (const a of deps.store.listAssignments(Number.MAX_SAFE_INTEGER)) if (a.sessionId) bySession.set(a.sessionId, a.agentId);
   for (const a of deps.store.listAgents()) {
+    const owns = a.resumeSessionId === sessionId || bySession.get(sessionId) === a.id;
+    if (!owns) continue;
     const cur = a.currentAssignmentId ? deps.store.getAssignment(a.currentAssignmentId) : null;
-    const owns = a.resumeSessionId === sessionId || cur?.sessionId === sessionId;
-    if (owns && (a.state === "working" || a.state === "waiting")) return { error: `agent ${a.displayName} is running this session — wait for it to finish or cancel it`, code: 4409 };
-    if (owns) return { cwd: a.repo, argv: ["--resume", sessionId] };
+    const runningIt = (a.state === "working" || a.state === "waiting") && (cur?.sessionId === sessionId || a.resumeSessionId === sessionId);
+    if (runningIt) return { error: `agent ${a.displayName} is running this session — wait for it to finish or cancel it`, code: 4409 };
+    return { cwd: a.repo, argv: ["--resume", sessionId] };
   }
   const info = (await deps.sessions()).find(s => s.sessionId === sessionId);
   if (!info) return { error: "unknown session", code: 4404 };

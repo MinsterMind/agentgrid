@@ -9,7 +9,8 @@ import { createApp } from "./api/app.js";
 import { resolveHome } from "./store/paths.js";
 import { readTranscript } from "./transcript.js";
 import { openTerminal, runInTerminal } from "./terminal.js";
-import { PtyManager } from "./pty.js";
+import { PtyManager, type SpawnFn } from "./pty.js";
+import * as nodePty from "node-pty";
 import { attachPtyWebSocket } from "./api/ws.js";
 import { listAllSessions } from "./sessions.js";
 import type { QueryFn } from "./runner/runner.js";
@@ -43,7 +44,9 @@ async function serve() {
   rolesWatcher.on("error", err => console.error("roles watcher:", err.message));
   // Fake mode serves a canned session list so the UI/e2e can exercise adoption without Claude Code.
   const fakeSessions = process.env.AGENTGRID_FAKE ? { live: async () => [], history: async () => [{ sessionId: "fake-old-session", cwd: "/tmp", title: "Earlier work (fake)", lastActiveAt: Date.now() }] } : undefined;
-  const ptys = new PtyManager();
+  // Fake mode: a plain shell stands in for `claude` so the terminal pane can be exercised without the CLI.
+  const fakeSpawn: SpawnFn = (_file, args, opts) => nodePty.spawn("/bin/sh", ["-c", `echo "AgentGrid fake terminal (claude ${args.join(" ")})"; exec cat`], opts);
+  const ptys = new PtyManager(process.env.AGENTGRID_FAKE ? fakeSpawn : undefined);
   const app = createApp({ store, manager, transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }), openTerminal, runInTerminal, staticDir: uiDist, browseRoot: process.env.AGENTGRID_BROWSE_ROOT,
     ...(fakeSessions ? { sessions: fakeSessions } : {}) });
   const port = Number(process.env.AGENTGRID_PORT ?? 4800);

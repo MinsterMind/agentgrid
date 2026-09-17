@@ -50,6 +50,12 @@ describe("resolveLaunch", () => {
     expect(await resolveLaunch("s-term", d)).toMatchObject({ code: 4409 });
     expect(await resolveLaunch("nope", d)).toMatchObject({ code: 4404 });
   });
+  it("grid agents: a session from a finished assignment resumes in the agent's repo", async () => {
+    const a = await store.createAgent({ role: "coder", repo: "/repo" });
+    const asg = await store.createAssignment({ agentId: a.id, prompt: "p" });
+    await store.updateAssignment(asg.id, { sessionId: "s-done", state: "done" });
+    expect(await resolveLaunch("s-done", deps())).toEqual({ cwd: "/repo", argv: ["--resume", "s-done"] });
+  });
   it("grid agents: idle adopted → resume in repo; working → refused", async () => {
     const a = await store.createAgent({ role: "coder", repo: "/repo", resumeSessionId: "s-adopt" });
     expect(await resolveLaunch("s-adopt", deps())).toEqual({ cwd: "/repo", argv: ["--resume", "s-adopt"] });

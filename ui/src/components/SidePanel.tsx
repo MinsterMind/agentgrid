@@ -1,17 +1,21 @@
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import type { Agent, Assignment, Decision, MemoryFile, RoleDef } from "../types";
 import { api } from "../api";
 import { PendingPrompt } from "./PendingPrompt";
+const TerminalPane = lazy(() => import("./TerminalPane").then(m => ({ default: m.TerminalPane })));
 import { elapsed, usd } from "../format";
 
 type Entry = { ts: string; role: string; kind: string; text: string };
 
-export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, onOpenTerminal, onTranscript, onDelete, hasSession }: {
+export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, onOpenTerminal, onTranscript, onDelete, hasSession, terminalSessionId }: {
   agent: Agent | null; role: RoleDef | undefined; assignment: Assignment | null;
   onDecide: (agentId: string, toolUseId: string, d: Decision) => void; onCancel: (id: string) => void; onAck: (id: string) => void; onOpenTerminal: (id: string) => void; onTranscript?: (id: string) => void; onDelete: (id: string) => void; hasSession?: boolean;
+  /** Session the Terminal tab would open; null when the agent has none yet. */ terminalSessionId?: string | null;
 }) {
   const [feed, setFeed] = useState<Entry[]>([]); const [memory, setMemory] = useState<MemoryFile[]>([]);
+  const [tab, setTab] = useState<"details" | "terminal">("details"); const [wide, setWide] = useState(false);
   const asgId = assignment?.id; const activity = assignment?.activity; const agentId = agent?.id;
+  useEffect(() => { setTab("details"); }, [agentId]);
 
   useEffect(() => { if (!asgId) { setFeed([]); return; } let live = true; api.transcript(asgId).then(f => live && setFeed(f.slice(-30))).catch(() => {}); return () => { live = false; }; }, [asgId, activity]);
   useEffect(() => { if (!agentId) { setMemory([]); return; } let live = true; api.memory(agentId).then(m => live && setMemory(m)).catch(() => {}); return () => { live = false; }; }, [agentId, assignment?.state]);
@@ -21,8 +25,26 @@ export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, 
   // Deleting archives the agent (with its memory) — only safe while it isn't mid-flight
   // on an SDK session (working/waiting would orphan the run).
   const canDelete = agent.state === "free" || agent.state === "done" || agent.state === "failed";
+  const busy = agent.state === "working" || agent.state === "waiting";
+  const termAvailable = !!terminalSessionId && !busy;
+  if (tab === "terminal" && terminalSessionId) {
+    return (
+      <aside className={`side term ${wide ? "wide" : ""}`} data-testid="side-panel">
+        <div className="tabs">
+          <button className="tab" onClick={() => setTab("details")}>Details</button>
+          <button className="tab on">Terminal</button>
+          <button className="btn sm" style={{ marginLeft: "auto" }} title={wide ? "Shrink" : "Expand"} onClick={() => setWide(w => !w)}>{wide ? "⤡" : "⤢"}</button>
+        </div>
+        <Suspense fallback={<p className="hint">Loading terminal…</p>}><TerminalPane sessionId={terminalSessionId} /></Suspense>
+      </aside>
+    );
+  }
   return (
     <aside className="side" data-testid="side-panel">
+      <div className="tabs">
+        <button className="tab on">Details</button>
+        <button className="tab" disabled={!termAvailable} title={busy ? "Wait for the current task to finish" : terminalSessionId ? "Open this session in a terminal here" : "No session yet"} onClick={() => setTab("terminal")}>Terminal</button>
+      </div>
       <div className="hd"><div className="av" data-state={agent.state}>{role?.avatar ?? "🤖"}</div>
         <div><div className="name">{agent.displayName} — {agent.role}</div><div className="repo">{agent.repo}{a ? ` · #${a.id}` : ""}</div>{agent.resumeSessionId && <div className="repo">🔗 continues session {agent.resumeSessionId.slice(0, 8)}…</div>}</div></div>
       {a && <>

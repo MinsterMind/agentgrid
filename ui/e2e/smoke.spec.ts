@@ -72,3 +72,19 @@ test("transcript view shows the full conversation for an agent", async ({ page }
   await page.keyboard.press("Escape");
   await expect(tx).toHaveCount(0);
 });
+
+test("terminal tab embeds a live session in the side panel", async ({ page }) => {
+  await page.goto("/");
+  const tile = page.getByTestId(/^tile-/).first();
+  await tile.locator(".hd").click();
+  await page.getByRole("button", { name: "Terminal" }).click();
+  const pane = page.getByTestId("terminal-pane");
+  await expect(pane).toBeVisible();
+  await expect(pane).toContainText("● live");
+  await expect(pane.locator(".xterm")).toContainText("AgentGrid fake terminal");
+  await page.keyboard.type("hello from the browser");
+  await page.keyboard.press("Enter");
+  await expect(pane.locator(".xterm")).toContainText("hello from the browser");
+  await page.getByRole("button", { name: "Details" }).click();
+  await expect(pane).toHaveCount(0);
+});

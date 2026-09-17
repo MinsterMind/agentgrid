@@ -84,3 +84,14 @@ button.pill:disabled { opacity:.6; }
 .tx-tool, .tx-result { flex:1; font-family:ui-monospace, monospace; font-size:11px; }
 .tx-tool summary { color:#ffd166; cursor:pointer; } .tx-result summary { color:var(--dim); cursor:pointer; }
 .tx-tool pre, .tx-result pre { white-space:pre-wrap; word-break:break-word; background:#0f1115; border-radius:6px; padding:8px; margin:4px 0 0; max-height:320px; overflow:auto; }
+.side.term { --side: 560px; display:flex; flex-direction:column; padding:8px; min-height:0; }
+.side.term.wide { --side: 70vw; }
+.split:has(.side.term) { grid-template-columns: 1fr var(--side); }
+.tabs { display:flex; gap:4px; align-items:center; margin-bottom:8px; }
+.tab { background:none; border:none; border-bottom:2px solid transparent; color:var(--dim); padding:4px 8px; cursor:pointer; font:inherit; font-size:12px; }
+.tab.on { color:var(--fg); border-bottom-color:#6b8cff; } .tab:disabled { opacity:.4; cursor:default; }
+.termpane { flex:1; display:flex; flex-direction:column; min-height:0; }
+.termbar { display:flex; align-items:center; font-size:11px; padding:2px 4px 6px; }
+.st-live { color:#86efac; } .st-off { color:var(--dim2); }
+.termhost { flex:1; min-height:0; background:#0f1115; border-radius:6px; padding:4px; }
+.termhost .xterm { height:100%; }
