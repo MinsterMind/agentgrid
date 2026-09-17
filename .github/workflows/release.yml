@@ -1,5 +1,8 @@
 name: Release desktop app
 
+permissions:
+  contents: write
+
 on:
   push:
     tags: ["v*"]
