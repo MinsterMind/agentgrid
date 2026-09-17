@@ -3,12 +3,15 @@
   "private": true,
   "workspaces": [
     "server",
-    "ui"
+    "ui",
+    "desktop"
   ],
   "scripts": {
-    "test": "npm run test -w server && npm run test -w ui",
+    "test": "npm run test -w server && npm run test -w ui && npm run test -w desktop",
     "build": "npm run build -w ui && npm run build -w server",
-    "serve": "npm run serve -w server"
+    "serve": "npm run serve -w server",
+    "desktop": "npm run build -w ui && npm run start -w desktop",
+    "dist": "npm run build -w ui && npm run build -w server && npm run dist -w desktop"
   },
   "license": "MIT",
   "description": "Run a roster of Claude Code agents in parallel from one dashboard",

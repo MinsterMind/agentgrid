@@ -3,3 +3,4 @@ node_modules/
 dist/
 ui/test-results/
 ui/playwright-report/
+desktop/release/

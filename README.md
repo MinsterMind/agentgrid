@@ -27,11 +27,25 @@ Under the hood it is a thin layer over the official [Claude Agent SDK](https://c
 
 ## Requirements
 
-- **Node.js 22+**
+- **Node.js 22+** (only when running from source — the desktop app bundles its own)
 - **Claude Code CLI** installed and logged in (`claude` on your PATH). AgentGrid pins `@anthropic-ai/claude-agent-sdk` to the CLI version it was built against (`2.1.268` / SDK `0.3.268`); upgrade both together.
 - macOS or Linux. "Open in Terminal" uses AppleScript and is macOS-only (on other platforms the command is copied to your clipboard instead).
 
-## Quick start
+## Install the desktop app (recommended)
+
+Download the latest **AgentGrid-<version>-arm64.dmg** (Apple Silicon) or **-x64.dmg** (Intel) from [Releases](https://github.com/MinsterMind/agentgrid/releases), open it and drag AgentGrid to Applications. Linux: the `.AppImage` (`chmod +x`, then run).
+
+The app is not code-signed yet, so on first launch macOS will say it "cannot be opened". Either **right-click the app → Open → Open**, or run once:
+
+```bash
+xattr -d com.apple.quarantine /Applications/AgentGrid.app
+```
+
+AgentGrid starts its own local server inside the app and picks up your login shell's environment (PATH, tokens) so `claude` and your project hooks work exactly as in a terminal. **Settings** menu: browse root for Spawn, data directory, restart server.
+
+Requirements: the [Claude Code CLI](https://claude.com/claude-code) installed and signed in (`claude` on your PATH). Node.js is **not** required for the app.
+
+## Run from source
 
 ```bash
 git clone https://github.com/MinsterMind/agentgrid.git
@@ -111,7 +125,9 @@ There is no authentication: the server listens on loopback only. Don't expose it
 ## Development
 
 ```bash
-npm test                          # unit + integration tests (server + ui), no API calls
+npm run desktop                   # run the Electron app from source
+npm run dist                      # build DMG / AppImage into desktop/release/
+npm test                          # unit + integration tests (server + ui + desktop), no API calls
 npm run test:live -w server       # opt-in: one real SDK session end to end (costs a few cents)
 npm run e2e -w ui                 # Playwright smoke test against the fake runner
 AGENTGRID_FAKE=1 npm run serve    # server with a scripted agent
