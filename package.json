@@ -1,10 +1,16 @@
 {
   "name": "agentgrid",
   "private": true,
-  "workspaces": ["server", "ui"],
+  "workspaces": [
+    "server",
+    "ui"
+  ],
   "scripts": {
     "test": "npm run test -w server && npm run test -w ui",
     "build": "npm run build -w ui && npm run build -w server",
     "serve": "npm run serve -w server"
-  }
+  },
+  "license": "MIT",
+  "description": "Run a roster of Claude Code agents in parallel from one dashboard",
+  "repository": "github:MinsterMind/agentgrid"
 }
