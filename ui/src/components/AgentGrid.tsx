@@ -8,7 +8,7 @@ export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, o
   recentFor: (agentId: string) => string[]; onSelect: (id: string) => void; onAssign: (id: string, prompt: string) => void;
   /** Live sessions with no tile yet. */ liveSessions?: SessionInfo[];
   /** Live session bound to an adopted agent, if its process is running. */ liveFor?: (agent: Agent) => SessionInfo | null;
-  onPullIn?: (sessionId: string, role: string) => Promise<void>;
+  onPullIn?: (sessionId: string, role: string, takeover: boolean) => Promise<void>;
 }) {
   const sections = sectionize(agents);
   let index = 0;

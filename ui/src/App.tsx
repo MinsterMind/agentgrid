@@ -17,6 +17,7 @@ export function App() {
   const [spawnOpen, setSpawnOpen] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [transcriptFor, setTranscriptFor] = useState<string | null>(null);
+  const [openTerminalRequest, setOpenTerminalRequest] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const prevStates = useRef<Record<string, string>>({});
   const showErr = (e: unknown) => { setToast((e as Error).message); setTimeout(() => setToast(null), 4000); };
@@ -67,9 +68,9 @@ export function App() {
           onSelect={id => dispatch({ type: "select", id })}
           onAssign={(id, prompt) => api.assign(id, prompt).then(() => dispatch({ type: "select", id })).catch(showErr)}
           liveSessions={unclaimedLiveSessions(s)} liveFor={ag => liveSessionFor(s, ag)}
-          onPullIn={(sid, role) => api.adoptSession(sid, { role }).then(a => dispatch({ type: "select", id: a.id })).catch(showErr)} />
+          onPullIn={(sid, role, takeover) => api.adoptSession(sid, { role, takeover }).then(a => { dispatch({ type: "select", id: a.id }); if (takeover) setOpenTerminalRequest(n => n + 1); }).catch(showErr)} />
         <SidePanel agent={selected} role={s.roles.find(r => r.name === selected?.role)} assignment={selectedAsg}
-          onDecide={decide} onCancel={id => api.cancel(id).catch(showErr)} onAck={id => api.ack(id).catch(showErr)} onOpenTerminal={openTerminal} onTranscript={id => setTranscriptFor(id)} hasSession={!!selected && Object.values(s.assignments).some(a => a.agentId === selected.id && a.sessionId)} terminalSessionId={terminalSessionId} live={selected ? liveSessionFor(s, selected) : null}
+          onDecide={decide} onCancel={id => api.cancel(id).catch(showErr)} onAck={id => api.ack(id).catch(showErr)} onOpenTerminal={openTerminal} onTranscript={id => setTranscriptFor(id)} hasSession={!!selected && Object.values(s.assignments).some(a => a.agentId === selected.id && a.sessionId)} terminalSessionId={terminalSessionId} live={selected ? liveSessionFor(s, selected) : null} openTerminalRequest={openTerminalRequest}
           onDelete={id => api.deleteAgent(id).catch(showErr)} />
       </div>
       <footer className="foot">

@@ -7,16 +7,18 @@ import { elapsed, usd } from "../format";
 
 type Entry = { ts: string; role: string; kind: string; text: string };
 
-export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, onOpenTerminal, onTranscript, onDelete, hasSession, terminalSessionId, live }: {
+export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, onOpenTerminal, onTranscript, onDelete, hasSession, terminalSessionId, live, openTerminalRequest }: {
   agent: Agent | null; role: RoleDef | undefined; assignment: Assignment | null;
   onDecide: (agentId: string, toolUseId: string, d: Decision) => void; onCancel: (id: string) => void; onAck: (id: string) => void; onOpenTerminal: (id: string) => void; onTranscript?: (id: string) => void; onDelete: (id: string) => void; hasSession?: boolean;
   /** Session the Terminal tab would open; null when the agent has none yet. */ terminalSessionId?: string | null;
   /** Live process for an adopted session, if any: background → terminal attaches; interactive → terminal unavailable. */ live?: SessionInfo | null;
+  /** Bumping this (with a value) opens the Terminal tab — used right after a pull-in. */ openTerminalRequest?: number;
 }) {
   const [feed, setFeed] = useState<Entry[]>([]); const [memory, setMemory] = useState<MemoryFile[]>([]);
   const [tab, setTab] = useState<"details" | "terminal">("details"); const [wide, setWide] = useState(false);
   const asgId = assignment?.id; const activity = assignment?.activity; const agentId = agent?.id;
   useEffect(() => { setTab("details"); }, [agentId]);
+  useEffect(() => { if (openTerminalRequest && terminalSessionId) setTab("terminal"); }, [openTerminalRequest]);
 
   useEffect(() => { if (!asgId) { setFeed([]); return; } let live = true; api.transcript(asgId).then(f => live && setFeed(f.slice(-30))).catch(() => {}); return () => { live = false; }; }, [asgId, activity]);
   useEffect(() => { if (!agentId) { setMemory([]); return; } let live = true; api.memory(agentId).then(m => live && setMemory(m)).catch(() => {}); return () => { live = false; }; }, [agentId, assignment?.state]);

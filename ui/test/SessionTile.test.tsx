@@ -19,8 +19,18 @@ describe("SessionTile", () => {
     expect(tile).toHaveClass("livecard"); expect(tile).toHaveAttribute("data-state", "busy");
     expect(tile).toHaveTextContent("hrns-7e"); expect(tile).toHaveTextContent("hrns"); expect(tile).toHaveTextContent("tty"); expect(tile).toHaveTextContent("busy");
     await userEvent.selectOptions(screen.getByLabelText("Role"), "reviewer");
+    vi.spyOn(window, "confirm").mockReturnValueOnce(false);
+    await userEvent.click(screen.getByRole("button", { name: /Pull in/ }));
+    expect(onPullIn).not.toHaveBeenCalled();                       // declined the takeover confirm
+    vi.spyOn(window, "confirm").mockReturnValueOnce(true);
+    await userEvent.click(screen.getByRole("button", { name: /Pull in/ }));
+    expect(onPullIn).toHaveBeenCalledWith("s-live", "reviewer", true); // terminal session → takeover
+  });
+  it("background sessions pull in without takeover or confirm", async () => {
+    const onPullIn = vi.fn(async () => {});
+    render(<SessionTile session={{ ...live, sessionId: "s-bg", kind: "background", bgId: "b1" }} roles={roles} onPullIn={onPullIn} />);
     await userEvent.click(screen.getByRole("button", { name: "Pull in" }));
-    expect(onPullIn).toHaveBeenCalledWith("s-live", "reviewer");
+    expect(onPullIn).toHaveBeenCalledWith("s-bg", "coder", false);
   });
 });
 

@@ -26,7 +26,7 @@ export const api = {
   openTerminal: (id: string) => call<{ command: string; opened: boolean }>("POST", `/api/agents/${encodeURIComponent(id)}/open-terminal`),
   memory: (id: string) => call<MemoryFile[]>("GET", `/api/agents/${encodeURIComponent(id)}/memory`),
   listSessions: () => call<SessionInfo[]>("GET", "/api/sessions"),
-  adoptSession: (sessionId: string, input: { role: string; displayName?: string }) => call<Agent>("POST", `/api/sessions/${encodeURIComponent(sessionId)}/adopt`, input),
+  adoptSession: (sessionId: string, input: { role: string; displayName?: string; takeover?: boolean }) => call<Agent>("POST", `/api/sessions/${encodeURIComponent(sessionId)}/adopt`, input),
   attachSession: (sessionId: string) => call<{ command: string; opened: boolean }>("POST", `/api/sessions/${encodeURIComponent(sessionId)}/attach`),
   pickFolder: () => call<{ path: string } | undefined>("POST", "/api/fs/pick"),
   listDir: (path?: string) => call<DirListing>("GET", `/api/fs${path ? `?path=${encodeURIComponent(path)}` : ""}`),
