@@ -56,6 +56,13 @@ describe("resolveLaunch", () => {
     await store.updateAssignment(asg.id, { sessionId: "s-done", state: "done" });
     expect(await resolveLaunch("s-done", deps())).toEqual({ cwd: "/repo", argv: ["--resume", "s-done"] });
   });
+  it("adopted live sessions: background → attach in the agent's repo; interactive → refused", async () => {
+    await store.createAgent({ role: "coder", repo: "/repo", resumeSessionId: "s-bg" });
+    await store.createAgent({ role: "coder", repo: "/repo2", resumeSessionId: "s-term" });
+    store.setLiveSessions([{ sessionId: "s-bg", cwd: "/w/bg", name: "bg", kind: "background", status: "blocked", startedAt: 1, bgId: "d85e" }, { sessionId: "s-term", cwd: "/w/t", name: "t", kind: "interactive", status: "idle", startedAt: 1 }]);
+    expect(await resolveLaunch("s-bg", deps())).toEqual({ cwd: "/repo", argv: ["attach", "d85e"] });
+    expect(await resolveLaunch("s-term", deps())).toMatchObject({ code: 4409 });
+  });
   it("grid agents: idle adopted → resume in repo; working → refused", async () => {
     const a = await store.createAgent({ role: "coder", repo: "/repo", resumeSessionId: "s-adopt" });
     expect(await resolveLaunch("s-adopt", deps())).toEqual({ cwd: "/repo", argv: ["--resume", "s-adopt"] });

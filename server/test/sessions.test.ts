@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseLiveSessions, mergeSessions, type LiveSession, type HistorySession } from "../src/sessions.js";
+import { parseLiveSessions, mergeSessions, LiveSessionWatcher, type LiveSession, type HistorySession } from "../src/sessions.js";
 import type { Agent } from "../src/types.js";
 
 const agent = (id: string, resumeSessionId?: string, currentAssignmentId: string | null = null): Agent =>
@@ -44,8 +44,30 @@ describe("mergeSessions", () => {
     ]);
     expect(out[0].title).toBe("live one");
     expect(out[1].canAdopt).toBe(true);
-    expect(out[0].canAdopt).toBe(false); // live in a terminal
+    expect(out[0].canAdopt).toBe(true); // live sessions can be pulled in too
     expect(out[2].canAdopt).toBe(false); // already adopted
     expect(out[3].canAdopt).toBe(false); // belongs to a grid agent's assignment
+  });
+});
+
+describe("LiveSessionWatcher", () => {
+  const mk = (sid: string, status: "busy" | "idle" = "idle"): LiveSession => ({ sessionId: sid, cwd: "/a", name: sid, kind: "interactive", status, startedAt: 1 });
+  it("reports only real changes and tracks liveness", async () => {
+    let list: LiveSession[] = [mk("a")];
+    const changes: LiveSession[][] = [];
+    const w = new LiveSessionWatcher(async () => list, l => changes.push(l), 1000);
+    await w.poll(); await w.poll();
+    expect(changes).toHaveLength(1);
+    expect(w.isLive("a")).toBe(true); expect(w.isLive("b")).toBe(false);
+    list = [mk("a", "busy"), mk("b")]; await w.poll();
+    expect(changes).toHaveLength(2); expect(w.current.map(s => s.sessionId)).toEqual(["a", "b"]);
+    list = []; await w.poll();
+    expect(w.isLive("a")).toBe(false);
+  });
+  it("keeps the last list when the fetch fails", async () => {
+    let fail = false;
+    const w = new LiveSessionWatcher(async () => { if (fail) throw new Error("x"); return [mk("a")]; }, () => {}, 1000);
+    await w.poll(); fail = true; await w.poll();
+    expect(w.isLive("a")).toBe(true);
   });
 });

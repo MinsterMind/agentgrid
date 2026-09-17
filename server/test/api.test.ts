@@ -120,17 +120,18 @@ describe("POST /api/fs/pick", () => {
 describe("sessions", () => {
   const live = [{ sessionId: "s-live", cwd: "/x/live", name: "term", kind: "interactive" as const, status: "idle" as const, startedAt: 5 }];
   const history = [{ sessionId: "s-live", cwd: "/x/live", title: "t", lastActiveAt: 1 }, { sessionId: "s-old", cwd: "/x/old", title: "old work", lastActiveAt: 9 }];
-  const mk = () => createApp({ store, manager: new Manager(store, { queryFn: fake.queryFn }), sessions: { live: async () => live, history: async () => history } });
+  const mk = () => { store.setLiveSessions(live); return createApp({ store, manager: new Manager(store, { queryFn: fake.queryFn }), sessions: { live: async () => live, history: async () => history } }); };
 
   it("GET /api/sessions merges live + history", async () => {
     const res = await request(mk()).get("/api/sessions").expect(200);
-    expect(res.body.map((s: any) => [s.sessionId, s.kind, s.canAdopt])).toEqual([["s-live", "interactive", false], ["s-old", "history", true]]);
+    expect(res.body.map((s: any) => [s.sessionId, s.kind, s.canAdopt])).toEqual([["s-live", "interactive", true], ["s-old", "history", true]]);
+    expect((await request(mk()).get("/api/state").expect(200)).body.liveSessions.map((s: any) => s.sessionId)).toEqual(["s-live"]);
   });
 
   it("attach opens `claude attach <bgId>` for background sessions only", async () => {
     const ran: string[] = [];
-    const a = createApp({ store, manager: new Manager(store, { queryFn: fake.queryFn }), runInTerminal: async c => { ran.push(c); },
-      sessions: { live: async () => [...live, { sessionId: "s-bg", cwd: "/x/bg", name: "bg", kind: "background" as const, status: "blocked" as const, startedAt: 1, bgId: "d85e" }], history: async () => [] } });
+    store.setLiveSessions([...live, { sessionId: "s-bg", cwd: "/x/bg", name: "bg", kind: "background" as const, status: "blocked" as const, startedAt: 1, bgId: "d85e" }]);
+    const a = createApp({ store, manager: new Manager(store, { queryFn: fake.queryFn }), runInTerminal: async c => { ran.push(c); }, sessions: { live: async () => [], history: async () => [] } });
     expect((await request(a).post("/api/sessions/s-bg/attach").expect(200)).body).toEqual({ command: "claude attach 'd85e'", opened: true });
     expect(ran).toEqual(["claude attach 'd85e'"]);
     await request(a).post("/api/sessions/s-live/attach").expect(400);
@@ -141,7 +142,11 @@ describe("sessions", () => {
     const a = mk();
     await request(a).post("/api/sessions/s-old/adopt").send({}).expect(400);
     await request(a).post("/api/sessions/nope/adopt").send({ role: "coder" }).expect(404);
-    await request(a).post("/api/sessions/s-live/adopt").send({ role: "coder" }).expect(409);
+    // live sessions can be pulled in; the tile just can't be assigned while the terminal is open
+    const liveAgent = (await request(a).post("/api/sessions/s-live/adopt").send({ role: "coder" }).expect(201)).body;
+    expect(liveAgent).toMatchObject({ repo: "/x/live", resumeSessionId: "s-live" });
+    expect((await request(a).post(`/api/agents/${liveAgent.id}/assign`).send({ prompt: "x" }).expect(409)).body.error).toMatch(/open in a terminal/);
+    expect((await request(a).get("/api/state")).body.liveSessions[0]).toMatchObject({ sessionId: "s-live", agentId: liveAgent.id, canAdopt: false });
     const res = await request(a).post("/api/sessions/s-old/adopt").send({ role: "coder", displayName: "Old" }).expect(201);
     expect(res.body).toMatchObject({ id: "coder@old", repo: "/x/old", resumeSessionId: "s-old", displayName: "Old", state: "free" });
     await request(a).post("/api/sessions/s-old/adopt").send({ role: "reviewer" }).expect(409);

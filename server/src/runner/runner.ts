@@ -39,6 +39,7 @@ export class Runner {
     if (this.assigning) throw new Conflict(`agent ${this.agentId} is being assigned`);
     const agent = store.getAgent(this.agentId);
     if (agent.state !== "free") throw new Conflict(`agent ${this.agentId} is ${agent.state}`);
+    if (agent.resumeSessionId && store.isLive(agent.resumeSessionId)) throw new Conflict(`session is open in a terminal — close it (or use the Terminal tab) before assigning`);
     this.assigning = true;
     try {
       const role = store.getRole(agent.role);

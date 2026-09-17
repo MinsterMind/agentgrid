@@ -4,7 +4,8 @@ import path from "node:path";
 import matter from "gray-matter";
 import { paths } from "./paths.js";
 import { loadRoles, ensureDefaultRoles } from "./roles.js";
-import type { Agent, Assignment, GridEvent, GridState, MemoryFile, RoleDef } from "../types.js";
+import type { Agent, Assignment, GridEvent, GridState, MemoryFile, RoleDef, SessionInfo } from "../types.js";
+import { mergeSessions, type LiveSession } from "../sessions.js";
 
 export class NotFound extends Error { status = 404; }
 export class Conflict extends Error { status = 409; }
@@ -32,6 +33,7 @@ export class Store extends EventEmitter {
   private agents = new Map<string, Agent>();
   private assignments = new Map<string, Assignment>();
   private nextAssignment = 1;
+  private live: LiveSession[] = [];
 
   constructor(home: string, private defaultsDir: string) {
     super();
@@ -177,7 +179,15 @@ export class Store extends EventEmitter {
     return m;
   }
 
+  /** Live Claude Code sessions (from the watcher), annotated against current agents. */
+  liveSessions(): SessionInfo[] { return mergeSessions(this.live, [], this.listAgents(), this.assignmentSessionIds()); }
+  isLive(sessionId: string): boolean { return this.live.some(l => l.sessionId === sessionId); }
+  setLiveSessions(live: LiveSession[]): void {
+    this.live = live;
+    this.emit("event", { type: "sessions", sessions: this.liveSessions() } satisfies GridEvent);
+  }
+
   getState(): GridState {
-    return { roles: this.listRoles(), agents: this.listAgents(), assignments: this.listAssignments() };
+    return { roles: this.listRoles(), agents: this.listAgents(), assignments: this.listAssignments(), liveSessions: this.liveSessions() };
   }
 }

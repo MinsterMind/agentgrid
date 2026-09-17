@@ -7,7 +7,7 @@ import { shellQuote } from "../shell.js";
 import { listDir } from "../fs.js";
 import { pickFolder } from "../picker.js";
 import { attachCommand } from "../terminal.js";
-import { listAllSessions, type LiveSession, type HistorySession } from "../sessions.js";
+import { listAllSessions, listHistorySessions, type LiveSession, type HistorySession } from "../sessions.js";
 import os from "node:os";
 import type { Agent, Assignment, Decision } from "../types.js";
 
@@ -54,7 +54,7 @@ export function createApp(deps: AppDeps) {
     if (p !== undefined && typeof p !== "string") throw new BadRequest("path must be a string");
     res.json(await listDir(deps.browseRoot ?? os.homedir(), p));
   }));
-  const sessions = () => listAllSessions(store.listAgents(), store.assignmentSessionIds(), deps.sessions);
+  const sessions = () => listAllSessions(store.listAgents(), store.assignmentSessionIds(), { live: async () => store.liveSessions().map(l => ({ sessionId: l.sessionId, cwd: l.cwd, name: l.title, kind: l.kind as "interactive" | "background", status: l.status, startedAt: l.at, ...(l.bgId ? { bgId: l.bgId } : {}) })), history: deps.sessions?.history ?? listHistorySessions });
   app.get("/api/sessions", wrap(async (_req, res) => res.json(await sessions())));
   app.post("/api/sessions/:sessionId/adopt", wrap(async (req, res) => {
     const { role, displayName } = req.body ?? {};
@@ -62,7 +62,7 @@ export function createApp(deps: AppDeps) {
     const sid = req.params.sessionId as string;
     const info = (await sessions()).find(s => s.sessionId === sid);
     if (!info) throw new NotFound(`session ${sid}`);
-    if (!info.canAdopt) throw new Conflict(info.agentId ? `session already on the grid as ${info.agentId}` : "session is live in a terminal — close it first");
+    if (!info.canAdopt) throw new Conflict(`session already on the grid as ${info.agentId}`);
     res.status(201).json(await store.createAgent({ role, repo: info.cwd, displayName, resumeSessionId: sid }));
   }));
   app.post("/api/sessions/:sessionId/attach", wrap(async (req, res) => {

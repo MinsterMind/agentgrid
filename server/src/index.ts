@@ -12,7 +12,7 @@ import { openTerminal, runInTerminal } from "./terminal.js";
 import { PtyManager, type SpawnFn } from "./pty.js";
 import * as nodePty from "node-pty";
 import { attachPtyWebSocket } from "./api/ws.js";
-import { listAllSessions } from "./sessions.js";
+import { listAllSessions, listLiveSessions, LiveSessionWatcher } from "./sessions.js";
 import type { QueryFn } from "./runner/runner.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -43,10 +43,12 @@ async function serve() {
   });
   rolesWatcher.on("error", err => console.error("roles watcher:", err.message));
   // Fake mode serves a canned session list so the UI/e2e can exercise adoption without Claude Code.
-  const fakeSessions = process.env.AGENTGRID_FAKE ? { live: async () => [], history: async () => [{ sessionId: "fake-old-session", cwd: "/tmp", title: "Earlier work (fake)", lastActiveAt: Date.now() }] } : undefined;
+  const fakeSessions = process.env.AGENTGRID_FAKE ? { live: async () => [{ sessionId: "fake-live-bg", cwd: "/tmp", name: "Fake background task", kind: "background" as const, status: "blocked" as const, startedAt: Date.now() - 60_000, bgId: "fake1" }], history: async () => [{ sessionId: "fake-old-session", cwd: "/tmp", title: "Earlier work (fake)", lastActiveAt: Date.now() }] } : undefined;
   // Fake mode: a plain shell stands in for `claude` so the terminal pane can be exercised without the CLI.
   const fakeSpawn: SpawnFn = (_file, args, opts) => nodePty.spawn("/bin/sh", ["-c", `echo "AgentGrid fake terminal (claude ${args.join(" ")})"; exec cat`], opts);
   const ptys = new PtyManager(process.env.AGENTGRID_FAKE ? fakeSpawn : undefined);
+  const watcher = new LiveSessionWatcher(fakeSessions ? fakeSessions.live : listLiveSessions, live => store.setLiveSessions(live), 5000);
+  watcher.start();
   const app = createApp({ store, manager, transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }), openTerminal, runInTerminal, staticDir: uiDist, browseRoot: process.env.AGENTGRID_BROWSE_ROOT,
     ...(fakeSessions ? { sessions: fakeSessions } : {}) });
   const port = Number(process.env.AGENTGRID_PORT ?? 4800);

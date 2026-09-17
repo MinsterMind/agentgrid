@@ -30,7 +30,7 @@ export async function listHistorySessions(limit = 50): Promise<HistorySession[]>
   return rows.filter(r => r.cwd).map(r => ({ sessionId: r.sessionId, cwd: r.cwd!, title: r.customTitle || r.summary || r.firstPrompt || r.sessionId.slice(0, 8), lastActiveAt: r.lastModified }));
 }
 
-/** Live rows win; history newest-first; sessions owned by grid agents are annotated and never adoptable. */
+/** Live rows win; history newest-first; sessions owned by grid agents are annotated and never adoptable twice. */
 export function mergeSessions(live: LiveSession[], history: HistorySession[], agents: Agent[], assignmentSessionIds: Map<string, string>): SessionInfo[] {
   const owner = new Map<string, string>();
   for (const a of agents) {
@@ -43,7 +43,7 @@ export function mergeSessions(live: LiveSession[], history: HistorySession[], ag
   for (const l of live) {
     seen.add(l.sessionId);
     const agentId = owner.get(l.sessionId);
-    out.push({ sessionId: l.sessionId, cwd: l.cwd, title: l.name, kind: l.kind, status: l.status, at: l.startedAt, ...(l.bgId ? { bgId: l.bgId } : {}), ...(agentId ? { agentId } : {}), canAdopt: false });
+    out.push({ sessionId: l.sessionId, cwd: l.cwd, title: l.name, kind: l.kind, status: l.status, at: l.startedAt, ...(l.bgId ? { bgId: l.bgId } : {}), ...(agentId ? { agentId } : {}), canAdopt: !agentId });
   }
   for (const h of [...history].sort((a, b) => b.lastActiveAt - a.lastActiveAt)) {
     if (seen.has(h.sessionId)) continue;
@@ -57,4 +57,22 @@ export function mergeSessions(live: LiveSession[], history: HistorySession[], ag
 export async function listAllSessions(agents: Agent[], assignmentSessionIds: Map<string, string>, deps = { live: listLiveSessions, history: listHistorySessions }): Promise<SessionInfo[]> {
   const [live, history] = await Promise.all([deps.live(), deps.history()]);
   return mergeSessions(live, history, agents, assignmentSessionIds);
+}
+
+/**
+ * Polls the live session list and reports changes. `snapshot()` is the last known list,
+ * annotated against the current agents by the caller-supplied `annotate`.
+ */
+export class LiveSessionWatcher {
+  private last: LiveSession[] = [];
+  private timer: NodeJS.Timeout | null = null;
+  constructor(private fetch: () => Promise<LiveSession[]>, private onChange: (live: LiveSession[]) => void, private intervalMs = 5000) {}
+  get current(): LiveSession[] { return this.last; }
+  isLive(sessionId: string): boolean { return this.last.some(s => s.sessionId === sessionId); }
+  async poll(): Promise<void> {
+    const next = await this.fetch().catch(() => this.last);
+    if (JSON.stringify(next) !== JSON.stringify(this.last)) { this.last = next; this.onChange(next); }
+  }
+  start(): void { void this.poll(); this.timer = setInterval(() => void this.poll(), this.intervalMs); this.timer.unref?.(); }
+  stop(): void { if (this.timer) clearInterval(this.timer); this.timer = null; }
 }

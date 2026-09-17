@@ -62,9 +62,10 @@ export type GridEvent =
   | { type: "agent"; agent: Agent }
   | { type: "agent-removed"; id: string }
   | { type: "assignment"; assignment: Assignment }
-  | { type: "roles"; roles: RoleDef[] };
+  | { type: "roles"; roles: RoleDef[] }
+  | { type: "sessions"; sessions: SessionInfo[] };
 
-export interface GridState { roles: RoleDef[]; agents: Agent[]; assignments: Assignment[] }
+export interface GridState { roles: RoleDef[]; agents: Agent[]; assignments: Assignment[]; liveSessions: SessionInfo[] }
 
 export interface DirEntry { name: string; path: string; isRepo: boolean }
 export interface DirListing { root: string; path: string; parent: string | null; entries: DirEntry[] }
