@@ -4,7 +4,7 @@ import path from "node:path";
 import matter from "gray-matter";
 import { paths } from "./paths.js";
 import { loadRoles, ensureDefaultRoles } from "./roles.js";
-import type { Agent, Assignment, GridEvent, GridState, MemoryFile, RoleDef, SessionInfo } from "../types.js";
+import type { Agent, Assignment, GridEvent, GridState, MemoryFile, RoleDef, SessionInfo, SessionActivity } from "../types.js";
 import { mergeSessions, type LiveSession } from "../sessions.js";
 
 export class NotFound extends Error { status = 404; }
@@ -34,6 +34,7 @@ export class Store extends EventEmitter {
   private assignments = new Map<string, Assignment>();
   private nextAssignment = 1;
   private live: LiveSession[] = [];
+  private statuses = new Map<string, SessionActivity>();
 
   constructor(home: string, private defaultsDir: string) {
     super();
@@ -123,6 +124,15 @@ export class Store extends EventEmitter {
     this.agents.delete(id);
     this.emit("event", { type: "agent-removed", id } satisfies GridEvent);
   }
+  /** Forget the adopted session: the next assignment starts a fresh conversation (memory files are kept). */
+  async clearResumeSession(id: string): Promise<Agent> {
+    const { resumeSessionId: _drop, ...rest } = this.getAgent(id);
+    const next: Agent = { ...rest, id };
+    await writeAtomic(this.p.agentFile(id), next);
+    this.agents.set(id, next);
+    this.emit("event", { type: "agent", agent: next } satisfies GridEvent);
+    return next;
+  }
   memoryDir(id: string): string { return this.p.memoryDir(id); }
   async listMemory(id: string): Promise<MemoryFile[]> {
     this.getAgent(id);
@@ -190,7 +200,13 @@ export class Store extends EventEmitter {
     this.emit("event", { type: "sessions", sessions: this.liveSessions() } satisfies GridEvent);
   }
 
+  setSessionStatus(status: SessionActivity): void {
+    this.statuses.set(status.sessionId, status);
+    this.emit("event", { type: "session-status", status } satisfies GridEvent);
+  }
+  sessionStatus(sessionId: string): SessionActivity | undefined { return this.statuses.get(sessionId); }
+
   getState(): GridState {
-    return { roles: this.listRoles(), agents: this.listAgents(), assignments: this.listAssignments(), liveSessions: this.liveSessions() };
+    return { roles: this.listRoles(), agents: this.listAgents(), assignments: this.listAssignments(), liveSessions: this.liveSessions(), sessionStatuses: [...this.statuses.values()] };
   }
 }

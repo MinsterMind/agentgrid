@@ -72,5 +72,13 @@ export class PtyManager {
     };
   }
 
+  /** Type into a running session's terminal (no viewer needed). Returns false if no pty is open for it. */
+  write(sessionId: string, data: string): boolean {
+    const e = this.entries.get(sessionId);
+    if (!e) return false;
+    e.pty.write(data);
+    return true;
+  }
+
   closeAll(): void { for (const e of this.entries.values()) e.pty.kill(); this.entries.clear(); }
 }

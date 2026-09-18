@@ -222,3 +222,32 @@ describe("session lookup by id and rename", () => {
     expect(renamed).toEqual([["s-recent", "Payments idempotency"]]);
   });
 });
+
+describe("reset and say", () => {
+  it("reset forgets the adopted session (memory kept); refused while busy", async () => {
+    const a = createApp({ store, manager: new Manager(store, { queryFn: fake.queryFn }) });
+    const ag = await store.createAgent({ role: "coder", repo: "/x/r", resumeSessionId: "s-old" });
+    expect((await request(a).post(`/api/agents/${ag.id}/reset`).expect(200)).body.resumeSessionId).toBeUndefined();
+    expect(store.getAgent(ag.id).resumeSessionId).toBeUndefined();
+    await store.updateAgent(ag.id, { state: "working" });
+    await request(a).post(`/api/agents/${ag.id}/reset`).expect(409);
+  });
+  it("say types into the embedded terminal when open, else starts an assignment", async () => {
+    const typed: Array<[string, string]> = []; let open = true;
+    const a = createApp({ store, manager: new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, ag, e) => ({ cwd: ag.repo, abortController: e.abortController }) as Options }),
+      writeToTerminal: (sid, data) => { if (!open) return false; typed.push([sid, data]); return true; } });
+    const ag = await store.createAgent({ role: "coder", repo: "/x/r", resumeSessionId: "s-adopt" });
+    await request(a).post(`/api/agents/${ag.id}/say`).send({ text: "" }).expect(400);
+    expect((await request(a).post(`/api/agents/${ag.id}/say`).send({ text: "continue\n" }).expect(200)).body).toEqual({ via: "terminal" });
+    expect(typed).toEqual([["s-adopt", "continue\r"]]);
+    open = false;
+    const res = await request(a).post(`/api/agents/${ag.id}/say`).send({ text: "do it" }).expect(201);
+    expect(res.body.via).toBe("assignment"); expect(res.body.assignment.prompt).toBe("do it");
+    await request(a).post(`/api/agents/${ag.id}/say`).send({ text: "again" }).expect(409); // working, no terminal
+  });
+  it("state carries sessionStatuses and SSE emits session-status", async () => {
+    const a = createApp({ store, manager: new Manager(store, { queryFn: fake.queryFn }) });
+    store.setSessionStatus({ sessionId: "s1", phase: "idle", lastMessage: "hi", lastPrompt: "yo", updatedAt: "t" });
+    expect((await request(a).get("/api/state")).body.sessionStatuses).toEqual([{ sessionId: "s1", phase: "idle", lastMessage: "hi", lastPrompt: "yo", updatedAt: "t" }]);
+  });
+});

@@ -12,6 +12,7 @@ import { PtyManager, type SpawnFn } from "./pty.js";
 import * as nodePty from "node-pty";
 import { attachPtyWebSocket } from "./api/ws.js";
 import { listAllSessions, listLiveSessions, LiveSessionWatcher } from "./sessions.js";
+import { SessionStatusWatcher } from "./sessionStatus.js";
 import type { QueryFn } from "./runner/runner.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -72,7 +73,22 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const watcher = new LiveSessionWatcher(fakeSessions ? fakeSessions.live : listLiveSessions, live => store.setLiveSessions(live), 5000);
   watcher.start();
 
-  const app = createApp({ store, manager, transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }),
+  // Follow the transcript of every session a grid agent is bound to (adopted or running), so Details/notifications work even when the work happens in the embedded terminal.
+  const statuses = new SessionStatusWatcher(st => store.setSessionStatus(st), 1500);
+  const syncWatched = () => {
+    const want = new Map<string, string>();
+    for (const a of store.listAgents()) {
+      if (a.resumeSessionId) want.set(a.resumeSessionId, a.repo);
+      const cur = a.currentAssignmentId ? store.getAssignment(a.currentAssignmentId) : null;
+      if (cur?.sessionId) want.set(cur.sessionId, a.repo);
+    }
+    for (const sid of statuses.list().map(x => x.sessionId)) if (!want.has(sid)) statuses.unwatch(sid);
+    for (const [sid, cwd] of want) statuses.watch(sid, cwd);
+  };
+  store.on("event", e => { if (e.type === "agent" || e.type === "agent-removed" || e.type === "assignment") syncWatched(); });
+  syncWatched(); statuses.start();
+
+  const app = createApp({ store, manager, writeToTerminal: (sid, data) => ptys.write(sid, data), transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }),
     openTerminal, runInTerminal, staticDir, browseRoot: opts.browseRoot ?? process.env.AGENTGRID_BROWSE_ROOT, ...(fakeSessions ? { sessions: fakeSessions } : {}) });
   const server = http.createServer(app);
   attachPtyWebSocket(server, { store, ptys, sessions: () => listAllSessions(store.listAgents(), store.assignmentSessionIds(), fakeSessions) });
@@ -87,6 +103,6 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   log(`AgentGrid on ${url}  (data: ${home}${staticDir ? "" : ", UI not built"})`);
   return {
     port: bound, url, home,
-    close: () => new Promise<void>(resolve => { watcher.stop(); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }),
+    close: () => new Promise<void>(resolve => { watcher.stop(); statuses.stop(); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }),
   };
 }

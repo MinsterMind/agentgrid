@@ -63,9 +63,10 @@ export type GridEvent =
   | { type: "agent-removed"; id: string }
   | { type: "assignment"; assignment: Assignment }
   | { type: "roles"; roles: RoleDef[] }
-  | { type: "sessions"; sessions: SessionInfo[] };
+  | { type: "sessions"; sessions: SessionInfo[] }
+  | { type: "session-status"; status: SessionActivity };
 
-export interface GridState { roles: RoleDef[]; agents: Agent[]; assignments: Assignment[]; liveSessions: SessionInfo[] }
+export interface GridState { roles: RoleDef[]; agents: Agent[]; assignments: Assignment[]; liveSessions: SessionInfo[]; sessionStatuses: SessionActivity[] }
 
 export interface DirEntry { name: string; path: string; isRepo: boolean }
 export interface DirListing { root: string; path: string; parent: string | null; entries: DirEntry[] }
@@ -87,4 +88,16 @@ export interface SessionInfo {
   /** "grid" when the live process is AgentGrid's own embedded terminal (reconnectable, never a foreign terminal). */
   owner?: "grid";
   canAdopt: boolean;
+}
+
+export type SessionPhase = "working" | "waiting" | "idle" | "unknown";
+/** Live activity of a session derived from its transcript (works for embedded-terminal sessions too). */
+export interface SessionActivity {
+  sessionId: string;
+  phase: SessionPhase;
+  lastMessage: string;
+  lastPrompt: string;
+  question?: { text: string; options: string[]; multiSelect: boolean };
+  pendingTool?: { name: string; summary: string };
+  updatedAt: string;
 }

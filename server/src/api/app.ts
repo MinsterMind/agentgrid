@@ -29,6 +29,8 @@ export interface AppDeps {
   sessions?: { live: () => Promise<LiveSession[]>; history: () => Promise<HistorySession[]>; lookup?: (id: string) => Promise<HistorySession | null>; rename?: (id: string, title: string) => Promise<void> };
   /** Test hook: how to close a foreign terminal session (default SIGTERM). */
   killSession?: (pid: number) => void;
+  /** Type text into a session's embedded terminal; false when none is open. */
+  writeToTerminal?: (sessionId: string, data: string) => boolean;
 }
 
 class BadRequest extends Error { status = 400; }
@@ -131,6 +133,23 @@ export function createApp(deps: AppDeps) {
   }));
   app.post("/api/agents/:id/cancel", wrap(async (req, res) => { await manager.cancel(req.params.id as string); res.status(204).end(); }));
   app.post("/api/agents/:id/ack", wrap(async (req, res) => { await manager.ack(req.params.id as string); res.status(204).end(); }));
+  /** Forget an adopted session so the next task starts fresh (bug: pulled-in agent kept old context forever). */
+  app.post("/api/agents/:id/reset", wrap(async (req, res) => {
+    const agent = store.getAgent(req.params.id as string);
+    if (agent.state !== "free" && agent.state !== "done" && agent.state !== "failed") throw new Conflict(`agent is ${agent.state}`);
+    if (agent.resumeSessionId && store.isLive(agent.resumeSessionId) && store.liveSessions().find(l => l.sessionId === agent.resumeSessionId)?.owner !== "grid") throw new Conflict("session is open in a terminal — close it first");
+    res.json(await store.clearResumeSession(agent.id));
+  }));
+  /** Reply to the agent's session from Details: goes into the embedded terminal if one is open, else starts a grid assignment. */
+  app.post("/api/agents/:id/say", wrap(async (req, res) => {
+    const text = typeof req.body?.text === "string" ? req.body.text : "";
+    if (!text.trim()) throw new BadRequest("text is required");
+    const agent = store.getAgent(req.params.id as string);
+    const sid = agent.currentAssignmentId ? store.getAssignment(agent.currentAssignmentId).sessionId : agent.resumeSessionId;
+    if (sid && deps.writeToTerminal?.(sid, text.replace(/\r?\n$/, "") + "\r")) { res.json({ via: "terminal" }); return; }
+    if (agent.state !== "free") throw new Conflict(`agent is ${agent.state} and has no open terminal`);
+    res.status(201).json({ via: "assignment", assignment: await manager.assign(agent.id, text) });
+  }));
   app.get("/api/agents/:id/memory", wrap(async (req, res) => res.json(await store.listMemory(req.params.id as string))));
 
   app.post("/api/agents/:id/open-terminal", wrap(async (req, res) => {
