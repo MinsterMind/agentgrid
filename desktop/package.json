@@ -1,6 +1,6 @@
 {
   "name": "@agentgrid/desktop",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "AgentGrid desktop app \u2014 run a roster of Claude Code agents from one window",
   "type": "module",
