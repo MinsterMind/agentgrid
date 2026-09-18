@@ -53,7 +53,15 @@ export class Runner {
       // Fire-and-forget by design (the stream is consumed in the background), but never
       // bare: any failure that escapes consume()'s own try/catch is logged, not left to
       // become an unhandled rejection that could take down the process.
-      void this.consume(this.deps.queryFn({ prompt: fullPrompt, options }), assignment.id).catch(err => {
+      let stream: AsyncIterable<SDKMessage>;
+      try {
+        stream = this.deps.queryFn({ prompt: fullPrompt, options });
+      } catch (err) {
+        // query() can throw synchronously (e.g. no Claude Code executable). Don't strand the agent in "working".
+        await this.finish({ state: "failed", error: `could not start Claude Code: ${(err as Error).message ?? err}` });
+        return store.getAssignment(assignment.id);
+      }
+      void this.consume(stream, assignment.id).catch(err => {
         console.error(`[runner:${this.agentId}] unexpected consume failure`, err);
       });
       return assignment;

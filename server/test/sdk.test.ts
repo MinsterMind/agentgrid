@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { buildOptions } from "../src/runner/sdk.js";
+import { buildOptions, findClaudeExecutable } from "../src/runner/sdk.js";
+import { mkdtemp, writeFile, symlink, realpath } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { RoleDef, Agent } from "../src/types.js";
 
 const role: RoleDef = { name: "reviewer", avatar: "x", model: "claude-opus-5", effort: "high", permissionMode: "default",
@@ -25,5 +28,16 @@ describe("buildOptions resume", () => {
     const extra = { canUseTool: async () => ({ behavior: "allow" as const }), abortController: new AbortController() };
     expect(buildOptions(role, agent, extra).resume).toBeUndefined();
     expect(buildOptions(role, { ...agent, resumeSessionId: "sess-42" }, extra).resume).toBe("sess-42");
+  });
+});
+
+describe("findClaudeExecutable", () => {
+  it("resolves `claude` on PATH through symlinks; env override wins; undefined when absent", async () => {
+    const dir = await realpath(await mkdtemp(path.join(tmpdir(), "bin-")));
+    await writeFile(path.join(dir, "claude-real"), "#!/bin/sh\n", { mode: 0o755 });
+    await symlink(path.join(dir, "claude-real"), path.join(dir, "claude"));
+    expect(findClaudeExecutable({ PATH: `/nonexistent:${dir}` })).toBe(path.join(dir, "claude-real"));
+    expect(findClaudeExecutable({ PATH: dir, AGENTGRID_CLAUDE_PATH: path.join(dir, "claude-real") })).toBe(path.join(dir, "claude-real"));
+    expect(findClaudeExecutable({ PATH: "/nonexistent" })).toBeUndefined();
   });
 });

@@ -238,3 +238,16 @@ describe("Runner", () => {
     expect(store.getAgent(agentId).state).toBe("failed");
   });
 });
+
+describe("assign when Claude Code cannot start", () => {
+  it("fails the assignment with a clear error instead of leaving it working", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "ag-"));
+    const st = new Store(home, path.resolve("roles")); await st.init();
+    const a = await st.createAgent({ role: "coder", repo: "/tmp/repo" });
+    const r = new Runner(a.id, { store: st, queryFn: () => { throw new Error("Native CLI binary for darwin-arm64 not found"); }, buildOptions });
+    const asg = await r.assign("go");
+    expect(asg.state).toBe("failed");
+    expect(asg.error).toMatch(/could not start Claude Code: Native CLI binary/);
+    expect(st.getAgent(a.id).state).toBe("failed");
+  });
+});
