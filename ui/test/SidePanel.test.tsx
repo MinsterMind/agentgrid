@@ -58,3 +58,33 @@ describe("SidePanel", () => {
     expect(screen.queryByRole("button", { name: /delete agent/i })).not.toBeInTheDocument();
   });
 });
+
+describe("SidePanel activity (feature: status + reply from Details)", () => {
+  const adopted: Agent = { ...agent, state: "free", currentAssignmentId: null, resumeSessionId: "sess-abcdef12" };
+  it("shows the question with option buttons; clicking one replies; free text replies too", async () => {
+    const onSay = vi.fn(async () => {});
+    render(<SidePanel agent={adopted} role={role} assignment={null} {...fns} onSay={onSay}
+      activity={{ sessionId: "sess-abcdef12", phase: "waiting", lastMessage: "Which branch should I use?", lastPrompt: "fix login", updatedAt: new Date().toISOString(), question: { text: "Base branch?", options: ["main", "develop"], multiSelect: false } }} />);
+    const st = screen.getByTestId("session-status");
+    expect(st).toHaveTextContent("Asking you a question"); expect(st).toHaveTextContent("Which branch should I use?");
+    await userEvent.click(screen.getByRole("button", { name: "develop" }));
+    expect(onSay).toHaveBeenCalledWith("devops@hrns", "develop");
+    await userEvent.type(screen.getByLabelText("Reply"), "use trunk{Enter}");
+    expect(onSay).toHaveBeenLastCalledWith("devops@hrns", "use trunk");
+  });
+  it("idle shows last message and 'your turn'; Start fresh resets; rename works inline; copy works", async () => {
+    const onReset = vi.fn(async () => {}); const onRenameSession = vi.fn(async () => {});
+    Object.assign(navigator, { clipboard: { writeText: vi.fn(() => Promise.resolve()) } });
+    render(<SidePanel agent={adopted} role={role} assignment={null} {...fns} onReset={onReset} onRenameSession={onRenameSession}
+      activity={{ sessionId: "sess-abcdef12", phase: "idle", lastMessage: "All tests green.", lastPrompt: "run tests", updatedAt: new Date().toISOString() }} />);
+    expect(screen.getByTestId("session-status")).toHaveTextContent("Idle — your turn");
+    expect(screen.getByTestId("session-status")).toHaveTextContent("All tests green.");
+    await userEvent.click(screen.getByRole("button", { name: "Start fresh" }));
+    expect(onReset).toHaveBeenCalledWith("devops@hrns");
+    await userEvent.click(screen.getByTitle("Copy session id"));
+    expect((navigator.clipboard as any).writeText).toHaveBeenCalledWith("sess-abcdef12");
+    await userEvent.click(screen.getByTitle("Rename session"));
+    await userEvent.type(screen.getByLabelText("Session name"), "Login fix{Enter}");
+    expect(onRenameSession).toHaveBeenCalledWith("sess-abcdef12", "Login fix");
+  });
+});

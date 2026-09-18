@@ -58,3 +58,15 @@ describe("AgentTile", () => {
     expect(onSelect).toHaveBeenCalledWith("devops@hrns");
   });
 });
+
+describe("AgentTile task line", () => {
+  it("shows the current task title on a working tile and the last prompt for an idle adopted one", () => {
+    const { rerender } = render(<AgentTile {...base} agent={agent("working")} assignment={asg({ prompt: "Rotate the refresh token\nand add tests" })} />);
+    const title = screen.getByTestId("tile-devops@hrns").querySelector(".tasktitle")!;
+    expect(title).toHaveTextContent("Rotate the refresh token"); expect(title).not.toHaveTextContent("add tests");
+    rerender(<AgentTile {...base} agent={{ ...agent("free", null), resumeSessionId: "s" }} assignment={null}
+      activity={{ sessionId: "s", phase: "waiting", lastMessage: "", lastPrompt: "deploy staging", updatedAt: "", pendingTool: { name: "Bash", summary: "kubectl apply" } }} />);
+    expect(screen.getByTestId("tile-devops@hrns").querySelector(".tasktitle")).toHaveTextContent("deploy staging");
+    expect(screen.getByTestId("tile-phase")).toHaveTextContent("needs approval: Bash");
+  });
+});

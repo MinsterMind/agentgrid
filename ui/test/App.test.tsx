@@ -9,6 +9,9 @@ import type { Agent, GridEvent, GridState, RoleDef } from "../src/types";
 vi.mock("../src/api", () => ({
   api: {
     subscribe: vi.fn(),
+    say: vi.fn(() => Promise.resolve({ via: "terminal" })),
+    resetSession: vi.fn(() => Promise.resolve({})),
+    renameSession: vi.fn(() => Promise.resolve()),
     agentTranscript: vi.fn(() => Promise.resolve({ sessionId: null, entries: [] })),
     listSessions: vi.fn(() => Promise.resolve([])),
     pickFolder: vi.fn(() => Promise.resolve(undefined)),
@@ -40,7 +43,7 @@ function agent(id: string, state: Agent["state"]): Agent {
   return { id, role: "coder", repo: "/tmp", displayName: id, createdAt: new Date().toISOString(), state, currentAssignmentId: null };
 }
 
-function snapshot(agents: Agent[]): GridState { return { roles: [role], agents, assignments: [], liveSessions: [] }; }
+function snapshot(agents: Agent[]): GridState { return { roles: [role], agents, assignments: [], liveSessions: [], sessionStatuses: [] }; }
 
 let onSnapshot: (s: GridState) => void;
 let onChange: (e: GridEvent) => void;

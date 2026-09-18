@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { api } from "./api";
-import { reducer, initial, assignmentFor, counts, todaySpend, waitingIds, unclaimedLiveSessions, liveSessionFor } from "./state/reducer";
+import { reducer, initial, assignmentFor, counts, todaySpend, waitingIds, unclaimedLiveSessions, liveSessionFor, activityFor, sessionIdFor } from "./state/reducer";
 import { visualOrder } from "./state/sections";
 import { AgentGrid } from "./components/AgentGrid";
 import { SidePanel } from "./components/SidePanel";
@@ -24,6 +24,21 @@ export function App() {
 
   useEffect(() => api.subscribe(st => dispatch({ type: "snapshot", state: st }), ev => dispatch({ type: "change", event: ev }), v => dispatch({ type: "connected", value: v })), []);
 
+  // Transcript-derived activity → notifications, so embedded-terminal work is covered too.
+  const prevPhase = useRef<Record<string, string>>({});
+  useEffect(() => {
+    for (const a of s.agents) {
+      const sid = sessionIdFor(s, a); if (!sid) continue;
+      const act = s.activity[sid]; if (!act) continue;
+      const prev = prevPhase.current[sid];
+      if (prev && prev !== act.phase) {
+        if (act.phase === "waiting") notifyWaiting(a.displayName, act.question ? `asks: ${act.question.text.slice(0, 80)}` : `wants to run ${act.pendingTool?.name ?? "a tool"}`);
+        if (act.phase === "idle" && prev === "working") notifyFinished(a.displayName, true);
+      }
+      prevPhase.current[sid] = act.phase;
+    }
+  }, [s.activity, s.agents]);
+
   // transitions → notifications + title
   useEffect(() => {
     for (const a of s.agents) {
@@ -37,7 +52,7 @@ export function App() {
     }
     const liveIds = new Set(s.agents.map(a => a.id));
     for (const id of Object.keys(prevStates.current)) if (!liveIds.has(id)) delete prevStates.current[id];
-    setTitleCount(waitingIds(s).length);
+    setTitleCount(new Set([...waitingIds(s), ...s.agents.filter(a => activityFor(s, a)?.phase === "waiting" && a.state === "free").map(a => a.id)]).size);
   }, [s]);
 
   const selected = s.agents.find(a => a.id === s.selectedId) ?? null;
@@ -67,10 +82,14 @@ export function App() {
         <AgentGrid agents={s.agents} roles={s.roles} assignments={s.assignments} selectedId={s.selectedId} recentFor={recentFor}
           onSelect={id => dispatch({ type: "select", id })}
           onAssign={(id, prompt) => api.assign(id, prompt).then(() => dispatch({ type: "select", id })).catch(showErr)}
-          liveSessions={unclaimedLiveSessions(s)} liveFor={ag => liveSessionFor(s, ag)}
+          liveSessions={unclaimedLiveSessions(s)} liveFor={ag => liveSessionFor(s, ag)} activityFor={ag => activityFor(s, ag)}
           onPullIn={(sid, role, takeover) => api.adoptSession(sid, { role, takeover }).then(a => { dispatch({ type: "select", id: a.id }); if (takeover) setOpenTerminalRequest(n => n + 1); }).catch(showErr)} />
         <SidePanel agent={selected} role={s.roles.find(r => r.name === selected?.role)} assignment={selectedAsg}
           onDecide={decide} onCancel={id => api.cancel(id).catch(showErr)} onAck={id => api.ack(id).catch(showErr)} onOpenTerminal={openTerminal} onTranscript={id => setTranscriptFor(id)} hasSession={!!selected && Object.values(s.assignments).some(a => a.agentId === selected.id && a.sessionId)} terminalSessionId={terminalSessionId} live={selected ? liveSessionFor(s, selected) : null} openTerminalRequest={openTerminalRequest}
+          activity={selected ? activityFor(s, selected) : null}
+          onSay={(id, text) => api.say(id, text).catch(showErr)}
+          onReset={id => api.resetSession(id).catch(showErr)}
+          onRenameSession={(sid, title) => api.renameSession(sid, title).catch(showErr)}
           onDelete={id => api.deleteAgent(id).catch(showErr)} />
       </div>
       <footer className="foot">

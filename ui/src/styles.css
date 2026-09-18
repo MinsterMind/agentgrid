@@ -122,3 +122,14 @@ button.pill:disabled { opacity:.6; }
 .livecard select { background:#0f1115; border:1px solid #2b3140; color:var(--fg); border-radius:6px; padding:2px 6px; font:inherit; font-size:11px; }
 .section.live { border-left-color:#1f2937; margin-top:6px; }
 .row.byid input { flex:1; font-family:ui-monospace, monospace; }
+.tasktitle { font-size:12px; color:#e2e8f0; margin-top:8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:500; }
+.act.phase { min-height:0; margin-top:4px; font-size:11px; } .act.phase.waiting { color:#ffd166; } .act.phase.working { color:#93c5fd; } .act.phase.idle { color:#86efac; }
+.status { border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-top:10px; background:#12151b; }
+.status.waiting { border-color:#f59e0b66; } .status.idle { border-color:#22c55e44; } .status.working { border-color:#3b82f644; }
+.st-head { display:flex; align-items:center; gap:8px; font-size:12px; font-weight:600; }
+.st-head .dot { width:8px; height:8px; border-radius:50%; background:#64748b; animation:none; }
+.st-head .dot.working { background:var(--blue); animation:blink 1.2s infinite; } .st-head .dot.waiting { background:var(--amber); } .st-head .dot.idle { background:var(--green); }
+.st-tool { font-family:ui-monospace, monospace; font-size:11px; color:#ffd166; margin-top:6px; }
+.st-msg { font-size:12px; color:#c3c9d5; margin-top:6px; white-space:pre-wrap; max-height:160px; overflow:auto; }
+.row.reply input { flex:1; }
+.session-line code { font-family:ui-monospace, monospace; font-size:11px; }

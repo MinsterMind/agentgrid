@@ -1,13 +1,13 @@
-import type { Agent, AgentState, Assignment, GridEvent, GridState, RoleDef, SessionInfo } from "../types";
+import type { Agent, AgentState, Assignment, GridEvent, GridState, RoleDef, SessionInfo, SessionActivity } from "../types";
 
-export interface UiState { roles: RoleDef[]; agents: Agent[]; assignments: Record<string, Assignment>; liveSessions: SessionInfo[]; selectedId: string | null; connected: boolean }
+export interface UiState { roles: RoleDef[]; agents: Agent[]; assignments: Record<string, Assignment>; liveSessions: SessionInfo[]; activity: Record<string, SessionActivity>; selectedId: string | null; connected: boolean }
 export type Action =
   | { type: "snapshot"; state: GridState }
   | { type: "change"; event: GridEvent }
   | { type: "select"; id: string | null }
   | { type: "connected"; value: boolean };
 
-export const initial: UiState = { roles: [], agents: [], assignments: {}, liveSessions: [], selectedId: null, connected: false };
+export const initial: UiState = { roles: [], agents: [], assignments: {}, liveSessions: [], activity: {}, selectedId: null, connected: false };
 
 export function reducer(s: UiState, a: Action): UiState {
   switch (a.type) {
@@ -15,11 +15,13 @@ export function reducer(s: UiState, a: Action): UiState {
       return { ...s, roles: a.state.roles, agents: a.state.agents,
         assignments: Object.fromEntries(a.state.assignments.map(x => [x.id, x])),
         liveSessions: a.state.liveSessions ?? [],
+        activity: Object.fromEntries((a.state.sessionStatuses ?? []).map(x => [x.sessionId, x])),
         selectedId: a.state.agents.some(x => x.id === s.selectedId) ? s.selectedId : null };
     case "change": {
       const e = a.event;
       if (e.type === "roles") return { ...s, roles: e.roles };
       if (e.type === "sessions") return { ...s, liveSessions: e.sessions };
+      if (e.type === "session-status") return { ...s, activity: { ...s.activity, [e.status.sessionId]: e.status } };
       if (e.type === "assignment") return { ...s, assignments: { ...s.assignments, [e.assignment.id]: e.assignment } };
       if (e.type === "agent-removed") return { ...s, agents: s.agents.filter(x => x.id !== e.id), selectedId: s.selectedId === e.id ? null : s.selectedId };
       const i = s.agents.findIndex(x => x.id === e.agent.id);
@@ -58,3 +60,12 @@ export const unclaimedLiveSessions = (s: UiState): SessionInfo[] => {
 /** The live session an adopted agent is bound to, if its process is running *outside* the grid (our own embedded terminal doesn't count). */
 export const liveSessionFor = (s: UiState, agent: Agent): SessionInfo | null =>
   agent.resumeSessionId ? s.liveSessions.find(l => l.sessionId === agent.resumeSessionId && l.owner !== "grid") ?? null : null;
+
+/** The session an agent is "about" right now: its running assignment's, else the adopted one, else its latest finished one. */
+export const sessionIdFor = (s: UiState, agent: Agent): string | null => {
+  const cur = agent.currentAssignmentId ? s.assignments[agent.currentAssignmentId] : null;
+  if (cur?.sessionId) return cur.sessionId;
+  if (agent.resumeSessionId) return agent.resumeSessionId;
+  return Object.values(s.assignments).filter(a => a.agentId === agent.id && a.sessionId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]?.sessionId ?? null;
+};
+export const activityFor = (s: UiState, agent: Agent): SessionActivity | null => { const sid = sessionIdFor(s, agent); return sid ? s.activity[sid] ?? null : null; };
