@@ -14,7 +14,8 @@ export type SpawnFn = (file: string, args: string[], opts: { name: string; cols:
 export interface OpenOptions { cwd: string; argv: string[]; cols: number; rows: number }
 export interface Handle { write(d: string): void; resize(c: number, r: number): void; detach(): void; kill(): void }
 
-interface Entry { pty: PtyLike; viewer: { onData: (d: string) => void; onEnd: (reason: string) => void; sub: { dispose(): void } } | null }
+interface Entry { pty: PtyLike; viewer: { onData: (d: string) => void; onEnd: (reason: string) => void; sub: { dispose(): void } } | null; /** Recent output, replayed to a reconnecting viewer. */ tail: string }
+const TAIL_MAX = 256 * 1024;
 
 /** The server may itself have been started from inside a Claude Code session; never leak that context into the embedded one. */
 export function cleanEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
@@ -41,8 +42,10 @@ export class PtyManager {
     let entry = this.entries.get(sessionId);
     if (!entry) {
       const pty = this.spawn("claude", opts.argv, { name: "xterm-256color", cols: opts.cols, rows: opts.rows, cwd: opts.cwd, env: cleanEnv() });
-      entry = { pty, viewer: null };
+      entry = { pty, viewer: null, tail: "" };
       this.entries.set(sessionId, entry);
+      const e0 = entry;
+      pty.onData(d => { e0.tail = (e0.tail + d).slice(-TAIL_MAX); });
       pty.onExit(({ exitCode }) => {
         this.entries.delete(sessionId);
         entry!.viewer?.onEnd(`claude exited (${exitCode})`);
@@ -53,7 +56,13 @@ export class PtyManager {
       if (entry.viewer) { entry.viewer.sub.dispose(); entry.viewer.onEnd("taken over by another viewer"); }
     }
     const e = entry;
+    const reconnect = e.tail.length > 0;
     e.viewer = { onData, onEnd, sub: e.pty.onData(onData) };
+    if (reconnect) {
+      // Replay what the previous viewer saw, then nudge the TUI to repaint at the new size.
+      onData(e.tail);
+      e.pty.resize(opts.cols, opts.rows);
+    }
     const mine = e.viewer;
     return {
       write: d => e.pty.write(d),

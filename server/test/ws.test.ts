@@ -92,7 +92,7 @@ describe("pty websocket", () => {
     expect(spawned[0].pty.writes).toEqual(["ls\r"]);
     expect(spawned[0].pty.sizes).toEqual([[120, 40]]);
     ws.close(); await tick();
-    expect(spawned[0].pty.listenerCount("data")).toBe(0); // detached, not killed
+    expect(spawned[0].pty.listenerCount("data")).toBe(1); // viewer detached (only the tail recorder remains), not killed
   });
   it("closes with the launch error code when refused", async () => {
     const { closed } = await connect("s-term");

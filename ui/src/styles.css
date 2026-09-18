@@ -121,3 +121,4 @@ button.pill:disabled { opacity:.6; }
 .livecard .lactions { display:flex; gap:6px; align-items:center; flex:none; }
 .livecard select { background:#0f1115; border:1px solid #2b3140; color:var(--fg); border-radius:6px; padding:2px 6px; font:inherit; font-size:11px; }
 .section.live { border-left-color:#1f2937; margin-top:6px; }
+.row.byid input { flex:1; font-family:ui-monospace, monospace; }

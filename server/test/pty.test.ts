@@ -60,6 +60,17 @@ describe("PtyManager", () => {
     expect(onExit).toHaveBeenCalledWith(expect.stringMatching(/exited/));
   });
 
+  it("replays recent output to a reconnecting viewer", () => {
+    const { spawned, mgr } = setup();
+    const first: string[] = [], second: string[] = [];
+    const h = mgr.attach("s", { cwd: "/r", argv: [], cols: 80, rows: 24 }, d => first.push(d), () => {});
+    spawned[0].pty.emit("data", "screen-1"); spawned[0].pty.emit("data", " more");
+    h.detach();
+    mgr.attach("s", { cwd: "/r", argv: [], cols: 100, rows: 30 }, d => second.push(d), () => {});
+    expect(first).toEqual(["screen-1", " more"]);
+    expect(second).toEqual(["screen-1 more"]);            // replayed tail
+    expect(spawned[0].pty.sizes.at(-1)).toEqual([100, 30]); // repaint nudge
+  });
   it("closeAll kills every pty", () => {
     const { spawned, mgr } = setup();
     mgr.attach("a", { cwd: "/r", argv: [], cols: 80, rows: 24 }, () => {}, () => {});

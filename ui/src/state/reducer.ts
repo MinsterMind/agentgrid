@@ -52,9 +52,9 @@ export const unclaimedLiveSessions = (s: UiState): SessionInfo[] => {
   const owned = new Set<string>();
   for (const a of s.agents) if (a.resumeSessionId) owned.add(a.resumeSessionId);
   for (const x of Object.values(s.assignments)) if (x.sessionId) owned.add(x.sessionId);
-  return s.liveSessions.filter(l => !l.agentId && !owned.has(l.sessionId));
+  return s.liveSessions.filter(l => !l.agentId && !owned.has(l.sessionId) && l.owner !== "grid");
 };
 
-/** The live session an adopted agent is bound to, if its process is currently running. */
+/** The live session an adopted agent is bound to, if its process is running *outside* the grid (our own embedded terminal doesn't count). */
 export const liveSessionFor = (s: UiState, agent: Agent): SessionInfo | null =>
-  agent.resumeSessionId ? s.liveSessions.find(l => l.sessionId === agent.resumeSessionId) ?? null : null;
+  agent.resumeSessionId ? s.liveSessions.find(l => l.sessionId === agent.resumeSessionId && l.owner !== "grid") ?? null : null;

@@ -27,6 +27,8 @@ export const api = {
   memory: (id: string) => call<MemoryFile[]>("GET", `/api/agents/${encodeURIComponent(id)}/memory`),
   listSessions: () => call<SessionInfo[]>("GET", "/api/sessions"),
   adoptSession: (sessionId: string, input: { role: string; displayName?: string; takeover?: boolean }) => call<Agent>("POST", `/api/sessions/${encodeURIComponent(sessionId)}/adopt`, input),
+  getSession: (sessionId: string) => call<SessionInfo>("GET", `/api/sessions/${encodeURIComponent(sessionId)}`),
+  renameSession: (sessionId: string, title: string) => call<void>("POST", `/api/sessions/${encodeURIComponent(sessionId)}/rename`, { title }),
   attachSession: (sessionId: string) => call<{ command: string; opened: boolean }>("POST", `/api/sessions/${encodeURIComponent(sessionId)}/attach`),
   pickFolder: () => call<{ path: string } | undefined>("POST", "/api/fs/pick"),
   listDir: (path?: string) => call<DirListing>("GET", `/api/fs${path ? `?path=${encodeURIComponent(path)}` : ""}`),

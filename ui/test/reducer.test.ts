@@ -63,3 +63,15 @@ describe("live sessions", () => {
     expect(unclaimedLiveSessions(s).map(l => l.sessionId)).toEqual(["s-e"]);
   });
 });
+
+describe("grid-owned live sessions", () => {
+  it("are neither 'live elsewhere' for their agent nor shown as unclaimed", () => {
+    const a = { ...agent("a"), resumeSessionId: "s-a" };
+    const s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [a], assignments: [], liveSessions: [
+      { sessionId: "s-a", cwd: "/w", title: "s-a", kind: "interactive", status: "idle", at: 1, agentId: "a", owner: "grid", canAdopt: false },
+      { sessionId: "s-z", cwd: "/w", title: "s-z", kind: "interactive", status: "idle", at: 1, owner: "grid", canAdopt: true },
+    ] } });
+    expect(liveSessionFor(s, a)).toBeNull();
+    expect(unclaimedLiveSessions(s)).toEqual([]);
+  });
+});

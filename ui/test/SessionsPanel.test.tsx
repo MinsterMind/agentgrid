@@ -13,7 +13,9 @@ const sessions: SessionInfo[] = [
 const listSessions = vi.fn(async () => sessions);
 const adoptSession = vi.fn(async (id: string, input: { role: string }) => ({ id: `${input.role}@payments`, resumeSessionId: id }));
 const attachSession = vi.fn(async (_id: string) => ({ command: "claude attach d85e", opened: true }));
-vi.mock("../src/api", () => ({ api: { listSessions: () => listSessions(), adoptSession: (id: string, i: { role: string }) => adoptSession(id, i), attachSession: (id: string) => attachSession(id) } }));
+const getSession = vi.fn(async (id: string) => sessions.find(s => s.sessionId === id) ?? { sessionId: id, cwd: "/w/ancient", title: "Ancient", kind: "history" as const, status: "ended" as const, at: 1, canAdopt: true });
+const renameSession = vi.fn(async (_id: string, _t: string) => {});
+vi.mock("../src/api", () => ({ api: { listSessions: () => listSessions(), adoptSession: (id: string, i: { role: string }) => adoptSession(id, i), attachSession: (id: string) => attachSession(id), getSession: (id: string) => getSession(id), renameSession: (id: string, t: string) => renameSession(id, t) } }));
 
 const roles: RoleDef[] = [
   { name: "coder", avatar: "👩‍💻", model: "m", effort: "high", permissionMode: "default", settingSources: [], allowedTools: [], maxTurns: 1, prompt: "" },
@@ -54,5 +56,29 @@ describe("SessionsPanel", () => {
     render(<SessionsPanel roles={roles} agentNames={agentNames} onAdopted={vi.fn()} onClose={vi.fn()} />);
     await screen.findByText("hrns-7e");
     expect(screen.getAllByRole("button", { name: /adopt into grid/i })).toHaveLength(1);
+  });
+});
+
+describe("SessionsPanel: pull in by id, filter, rename", () => {
+  it("pulls in a session by id that isn't in the list", async () => {
+    const onAdopted = vi.fn();
+    render(<SessionsPanel roles={roles} agentNames={agentNames} onAdopted={onAdopted} onClose={vi.fn()} />);
+    await screen.findByText("hrns-7e");
+    await userEvent.type(screen.getByLabelText("Session id"), "s-ancient-0000{Enter}");
+    await waitFor(() => expect(adoptSession).toHaveBeenCalledWith("s-ancient-0000", { role: "coder", takeover: false }));
+    await waitFor(() => expect(onAdopted).toHaveBeenCalled());
+  });
+  it("filters rows by name/repo", async () => {
+    render(<SessionsPanel roles={roles} agentNames={agentNames} onAdopted={vi.fn()} onClose={vi.fn()} />);
+    await screen.findByText("hrns-7e");
+    await userEvent.type(screen.getByLabelText("Filter sessions"), "payments");
+    expect(screen.queryByText("hrns-7e")).toBeNull();
+    expect(screen.getByText("Idempotency keys")).toBeInTheDocument();
+  });
+  it("renames via prompt", async () => {
+    vi.spyOn(window, "prompt").mockReturnValueOnce("Better name");
+    render(<SessionsPanel roles={roles} agentNames={agentNames} onAdopted={vi.fn()} onClose={vi.fn()} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Rename Idempotency keys" }));
+    expect(renameSession).toHaveBeenCalledWith("s-old", "Better name");
   });
 });
