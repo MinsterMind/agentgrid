@@ -42,7 +42,7 @@ describe("mergeSessions", () => {
       ["s3", "history", "ended", "coder@c"],
       ["s4", "history", "ended", "reviewer@d"],
     ]);
-    expect(out[0].title).toBe("live one");
+    expect(out[0].title).toBe("older title"); // history (customTitle) wins over the process name
     expect(out[1].canAdopt).toBe(true);
     expect(out[0].canAdopt).toBe(true); // live sessions can be pulled in too
     expect(out[2].canAdopt).toBe(false); // already adopted

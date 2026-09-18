@@ -77,11 +77,14 @@ export function mergeSessions(live: LiveSession[], history: HistorySession[], ag
   }
   const seen = new Set<string>();
   const out: SessionInfo[] = [];
+  const titles = new Map(history.map(h => [h.sessionId, h.title]));
   for (const l of live) {
     seen.add(l.sessionId);
     const agentId = owner.get(l.sessionId);
+    // A user-given name (Claude Code customTitle) beats the process's auto-derived name.
+    const title = titles.get(l.sessionId) ?? l.name;
     const ownedByGrid = l.pid !== undefined && gridPids.has(l.pid) ? { owner: "grid" as const } : {};
-    out.push({ sessionId: l.sessionId, cwd: l.cwd, title: l.name, kind: l.kind, status: l.status, at: l.startedAt, ...(l.bgId ? { bgId: l.bgId } : {}), ...(agentId ? { agentId } : {}), ...ownedByGrid, canAdopt: !agentId });
+    out.push({ sessionId: l.sessionId, cwd: l.cwd, title, kind: l.kind, status: l.status, at: l.startedAt, ...(l.bgId ? { bgId: l.bgId } : {}), ...(agentId ? { agentId } : {}), ...ownedByGrid, canAdopt: !agentId });
   }
   for (const h of [...history].sort((a, b) => b.lastActiveAt - a.lastActiveAt)) {
     if (seen.has(h.sessionId)) continue;
