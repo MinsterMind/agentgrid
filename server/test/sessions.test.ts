@@ -90,3 +90,14 @@ describe("takeOverSession", () => {
     expect(processAlive(process.pid)).toBe(true); expect(processAlive(2 ** 22 - 7)).toBe(false); expect(processAlive(undefined)).toBe(true);
   });
 });
+
+describe("grid-owned live sessions", () => {
+  it("marks live sessions run by our own ptys with owner:grid", () => {
+    const live: LiveSession[] = [
+      { sessionId: "ours", cwd: "/a", name: "ours", kind: "interactive", status: "idle", startedAt: 1, pid: 100 },
+      { sessionId: "theirs", cwd: "/b", name: "theirs", kind: "interactive", status: "idle", startedAt: 1, pid: 200 },
+    ];
+    const out = mergeSessions(live, [], [], new Map(), new Set([100]));
+    expect(out.map(s => [s.sessionId, s.owner ?? null])).toEqual([["ours", "grid"], ["theirs", null]]);
+  });
+});

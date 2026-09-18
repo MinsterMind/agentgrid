@@ -17,13 +17,13 @@ export async function resolveLaunch(sessionId: string, deps: WsDeps): Promise<{ 
     const runningIt = (a.state === "working" || a.state === "waiting") && (cur?.sessionId === sessionId || a.resumeSessionId === sessionId);
     if (runningIt) return { error: `agent ${a.displayName} is running this session — wait for it to finish or cancel it`, code: 4409 };
     const live = deps.store.liveSessions().find(l => l.sessionId === sessionId);
-    if (live?.kind === "interactive") return { error: "session is open in a terminal already", code: 4409 };
+    if (live?.kind === "interactive" && live.owner !== "grid") return { error: "session is open in a terminal already", code: 4409 };
     if (live?.bgId) return { cwd: a.repo, argv: ["attach", live.bgId] };
     return { cwd: a.repo, argv: ["--resume", sessionId] };
   }
   const info = (await deps.sessions()).find(s => s.sessionId === sessionId);
   if (!info) return { error: "unknown session", code: 4404 };
-  if (info.kind === "interactive") return { error: "session is open in a terminal already", code: 4409 };
+  if (info.kind === "interactive" && info.owner !== "grid") return { error: "session is open in a terminal already", code: 4409 };
   if (info.bgId) return { cwd: info.cwd, argv: ["attach", info.bgId] };
   return { cwd: info.cwd, argv: ["--resume", sessionId] };
 }

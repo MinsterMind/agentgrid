@@ -194,3 +194,31 @@ describe("adopt with takeover", () => {
     expect(store.isLive("s-tty")).toBe(true);
   });
 });
+
+describe("session lookup by id and rename", () => {
+  const history = [{ sessionId: "s-recent", cwd: "/x/r", title: "recent", lastActiveAt: 5 }];
+  const archive: Record<string, { sessionId: string; cwd: string; title: string; lastActiveAt: number }> = { "s-ancient": { sessionId: "s-ancient", cwd: "/x/old", title: "ancient work", lastActiveAt: 1 } };
+  const renamed: Array<[string, string]> = [];
+  const mk = () => createApp({ store, manager: new Manager(store, { queryFn: fake.queryFn }), sessions: { live: async () => [], history: async () => history, lookup: async id => archive[id] ?? null, rename: async (id, t) => { renamed.push([id, t]); } } });
+
+  it("GET /api/sessions/:id resolves sessions outside the recent window", async () => {
+    const a = mk();
+    expect((await request(a).get("/api/sessions/s-recent").expect(200)).body).toMatchObject({ title: "recent", kind: "history" });
+    expect((await request(a).get("/api/sessions/s-ancient").expect(200)).body).toMatchObject({ title: "ancient work", cwd: "/x/old", canAdopt: true });
+    await request(a).get("/api/sessions/nope").expect(404);
+  });
+  it("adopt works by id for an old session; second adopt of it is 409", async () => {
+    const a = mk();
+    const res = await request(a).post("/api/sessions/s-ancient/adopt").send({ role: "coder" }).expect(201);
+    expect(res.body).toMatchObject({ repo: "/x/old", resumeSessionId: "s-ancient" });
+    expect((await request(a).get("/api/sessions/s-ancient")).body).toMatchObject({ agentId: res.body.id, canAdopt: false });
+    await request(a).post("/api/sessions/s-ancient/adopt").send({ role: "coder" }).expect(409);
+  });
+  it("rename validates and delegates", async () => {
+    const a = mk();
+    await request(a).post("/api/sessions/s-recent/rename").send({ title: "  " }).expect(400);
+    await request(a).post("/api/sessions/nope/rename").send({ title: "x" }).expect(404);
+    await request(a).post("/api/sessions/s-recent/rename").send({ title: "Payments idempotency" }).expect(204);
+    expect(renamed).toEqual([["s-recent", "Payments idempotency"]]);
+  });
+});

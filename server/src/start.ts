@@ -68,6 +68,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const fakeSessions = fake ? { live: async () => [{ sessionId: "fake-live-bg", cwd: "/tmp", name: "Fake background task", kind: "background" as const, status: "blocked" as const, startedAt: Date.now() - 60_000, bgId: "fake1" }], history: async () => [{ sessionId: "fake-old-session", cwd: "/tmp", title: "Earlier work (fake)", lastActiveAt: Date.now() }] } : undefined;
   const fakeSpawn: SpawnFn = (_file, args, o) => nodePty.spawn("/bin/sh", ["-c", `echo "AgentGrid fake terminal (claude ${args.join(" ")})"; exec cat`], o);
   const ptys = new PtyManager(fake ? fakeSpawn : undefined);
+  store.gridPids = () => ptys.pids();
   const watcher = new LiveSessionWatcher(fakeSessions ? fakeSessions.live : listLiveSessions, live => store.setLiveSessions(live), 5000);
   watcher.start();
 

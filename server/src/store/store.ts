@@ -180,7 +180,9 @@ export class Store extends EventEmitter {
   }
 
   /** Live Claude Code sessions (from the watcher), annotated against current agents. */
-  liveSessions(): SessionInfo[] { return mergeSessions(this.live, [], this.listAgents(), this.assignmentSessionIds()); }
+  /** Supplied by the server so live sessions run by our own PTYs are marked owner:"grid". */
+  gridPids: () => Set<number> = () => new Set();
+  liveSessions(): SessionInfo[] { return mergeSessions(this.live, [], this.listAgents(), this.assignmentSessionIds(), this.gridPids()); }
   isLive(sessionId: string): boolean { return this.live.some(l => l.sessionId === sessionId); }
   rawLiveSessions(): LiveSession[] { return this.live; }
   setLiveSessions(live: LiveSession[]): void {

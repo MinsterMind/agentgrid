@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { listSessions as sdkListSessions } from "@anthropic-ai/claude-agent-sdk";
+import { listSessions as sdkListSessions, getSessionInfo as sdkGetSessionInfo, renameSession as sdkRenameSession } from "@anthropic-ai/claude-agent-sdk";
 import type { Agent, SessionInfo, SessionStatus } from "./types.js";
 
 export interface LiveSession { sessionId: string; cwd: string; name: string; kind: "interactive" | "background"; status: SessionStatus; startedAt: number; bgId?: string; pid?: number }
@@ -50,13 +50,25 @@ export async function takeOverSession(live: LiveSession, deps: { fetch: () => Pr
   }
 }
 
-export async function listHistorySessions(limit = 50): Promise<HistorySession[]> {
+const toHistory = (r: { sessionId: string; cwd?: string; customTitle?: string; summary?: string; firstPrompt?: string; lastModified: number }): HistorySession =>
+  ({ sessionId: r.sessionId, cwd: r.cwd!, title: r.customTitle || r.summary || r.firstPrompt || r.sessionId.slice(0, 8), lastActiveAt: r.lastModified });
+
+export async function listHistorySessions(limit = 500): Promise<HistorySession[]> {
   const rows = await sdkListSessions({ limit }).catch(() => []);
-  return rows.filter(r => r.cwd).map(r => ({ sessionId: r.sessionId, cwd: r.cwd!, title: r.customTitle || r.summary || r.firstPrompt || r.sessionId.slice(0, 8), lastActiveAt: r.lastModified }));
+  return rows.filter(r => r.cwd).map(toHistory);
 }
 
+/** One session by id, whether or not it is in the recent window. */
+export async function getHistorySession(sessionId: string): Promise<HistorySession | null> {
+  const r = await sdkGetSessionInfo(sessionId).catch(() => undefined);
+  return r?.cwd ? toHistory(r) : null;
+}
+
+/** Rename in Claude Code itself (customTitle) — shows up in `claude --resume` too. */
+export const renameSession = (sessionId: string, title: string) => sdkRenameSession(sessionId, title);
+
 /** Live rows win; history newest-first; sessions owned by grid agents are annotated and never adoptable twice. */
-export function mergeSessions(live: LiveSession[], history: HistorySession[], agents: Agent[], assignmentSessionIds: Map<string, string>): SessionInfo[] {
+export function mergeSessions(live: LiveSession[], history: HistorySession[], agents: Agent[], assignmentSessionIds: Map<string, string>, gridPids: Set<number> = new Set()): SessionInfo[] {
   const owner = new Map<string, string>();
   for (const a of agents) {
     if (a.resumeSessionId) owner.set(a.resumeSessionId, a.id);
@@ -68,7 +80,8 @@ export function mergeSessions(live: LiveSession[], history: HistorySession[], ag
   for (const l of live) {
     seen.add(l.sessionId);
     const agentId = owner.get(l.sessionId);
-    out.push({ sessionId: l.sessionId, cwd: l.cwd, title: l.name, kind: l.kind, status: l.status, at: l.startedAt, ...(l.bgId ? { bgId: l.bgId } : {}), ...(agentId ? { agentId } : {}), canAdopt: !agentId });
+    const ownedByGrid = l.pid !== undefined && gridPids.has(l.pid) ? { owner: "grid" as const } : {};
+    out.push({ sessionId: l.sessionId, cwd: l.cwd, title: l.name, kind: l.kind, status: l.status, at: l.startedAt, ...(l.bgId ? { bgId: l.bgId } : {}), ...(agentId ? { agentId } : {}), ...ownedByGrid, canAdopt: !agentId });
   }
   for (const h of [...history].sort((a, b) => b.lastActiveAt - a.lastActiveAt)) {
     if (seen.has(h.sessionId)) continue;
@@ -79,9 +92,9 @@ export function mergeSessions(live: LiveSession[], history: HistorySession[], ag
   return out;
 }
 
-export async function listAllSessions(agents: Agent[], assignmentSessionIds: Map<string, string>, deps = { live: listLiveSessions, history: listHistorySessions }): Promise<SessionInfo[]> {
+export async function listAllSessions(agents: Agent[], assignmentSessionIds: Map<string, string>, deps: { live: () => Promise<LiveSession[]>; history: () => Promise<HistorySession[]>; gridPids?: () => Set<number> } = { live: listLiveSessions, history: listHistorySessions }): Promise<SessionInfo[]> {
   const [live, history] = await Promise.all([deps.live(), deps.history()]);
-  return mergeSessions(live, history, agents, assignmentSessionIds);
+  return mergeSessions(live, history, agents, assignmentSessionIds, deps.gridPids?.());
 }
 
 /**

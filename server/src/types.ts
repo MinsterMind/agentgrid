@@ -84,5 +84,7 @@ export interface SessionInfo {
   bgId?: string;
   /** Set when a grid agent owns this session (adopted, or produced by an assignment). */
   agentId?: string;
+  /** "grid" when the live process is AgentGrid's own embedded terminal (reconnectable, never a foreign terminal). */
+  owner?: "grid";
   canAdopt: boolean;
 }

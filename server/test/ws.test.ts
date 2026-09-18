@@ -63,6 +63,12 @@ describe("resolveLaunch", () => {
     expect(await resolveLaunch("s-bg", deps())).toEqual({ cwd: "/repo", argv: ["attach", "d85e"] });
     expect(await resolveLaunch("s-term", deps())).toMatchObject({ code: 4409 });
   });
+  it("adopted session whose live process is our own pty is reconnectable (not 'open elsewhere')", async () => {
+    await store.createAgent({ role: "coder", repo: "/repo", resumeSessionId: "s-ours" });
+    store.gridPids = () => new Set([100]);
+    store.setLiveSessions([{ sessionId: "s-ours", cwd: "/repo", name: "x", kind: "interactive", status: "idle", startedAt: 1, pid: 100 }]);
+    expect(await resolveLaunch("s-ours", deps())).toEqual({ cwd: "/repo", argv: ["--resume", "s-ours"] });
+  });
   it("grid agents: idle adopted → resume in repo; working → refused", async () => {
     const a = await store.createAgent({ role: "coder", repo: "/repo", resumeSessionId: "s-adopt" });
     expect(await resolveLaunch("s-adopt", deps())).toEqual({ cwd: "/repo", argv: ["--resume", "s-adopt"] });

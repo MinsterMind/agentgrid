@@ -34,6 +34,8 @@ export class PtyManager {
   constructor(private spawn: SpawnFn = realSpawn) {}
 
   isOpen(sessionId: string): boolean { return this.entries.has(sessionId); }
+  /** Pids of the claude processes this manager is running (so they can be told apart from foreign terminals). */
+  pids(): Set<number> { return new Set([...this.entries.values()].map(e => e.pty.pid)); }
 
   attach(sessionId: string, opts: OpenOptions, onData: (d: string) => void, onEnd: (reason: string) => void): Handle {
     let entry = this.entries.get(sessionId);
