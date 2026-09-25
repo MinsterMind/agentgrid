@@ -4,8 +4,14 @@ import path from "node:path";
 export interface DiffFile { path: string; additions: number; deletions: number }
 export interface DiffResult { patch: string; files: DiffFile[]; additions: number; deletions: number }
 
-export const branchName = (issueKey: string) => `bugfix/${issueKey}`;
-export const worktreePath = (repo: string, issueKey: string) => path.join(repo, ".worktrees", `bugfix-${issueKey}`);
+export const ISSUE_KEY = /^[A-Za-z0-9._-]+$/;
+export const assertIssueKey = (key: string): string => {
+  if (!ISSUE_KEY.test(key)) throw new Error(`unsafe issue key: ${key}`);
+  return key;
+};
+
+export const branchName = (issueKey: string) => `bugfix/${assertIssueKey(issueKey)}`;
+export const worktreePath = (repo: string, issueKey: string) => path.join(repo, ".worktrees", `bugfix-${assertIssueKey(issueKey)}`);
 
 const defaultRun = (cwd: string, args: string[]) => new Promise<string>((res, rej) =>
   execFile("git", args, { cwd, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) =>
@@ -29,9 +35,22 @@ export class GitOps {
   }
 
   async removeWorktree(repo: string, worktree: string, branch: string): Promise<void> {
-    await this.run(repo, ["worktree", "remove", "--force", worktree]).catch(() => {});
-    await this.run(repo, ["worktree", "prune"]).catch(() => {});
-    await this.run(repo, ["branch", "-D", branch]).catch(() => {});
+    const failures: string[] = [];
+
+    await this.run(repo, ["worktree", "remove", "--force", worktree]).catch((err: Error) => {
+      failures.push(err.message);
+    });
+    await this.run(repo, ["worktree", "prune"]).catch((err: Error) => {
+      failures.push(err.message);
+    });
+    await this.run(repo, ["branch", "-D", branch]).catch((err: Error) => {
+      if (/not found/i.test(err.message)) return; // deleting an already-gone branch is not a failure
+      failures.push(err.message);
+    });
+
+    if (failures.length > 0) {
+      throw new Error(`worktree cleanup incomplete: ${failures.join("; ")}`);
+    }
   }
 
   async currentBranch(dir: string): Promise<string> {
@@ -46,8 +65,8 @@ export class GitOps {
   /** Diff of the task branch against its base, with per-file counts for the diff card. */
   async diff(dir: string, baseBranch: string): Promise<DiffResult> {
     const range = `${baseBranch}...HEAD`;
-    const patch = await this.run(dir, ["diff", range]);
-    const numstat = await this.run(dir, ["diff", "--numstat", range]);
+    const patch = await this.run(dir, ["diff", "--no-renames", range]);
+    const numstat = await this.run(dir, ["diff", "--no-renames", "--numstat", range]);
     const files: DiffFile[] = [];
     for (const line of numstat.split("\n")) {
       const m = line.trim().match(/^(\d+|-)\t(\d+|-)\t(.+)$/);

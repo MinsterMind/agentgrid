@@ -57,4 +57,26 @@ describe("GitOps", () => {
     await git.createWorktree(repo, "bugfix/PAY-42", "main");
     await expect(git.createWorktree(repo, "bugfix/PAY-42", "main")).rejects.toThrow(/already exists/i);
   });
+
+  it("refuses issue keys that would escape the worktree directory", () => {
+    expect(() => worktreePath("/r", "a/../../etc")).toThrow(/unsafe issue key/);
+    expect(() => branchName("../evil")).toThrow(/unsafe issue key/);
+    expect(worktreePath("/r", "PAY-42")).toBe("/r/.worktrees/bugfix-PAY-42");
+  });
+
+  it("reports a rename as a delete and an add, with real paths", async () => {
+    const wt = await git.createWorktree(repo, "bugfix/PAY-43", "main");
+    await sh(wt, ["mv", "a.txt", "renamed.txt"]);
+    await sh(wt, ["commit", "-m", "rename"]);
+    const d = await git.diff(wt, "main");
+    expect(d.files.map(f => f.path).sort()).toEqual(["a.txt", "renamed.txt"]);
+  });
+
+  it("surfaces a cleanup failure instead of silently succeeding", async () => {
+    const failing = new GitOps(async (_cwd, args) => {
+      if (args[0] === "worktree" && args[1] === "remove") throw new Error("fatal: worktree is locked");
+      return "";
+    });
+    await expect(failing.removeWorktree(repo, "/nope", "bugfix/PAY-99")).rejects.toThrow(/cleanup incomplete/);
+  });
 });
