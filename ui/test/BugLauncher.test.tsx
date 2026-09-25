@@ -101,6 +101,24 @@ describe("BugLauncher", () => {
     await waitFor(() => expect(screen.getByText(/no usable JSON/)).toBeInTheDocument());
   });
 
+  it("renders a multi-line intake error (e.g. a leftover-worktree conflict) as separate lines, not one run-on", async () => {
+    const message = "a worktree and/or branch for PAY-42 already exist from an earlier run — worktree /r/payments/.worktrees/bugfix-PAY-42, branch bugfix/PAY-42. Nothing is removed automatically. To clear them and try again, run:\n"
+      + "  git -C /r/payments worktree remove --force /r/payments/.worktrees/bugfix-PAY-42\n"
+      + "  git -C /r/payments branch -D bugfix/PAY-42";
+    createBugTask.mockRejectedValueOnce(new Error(message));
+    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} />);
+    await userEvent.type(screen.getByLabelText("Issue URL or key"), "PAY-42");
+    await userEvent.type(screen.getByLabelText("Repo"), "/r/payments");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start fixing" })).not.toBeDisabled());
+    await userEvent.click(screen.getByRole("button", { name: "Start fixing" }));
+    await waitFor(() => expect(screen.getByText(/already exist from an earlier run/)).toBeInTheDocument());
+    // Each git command is its own line — not concatenated into the descriptive sentence.
+    expect(screen.getByText(/^git -C \/r\/payments worktree remove --force/)).toBeInTheDocument();
+    expect(screen.getByText(/^git -C \/r\/payments branch -D bugfix\/PAY-42$/)).toBeInTheDocument();
+    // ...and not run together with the descriptive sentence in a single text node.
+    expect(screen.queryByText(/already exist from an earlier run.*git -C/s)).not.toBeInTheDocument();
+  });
+
   it("says so, within the issue-list section, when the tracker is not connected", async () => {
     myIssues.mockRejectedValueOnce(new Error("the bug-fix workflow is not configured"));
     render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} />);

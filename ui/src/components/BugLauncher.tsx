@@ -97,7 +97,11 @@ export function BugLauncher({ onCreated, onClose }: { onCreated: (task: BugTask)
 
         {checking && <p className="hint">Checking repo…</p>}
         {preflight && !preflight.ok && <div className="err">{preflight.problems.map(p => <div key={p}>{p}</div>)}</div>}
-        {err && <div className="err">{err}</div>}
+        {/* Some errors (e.g. a leftover-worktree conflict from intake) are several lines —
+            "say exactly what to run" only works if those lines actually render as lines,
+            not one collapsed run-on. Rendered one <div> per line, the same convention the
+            preflight-problems list above already uses. */}
+        {err && <div className="err">{err.split("\n").map((line, i) => <div key={i}>{line}</div>)}</div>}
         <div className="row">
           <button className="btn p" disabled={blocked} onClick={start}>{busy ? "Starting…" : "Start fixing"}</button>
           <button className="btn" onClick={onClose}>Cancel</button>
