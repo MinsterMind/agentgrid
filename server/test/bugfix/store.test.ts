@@ -78,3 +78,42 @@ describe("BugTaskStore", () => {
     expect(await store.readArtifact(t.id, "plan.md")).toBe("ok");
   });
 });
+
+/**
+ * C1: every mutation is a read-modify-write, so two of them overlapping must not let the
+ * loser write its stale snapshot over the winner's result. These are deterministic, not
+ * timing-dependent: the second call is made synchronously, in the same microtask, while the
+ * first one's write is still in flight — exactly the window `BugFixEngine`'s out-of-band
+ * `patch()` calls (cost, PR) share with an `advance()`-chained `apply()` (cancel).
+ */
+describe("BugTaskStore concurrent mutations", () => {
+  const cancel = { stage: "cancelled" as const, run: null, gate: null, note: "", error: null };
+
+  it("a patch racing a cancel cannot resurrect the task", async () => {
+    const t = await mk();
+    const applied = store.apply(t.id, cancel);
+    const patched = store.patch(t.id, { costUsd: 1.25 });   // no await between: the classic race
+    await Promise.all([applied, patched]);
+    expect(store.get(t.id).stage).toBe("cancelled");
+    expect(store.get(t.id).costUsd).toBe(1.25);
+    expect(JSON.parse(await readFile(path.join(home, "bugtasks", "bt1.json"), "utf8"))).toEqual(store.get(t.id));
+  });
+
+  it("a cancel racing a patch cannot be undone by the patch's stale snapshot", async () => {
+    const t = await mk();
+    const patched = store.patch(t.id, { costUsd: 1.25 });
+    const applied = store.apply(t.id, cancel);
+    await Promise.all([patched, applied]);
+    expect(store.get(t.id)).toMatchObject({ stage: "cancelled", costUsd: 1.25 });
+  });
+
+  it("two overlapping applies both land, in order", async () => {
+    const t = await mk();
+    const a = store.apply(t.id, { stage: "analyzing", run: "analyzing", gate: null, note: "", error: null });
+    const b = store.apply(t.id, cancel);
+    await Promise.all([a, b]);
+    const after = store.get(t.id);
+    expect(after.stage).toBe("cancelled");
+    expect(after.history.map(h => h.stage)).toEqual(["intake", "analyzing", "cancelled"]);
+  });
+});
