@@ -11,7 +11,8 @@ import { IntegrationsStore } from "../../src/bugfix/integrations.js";
 import { makeFakeQuery, success } from "../helpers/fakeQuery.js";
 import { until } from "../helpers/until.js";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
-import type { TrackerIssue } from "../../src/bugfix/types.js";
+import type { BugTask, TrackerIssue } from "../../src/bugfix/types.js";
+import type { Assignment } from "../../src/types.js";
 
 const ISSUE: TrackerIssue = { key: "PAY-42", title: "Boom", url: "https://x/PAY-42", status: "Open", priority: "High", description: "d", acceptanceCriteria: [] };
 
@@ -58,12 +59,7 @@ beforeEach(async () => {
   engine.attach();
 });
 
-// Note: only emit() is needed — the runner's consume() loop returns as soon as it sees
-// a "result" message, so it never drains a subsequent end() marker off the fake's shared
-// queue. A stray end() here would sit in that queue and be swallowed as the *first* item
-// of the next stage's stream (since queryFn's async generator is fresh per assign() but
-// shares the queue), making that stream look like it ended with no result at all.
-const finishStage = async () => { fake.emit(success("done")); };
+const finishStage = async () => { fake.emit(success("done")); fake.end(); };
 
 describe("intake", () => {
   it("creates the agent, worktree and task, remembers the repo, and starts analyzing", async () => {
@@ -150,25 +146,47 @@ describe("stage progression", () => {
   });
 
   it("opening-pr fails when the forge cannot find the PR", async () => {
-    const e2 = new BugFixEngine({ ...(engine as any).deps, forge: { ...forge, findPr: async () => null } });
+    // Fully independent engine (own store/bugs/manager/fake) so this test exercises the
+    // findPr()-returns-null failure path itself, not the ownership scoping that keeps a
+    // second, differently-configured engine on the *same* store from racing this one.
+    const home2 = await mkdtemp(path.join(tmpdir(), "eng-home2-"));
+    const store2 = new Store(home2, path.resolve("roles")); await store2.init();
+    await writeFile(path.join(home2, "roles", "bugfix.md"), `---\nname: bugfix\navatar: 🐞\nmodel: claude-opus-5\n---\nYou fix bugs.`);
+    await store2.reloadRoles();
+    const bugs2 = new BugTaskStore(home2); await bugs2.init();
+    const fake2 = makeFakeQuery();
+    const gitState2 = { commits: 0 };
+    const e2 = new BugFixEngine({
+      store: store2, bugs: bugs2,
+      manager: new Manager(store2, { queryFn: fake2.queryFn, buildOptions: (_r, a, e) => ({ cwd: a.repo, abortController: e.abortController, canUseTool: e.canUseTool } as Options) }),
+      git: fakeGit(gitState2).git, integrations: new IntegrationsStore(home2),
+      tracker: { listMyIssues: async () => [], fetchIssue: async () => ISSUE, comment: async () => {} },
+      forge: { ...forge, findPr: async () => null }, presetsDir: path.resolve("presets"),
+    });
     e2.attach();
+    const finishStage2 = async () => { fake2.emit(success("done")); fake2.end(); };
+
     const t = await e2.intake({ issueRef: "PAY-42", repo });
-    await bugs.writeArtifact(t.id, "plan.md", "# Plan");
-    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
-    await e2.approve(t.id); gitState.commits = 1;
-    await finishStage(); await until(() => bugs.get(t.id).stage === "diff-review");
+    await bugs2.writeArtifact(t.id, "plan.md", "# Plan");
+    await finishStage2(); await until(() => bugs2.get(t.id).stage === "plan-review");
+    await e2.approve(t.id); gitState2.commits = 1;
+    await finishStage2(); await until(() => bugs2.get(t.id).stage === "diff-review");
     await e2.approve(t.id);
-    await finishStage(); await until(() => bugs.get(t.id).stage === "failed");
-    expect(bugs.get(t.id).error).toMatch(/no pull request/i);
+    await finishStage2(); await until(() => bugs2.get(t.id).stage === "failed");
+    expect(bugs2.get(t.id).error).toMatch(/no pull request/i);
   });
 });
 
 describe("cancel and guards", () => {
   it("cancel stops the task and leaves the worktree alone", async () => {
-    const t = await engine.intake({ issueRef: "PAY-42", repo });
-    await engine.cancel(t.id);
+    const { git, calls } = fakeGit(gitState);
+    const e2 = new BugFixEngine({ ...(engine as any).deps, git });
+    e2.attach();
+    const t = await e2.intake({ issueRef: "PAY-42", repo });
+    await e2.cancel(t.id);
     expect(bugs.get(t.id).stage).toBe("cancelled");
     expect(store.getAgent(t.agentId).state).not.toBe("working");
+    expect(calls).not.toContain("remove");
   });
   it("a failed agent assignment fails the task with the agent's error", async () => {
     const t = await engine.intake({ issueRef: "PAY-42", repo });
@@ -183,5 +201,209 @@ describe("cancel and guards", () => {
     fake.emit(success("done", 0.5)); fake.end();
     await until(() => bugs.get(t.id).stage === "plan-review");
     expect(bugs.get(t.id).costUsd).toBeCloseTo(0.5);
+
+    await engine.approve(t.id);
+    gitState.commits = 1;
+    fake.emit(success("done", 0.25)); fake.end();
+    await until(() => bugs.get(t.id).stage === "diff-review");
+    expect(bugs.get(t.id).costUsd).toBeCloseTo(0.75);
+  });
+});
+
+describe("concurrent gate calls are serialised per task", () => {
+  it("double-clicking approve at a gate dispatches exactly one stage; the loser rejects and the task is never marked failed", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "# Plan");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+
+    const results = await Promise.allSettled([engine.approve(t.id), engine.approve(t.id)]);
+    const fulfilled = results.filter(r => r.status === "fulfilled");
+    const rejected = results.filter(r => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(bugs.get(t.id).stage).toBe("implementing");
+    expect(bugs.get(t.id).stage).not.toBe("failed");
+  });
+
+  it("approve racing requestChanges at a gate: exactly one wins, the task is never marked failed", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "# Plan");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+
+    const results = await Promise.allSettled([engine.approve(t.id), engine.requestChanges(t.id, "cover the retry path")]);
+    const fulfilled = results.filter(r => r.status === "fulfilled");
+    const rejected = results.filter(r => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(bugs.get(t.id).stage).not.toBe("failed");
+    expect(["implementing", "analyzing"]).toContain(bugs.get(t.id).stage);
+  });
+});
+
+describe("opening-pr requires an OPEN pull request", () => {
+  async function toDiffReview(e: BugFixEngine): Promise<BugTask> {
+    const t = await e.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "# Plan");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    await e.approve(t.id);
+    gitState.commits = 1;
+    await finishStage(); await until(() => bugs.get(t.id).stage === "diff-review");
+    return t;
+  }
+
+  it("fails the stage instead of advancing when findPr returns a MERGED pull request", async () => {
+    const e2 = new BugFixEngine({ ...(engine as any).deps, forge: { ...forge, findPr: async () => ({ number: 7, url: "https://gh/pr/7", state: "MERGED" as const, reviewDecision: null, checks: null, mergeable: null, lastSeenEventAt: "t" }) } });
+    e2.attach();
+    const t = await toDiffReview(e2);
+    await e2.approve(t.id);
+    await finishStage(); await until(() => bugs.get(t.id).stage === "failed");
+    expect(bugs.get(t.id).error).toMatch(/merged/i);
+    expect(bugs.get(t.id).error).toMatch(/#7/);
+  });
+
+  it("fails the stage instead of advancing when findPr returns a CLOSED pull request", async () => {
+    const e2 = new BugFixEngine({ ...(engine as any).deps, forge: { ...forge, findPr: async () => ({ number: 7, url: "https://gh/pr/7", state: "CLOSED" as const, reviewDecision: null, checks: null, mergeable: null, lastSeenEventAt: "t" }) } });
+    e2.attach();
+    const t = await toDiffReview(e2);
+    await e2.approve(t.id);
+    await finishStage(); await until(() => bugs.get(t.id).stage === "failed");
+    expect(bugs.get(t.id).error).toMatch(/closed/i);
+    expect(bugs.get(t.id).error).toMatch(/#7/);
+  });
+
+  it("an OPEN pull request still advances to monitoring", async () => {
+    const t = await toDiffReview(engine);
+    await engine.approve(t.id);
+    await finishStage(); await until(() => bugs.get(t.id).stage === "monitoring");
+    expect(bugs.get(t.id).pr).toMatchObject({ state: "OPEN" });
+  });
+});
+
+describe("dispatch ownership is durable, not just in-memory", () => {
+  it("ignores an assignment event whose id does not match what this task actually dispatched", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    const bogus: Assignment = {
+      id: "a-bogus-not-dispatched", agentId: t.agentId, prompt: "x", createdAt: new Date().toISOString(),
+      startedAt: null, endedAt: null, sessionId: null, state: "done", activity: "", pending: null,
+      outcome: "done", error: null, turns: 1, costUsd: 0,
+    };
+    (store as unknown as { emit: (e: string, v: unknown) => void }).emit("event", { type: "assignment", assignment: bogus });
+    // Long enough to clear the internal agent-state poll's own timeout, so a naive
+    // implementation that merely filters by agentId (and would eventually try to verify
+    // and fail the stage once that poll gives up) can't pass this by accident.
+    await new Promise(r => setTimeout(r, 1200));
+    expect(bugs.get(t.id).stage).toBe("analyzing"); // untouched — the real, dispatched assignment hasn't finished
+    expect(bugs.get(t.id).costUsd).toBe(0);
+  });
+
+  it("recovers a task stuck mid-stage after a restart: it's marked failed, and retry() works again", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    // Simulate a restart: a fresh engine instance over the same durable stores, with no
+    // in-memory state at all, sees this task still sitting in an agent stage. Task 14's
+    // documented order applies: Manager.recoverOnStart() first (frees the stuck agent),
+    // then the engine's own recoverOnStart().
+    const deps = (engine as any).deps;
+    await deps.manager.recoverOnStart();
+    const fresh = new BugFixEngine(deps);
+    await fresh.recoverOnStart();
+    expect(bugs.get(t.id).stage).toBe("failed");
+    expect(bugs.get(t.id).error).toMatch(/restart/i);
+
+    fresh.attach();
+    gitState.commits = 0;
+    const retried = await fresh.retry(t.id);
+    expect(retried.stage).toBe("analyzing");
+  });
+});
+
+describe("intake refuses a repo with no pollable forge", () => {
+  it("rejects before creating any agent or worktree", async () => {
+    const e2 = new BugFixEngine({ ...(engine as any).deps, forge: null });
+    await expect(e2.intake({ issueRef: "PAY-42", repo })).rejects.toThrow(/forge/i);
+  });
+});
+
+describe("implementing verifies the worktree is actually on the task branch", () => {
+  it("fails the stage naming both branches when the worktree has moved off it", async () => {
+    const g = fakeGit(gitState).git;
+    g.currentBranch = async () => "some-other-branch";
+    const e2 = new BugFixEngine({ ...(engine as any).deps, git: g });
+    e2.attach();
+    const t = await e2.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "# Plan");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    await e2.approve(t.id);
+    gitState.commits = 1;
+    await finishStage(); await until(() => bugs.get(t.id).stage === "failed");
+    expect(bugs.get(t.id).error).toMatch(/some-other-branch/);
+    expect(bugs.get(t.id).error).toMatch(/bugfix\/PAY-42/);
+  });
+});
+
+describe("attach() is idempotent", () => {
+  it("calling attach() twice does not double-process a finished stage", async () => {
+    engine.attach(); // second call — should be a no-op
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "# Plan");
+    fake.emit(success("done", 0.5)); fake.end();
+    await until(() => bugs.get(t.id).stage === "plan-review");
+    expect(bugs.get(t.id).costUsd).toBeCloseTo(0.5); // not 1.0
+  });
+});
+
+describe("advance() failure handling preserves the original error", () => {
+  it("surfaces the original failure reason, not a confusing terminal-stage one, when the task goes terminal mid-attempt", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "# Plan");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    await engine.approve(t.id);
+    gitState.commits = 1;
+    await finishStage(); await until(() => bugs.get(t.id).stage === "diff-review");
+
+    const deps = (engine as any).deps;
+    const originalCommitsAhead = deps.git.commitsAhead;
+    // Simulate the task being cancelled by someone else in the moment between the
+    // opening-pr guard's commit check and advance()'s own failure handler running.
+    deps.git.commitsAhead = async (...args: unknown[]) => {
+      await bugs.apply(t.id, { stage: "cancelled", run: null, gate: null, note: "", error: null });
+      return 0;
+    };
+    try {
+      await expect(engine.approve(t.id)).rejects.toThrow(/no commits to open a pull request/i);
+      expect(bugs.get(t.id).stage).toBe("cancelled"); // not stomped back to "failed"
+    } finally {
+      deps.git.commitsAhead = originalCommitsAhead;
+    }
+  });
+});
+
+describe("requestChanges and diffFor reject asynchronously rather than throwing synchronously", () => {
+  it("requestChanges", async () => {
+    let threwSync = false; let p: Promise<unknown>;
+    try { p = engine.requestChanges("bt-does-not-exist", "  "); } catch { threwSync = true; p = Promise.resolve(); }
+    expect(threwSync).toBe(false);
+    await expect(p!).rejects.toThrow(/say what should change/);
+  });
+
+  it("diffFor", async () => {
+    let threwSync = false; let p: Promise<unknown>;
+    try { p = engine.diffFor("bt-does-not-exist"); } catch { threwSync = true; p = Promise.resolve(); }
+    expect(threwSync).toBe(false);
+    await expect(p!).rejects.toThrow(/bug task/i);
+  });
+});
+
+describe("adversarial: a duplicate or late stage-done event", () => {
+  it("does not advance a task that is already resting at a gate", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "# Plan");
+    await finishStage();
+    await until(() => bugs.get(t.id).stage === "plan-review");
+
+    const finished = store.listAssignments(50).find(a => a.agentId === t.agentId && a.state === "done")!;
+    expect(finished).toBeTruthy();
+    (store as unknown as { emit: (e: string, v: unknown) => void }).emit("event", { type: "assignment", assignment: finished });
+    await new Promise(r => setTimeout(r, 50));
+    expect(bugs.get(t.id).stage).toBe("plan-review"); // still at the gate, not re-advanced
   });
 });

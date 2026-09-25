@@ -83,7 +83,8 @@ export class BugTaskStore extends EventEmitter {
     const now = new Date().toISOString();
     const task: BugTask = {
       id: `bt${this.next++}`, ...input, stage: "intake", gate: null, pr: null,
-      costUsd: 0, history: [{ stage: "intake", at: now, note: "" }], error: null, createdAt: now, updatedAt: now,
+      costUsd: 0, history: [{ stage: "intake", at: now, note: "" }], error: null,
+      dispatchedAssignmentId: null, createdAt: now, updatedAt: now,
     };
     await mkdir(this.dir(task.id), { recursive: true });
     await this.save(task);

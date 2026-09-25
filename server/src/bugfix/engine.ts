@@ -27,26 +27,64 @@ export class BugFixEngine {
   private role: string;
   /** Notes from a "request changes" gate, consumed by the next render. */
   private pendingNote = new Map<string, string>();
+  /** Guards `attach()` against registering a second listener on a repeat call. */
+  private attached = false;
   /**
-   * Agent ids this instance has personally dispatched an assignment to (set in
-   * `runStage`). `attach()` listens on the shared store's event bus, which any number
-   * of BugFixEngine instances (or, in tests, deliberately mismatched ones sharing the
-   * same underlying store) may also be listening on — without this guard, more than
-   * one instance would race to verify and advance the very same task. An instance only
-   * reacts to assignments it actually made, never to another instance's.
+   * Serialises `advance()` per task id, the same shape `withWriteChain` in
+   * integrations.ts uses. Two calls that touch the same task (a double-clicked Approve,
+   * or a click racing the agent's own completion event) must not both read the same
+   * pre-transition snapshot and pass a gate check meant to admit only one of them; each
+   * call now waits for the previous one for that task to fully settle, then re-reads the
+   * task from scratch before computing its own transition. Entries are dropped once they
+   * settle so this map never grows unbounded.
    */
-  private managedAgents = new Set<string>();
+  private taskChains = new Map<string, Promise<unknown>>();
+  /**
+   * Assignment ids this *instance* has personally dispatched (set in `runStage`).
+   * `attach()` listens on the shared store's event bus, which any number of
+   * BugFixEngine instances may also be listening on (deliberately, in tests exercising
+   * this; in principle also transiently in production). The durable
+   * `task.dispatchedAssignmentId` check in `onAssignmentFinished` is necessary but not
+   * sufficient here: it says an assignment was genuinely dispatched *for this task*, but
+   * every listener sharing the store sees that as equally true and would all try to
+   * verify and advance the same task. This in-memory set narrows that further to "and I
+   * am the instance that dispatched it" — cheap, and correct for exactly as long as an
+   * instance lives, which is exactly how long it needs to matter: after a restart the
+   * durable field alone is what makes `recoverOnStart()`/`retry()` correct, and by then
+   * there is no other instance racing anyway.
+   */
+  private dispatchedByMe = new Set<string>();
 
   constructor(deps: EngineDeps) { this.deps = deps; this.role = deps.role ?? "bugfix"; }
 
-  /** React to assignments finishing; safe to call once at startup. */
+  /** React to assignments finishing; safe to call more than once — a repeat call is a no-op. */
   attach(): void {
+    if (this.attached) return;
+    this.attached = true;
     this.deps.store.on("event", e => {
       if (e?.type !== "assignment") return;
       const a = e.assignment as Assignment;
       if (a.state !== "done" && a.state !== "failed") return;
       void this.onAssignmentFinished(a).catch(err => console.error("[bugfix] stage handling failed", err));
     });
+  }
+
+  /**
+   * Startup recovery: `Manager.recoverOnStart()` already resets any assignment left
+   * "working"/"waiting" by an unclean shutdown (and frees the agent), but that alone
+   * leaves any bug task that was mid-stage stranded — it's still sitting in an
+   * `AGENT_STAGES` stage with nothing left to finish it, and `retry()` only accepts a
+   * task that's `failed`. This fails those tasks explicitly, naming the restart, so a
+   * human sees why and `retry()` works again.
+   *
+   * Call once at startup: after `Manager.recoverOnStart()` (so the agent/assignment side
+   * is already settled) and before `attach()` starts taking new events.
+   */
+  async recoverOnStart(): Promise<void> {
+    for (const task of this.deps.bugs.list()) {
+      if (!AGENT_STAGES.includes(task.stage)) continue;
+      await this.deps.bugs.apply(task.id, nextStage(task, { type: "stage-failed", reason: "server restarted while this stage was running" }));
+    }
   }
 
   async preflight(repo: string): Promise<{ ok: boolean; problems: string[] }> {
@@ -62,7 +100,12 @@ export class BugFixEngine {
   }
 
   async intake(input: { issueRef: string; repo: string; mergePolicy?: "ask" | "auto"; mergeMethod?: "squash" | "merge" | "rebase" }): Promise<BugTask> {
-    const { git, bugs, store, tracker, integrations } = this.deps;
+    const { git, bugs, store, tracker, integrations, forge } = this.deps;
+    // Without a pollable forge, `opening-pr` can never be verified (see `verify`), so a
+    // gitlab/custom repo would otherwise burn two agent stages and a human gate before
+    // failing at the very end — and `retry()` would then just re-run `opening-pr`
+    // forever. Refuse up front instead, in the same style as the missing-remote check.
+    if (!forge) throw new Conflict("no forge configured — this workflow needs one to open and verify pull requests");
     if (!(await git.hasRemote(input.repo))) throw new Conflict("this repo has no `origin` remote");
 
     const issue = await tracker.fetchIssue(input.issueRef);
@@ -86,19 +129,31 @@ export class BugFixEngine {
   approve(taskId: string): Promise<BugTask> { return this.advance(taskId, { type: "approve" }); }
   cancel(taskId: string): Promise<BugTask> { return this.advance(taskId, { type: "cancel" }); }
   retry(taskId: string): Promise<BugTask> { return this.advance(taskId, { type: "retry" }); }
-  requestChanges(taskId: string, text: string): Promise<BugTask> {
+  async requestChanges(taskId: string, text: string): Promise<BugTask> {
     if (!text.trim()) throw new Conflict("say what should change");
     this.pendingNote.set(taskId, text.trim());
     return this.advance(taskId, { type: "request-changes", text: text.trim() });
   }
 
-  diffFor(taskId: string): Promise<DiffResult> {
+  async diffFor(taskId: string): Promise<DiffResult> {
     const t = this.deps.bugs.get(taskId);
     return this.deps.git.diff(t.worktree, t.baseBranch);
   }
 
-  /** One transition: move the task, then run the stage's assignment if there is one. */
-  private async advance(taskId: string, event: Parameters<typeof nextStage>[1]): Promise<BugTask> {
+  /** Queue a transition for this task behind whatever is already running for it. */
+  private advance(taskId: string, event: Parameters<typeof nextStage>[1]): Promise<BugTask> {
+    const prev = this.taskChains.get(taskId) ?? Promise.resolve();
+    const run = prev.catch(() => {}).then(() => this.advanceLocked(taskId, event));
+    this.taskChains.set(taskId, run);
+    run.finally(() => { if (this.taskChains.get(taskId) === run) this.taskChains.delete(taskId); }).catch(() => {});
+    return run;
+  }
+
+  /** The actual transition. Only ever runs with exclusive access to `taskId`, granted by
+   *  `advance`'s chain — always re-reads the task fresh, so it acts on the real current
+   *  state rather than a snapshot that might already be stale by the time it's this
+   *  call's turn. */
+  private async advanceLocked(taskId: string, event: Parameters<typeof nextStage>[1]): Promise<BugTask> {
     const current = this.deps.bugs.get(taskId);
     const t = nextStage(current, event);
     let task = await this.deps.bugs.apply(taskId, t);
@@ -107,7 +162,18 @@ export class BugFixEngine {
     try {
       task = await this.runStage(task, t.run);
     } catch (err) {
-      task = await this.deps.bugs.apply(taskId, nextStage(task, { type: "stage-failed", reason: (err as Error).message }));
+      const original = err as Error;
+      try {
+        // Re-read rather than reusing the (possibly now-stale) `task` above: something
+        // else may have moved this task on while `runStage` was in flight.
+        const freshCurrent = this.deps.bugs.get(taskId);
+        task = await this.deps.bugs.apply(taskId, nextStage(freshCurrent, { type: "stage-failed", reason: original.message }));
+      } catch {
+        // The task went terminal (e.g. cancelled) underneath this attempt — we can't
+        // record our failure over that, but the *original* problem is still the useful
+        // thing to surface, not stages.ts's confusing "already terminal" message.
+        throw original;
+      }
     }
     return task;
   }
@@ -133,17 +199,27 @@ export class BugFixEngine {
 
     const agent = store.getAgent(task.agentId);
     if (agent.state !== "free") await manager.ack(task.agentId).catch(() => {});
-    this.managedAgents.add(task.agentId);
-    await manager.assign(task.agentId, prompt);
+    const assignment = await manager.assign(task.agentId, prompt);
+    this.dispatchedByMe.add(assignment.id);
+    // Record durably which assignment this task is now waiting on, so
+    // `onAssignmentFinished` can recognise it later — including across a restart, when
+    // no in-memory record of having dispatched it would otherwise survive.
+    await bugs.patch(task.id, { dispatchedAssignmentId: assignment.id });
     return bugs.get(task.id);
   }
 
   /** An assignment finished: verify the stage's real-world effect, then advance or fail. */
   private async onAssignmentFinished(a: Assignment): Promise<void> {
     const { bugs, store, manager } = this.deps;
-    if (!this.managedAgents.has(a.agentId)) return;
     const task = bugs.byAgent(a.agentId);
     if (!task || !AGENT_STAGES.includes(task.stage)) return;
+    // Two checks, for two different failure modes (see `dispatchedByMe`'s own comment):
+    // the durable one says this assignment was genuinely dispatched *for this task*,
+    // surviving a restart; the in-memory one says *this instance* is the one that
+    // dispatched it, which is what keeps two live instances sharing a store from both
+    // reacting to the same event.
+    if (task.dispatchedAssignmentId !== a.id) return;
+    if (!this.dispatchedByMe.has(a.id)) return;
 
     await bugs.patch(task.id, { costUsd: Number((task.costUsd + (a.costUsd ?? 0)).toFixed(4)) });
     // The "assignment" event fires as soon as the assignment record itself is written,
@@ -180,6 +256,10 @@ export class BugFixEngine {
       return;
     }
     if (task.stage === "implementing") {
+      // The agent may have switched branches or detached HEAD inside the worktree —
+      // `commitsAhead`/`diff` would then silently count and diff the wrong thing.
+      const branch = await git.currentBranch(task.worktree);
+      if (branch !== task.branch) throw new Error(`worktree is on ${branch}, not the task branch ${task.branch}`);
       if ((await git.commitsAhead(task.worktree, task.baseBranch)) === 0) throw new Error("no commits on the task branch");
       const diff = await git.diff(task.worktree, task.baseBranch);
       await bugs.writeArtifact(task.id, "diff.patch", diff.patch);
@@ -189,6 +269,11 @@ export class BugFixEngine {
     if (task.stage === "opening-pr") {
       const pr = forge ? await forge.findPr(task.sourceRepo, task.branch) : null;
       if (!pr) throw new Error("no pull request found for this branch");
+      // The adapter deliberately falls back to `--state all`, so a reused branch can
+      // carry a stale CLOSED or MERGED PR from an earlier round. Only an OPEN PR is
+      // evidence this run actually produced a fix worth reviewing; anything else must
+      // fail the stage rather than be recorded and rested on.
+      if (pr.state !== "OPEN") throw new Error(`pull request #${pr.number} is ${pr.state.toLowerCase()}, not open`);
       await bugs.patch(task.id, { pr });
       await tracker.comment(task.issue.key, `Fix in progress — pull request: ${pr.url}`).catch(() => {});
       return;
