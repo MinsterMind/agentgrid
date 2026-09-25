@@ -6,6 +6,7 @@ import { AgentGrid } from "./components/AgentGrid";
 import { SidePanel } from "./components/SidePanel";
 import { TopBar } from "./components/TopBar";
 import { SpawnDialog } from "./components/SpawnDialog";
+import { BugLauncher } from "./components/BugLauncher";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { TranscriptView } from "./components/TranscriptView";
 import { useKeyboard } from "./hooks/useKeyboard";
@@ -15,6 +16,7 @@ import type { Decision } from "./types";
 export function App() {
   const [s, dispatch] = useReducer(reducer, initial);
   const [spawnOpen, setSpawnOpen] = useState(false);
+  const [bugOpen, setBugOpen] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [transcriptFor, setTranscriptFor] = useState<string | null>(null);
   const [openTerminalRequest, setOpenTerminalRequest] = useState(0);
@@ -72,12 +74,12 @@ export function App() {
     allow: () => { if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "allow" }); },
     deny: () => { if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "deny" }); },
     open: () => { if (selected && selectedAsg?.sessionId) void openTerminal(selected.id); },
-    escape: () => { if (transcriptFor) { setTranscriptFor(null); return; } if (sessionsOpen) { setSessionsOpen(false); return; } if (spawnOpen) { setSpawnOpen(false); return; } dispatch({ type: "select", id: null }); },
-  }), [s.agents, selected, selectedAsg, decide, openTerminal, spawnOpen, sessionsOpen, transcriptFor]));
+    escape: () => { if (transcriptFor) { setTranscriptFor(null); return; } if (sessionsOpen) { setSessionsOpen(false); return; } if (spawnOpen) { setSpawnOpen(false); return; } if (bugOpen) { setBugOpen(false); return; } dispatch({ type: "select", id: null }); },
+  }), [s.agents, selected, selectedAsg, decide, openTerminal, spawnOpen, sessionsOpen, transcriptFor, bugOpen]));
 
   return (
     <div className="app">
-      <TopBar counts={counts(s)} spend={todaySpend(s)} connected={s.connected} waitingCount={waitingIds(s).length} onCycleWaiting={cycleWaiting} onSpawn={() => setSpawnOpen(true)} onSessions={() => setSessionsOpen(true)} />
+      <TopBar counts={counts(s)} spend={todaySpend(s)} connected={s.connected} waitingCount={waitingIds(s).length} onCycleWaiting={cycleWaiting} onSpawn={() => setSpawnOpen(true)} onSessions={() => setSessionsOpen(true)} onFixBug={() => setBugOpen(true)} />
       <div className="split">
         <AgentGrid agents={s.agents} roles={s.roles} assignments={s.assignments} selectedId={s.selectedId} recentFor={recentFor}
           onSelect={id => dispatch({ type: "select", id })}
@@ -98,6 +100,7 @@ export function App() {
         <span className="dim">keys: 1–9 select · a allow · d deny · o terminal · esc</span>
       </footer>
       {spawnOpen && <SpawnDialog roles={s.roles} recentRepos={recentRepos} onSpawn={async i => { const a = await api.createAgent(i); dispatch({ type: "select", id: a.id }); }} onClose={() => setSpawnOpen(false)} />}
+      {bugOpen && <BugLauncher onCreated={t => { setBugOpen(false); dispatch({ type: "select", id: t.agentId }); }} onClose={() => setBugOpen(false)} />}
       {sessionsOpen && <SessionsPanel roles={s.roles} agentNames={Object.fromEntries(s.agents.map(a => [a.id, a.displayName]))}
         onAdopted={id => { setSessionsOpen(false); dispatch({ type: "select", id }); }} onClose={() => setSessionsOpen(false)} />}
       {transcriptFor && (() => { const ag = s.agents.find(a => a.id === transcriptFor); if (!ag) return null;
