@@ -6,7 +6,7 @@ The diff for {{issueKey}} has been approved. Open the pull request from {{worktr
    {{createPrCommand}}
 4. Write {{artifactsDir}}/pr.json as {"number": <number>, "url": "<url>"} using the PR the command printed.
 
-Do not merge. Do not change any code in this step.
+Do not land this yourself — a human takes it from here. Do not change any code in this step.
 
 {{note}}
 

@@ -22,6 +22,9 @@ const FILES: Partial<Record<BugStage, string>> = {
 export async function renderStagePrompt(stage: BugStage, task: BugTask, ctx: StageContext, presetsDir: string): Promise<string> {
   const file = FILES[stage];
   if (!file) throw new Error(`stage ${stage} has no prompt`);
+  if (stage === "opening-pr" && !ctx.createPrCommand?.trim()) {
+    throw new Error(`stage opening-pr requires ctx.createPrCommand, but it was missing or empty`);
+  }
   const template = await readFile(path.join(presetsDir, "stages", file), "utf8");
   const vars: Record<string, string> = {
     issueKey: task.issue.key, issueTitle: task.issue.title, issueUrl: task.issue.url,
