@@ -43,7 +43,7 @@ function agent(id: string, state: Agent["state"]): Agent {
   return { id, role: "coder", repo: "/tmp", displayName: id, createdAt: new Date().toISOString(), state, currentAssignmentId: null };
 }
 
-function snapshot(agents: Agent[]): GridState { return { roles: [role], agents, assignments: [], liveSessions: [], sessionStatuses: [] }; }
+function snapshot(agents: Agent[]): GridState { return { roles: [role], agents, assignments: [], liveSessions: [], sessionStatuses: [], bugTasks: [] }; }
 
 let onSnapshot: (s: GridState) => void;
 let onChange: (e: GridEvent) => void;

@@ -1,3 +1,4 @@
+import { Conflict } from "../store/store.js";
 import { GATE_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask, type GateKind, type Transition } from "./types.js";
 
 const gate = (kind: GateKind): Transition["gate"] => ({ kind, openedAt: new Date().toISOString() });
@@ -11,7 +12,7 @@ const wait = (stage: BugStage, kind: GateKind): Transition => ({ stage, run: nul
  */
 export function nextStage(task: BugTask, event: BugEvent): Transition {
   if (TERMINAL_STAGES.includes(task.stage) && event.type !== "retry") {
-    throw new Error(`task ${task.id} is in terminal stage ${task.stage}`);
+    throw new Conflict(`task ${task.id} is in terminal stage ${task.stage}`);
   }
   switch (event.type) {
     case "cancel":
@@ -21,25 +22,25 @@ export function nextStage(task: BugTask, event: BugEvent): Transition {
       return go("failed", null, "", event.reason);
 
     case "retry": {
-      if (task.stage !== "failed") throw new Error(`can only retry a failed task (is ${task.stage})`);
+      if (task.stage !== "failed") throw new Conflict(`can only retry a failed task (is ${task.stage})`);
       const last = [...task.history].reverse().find(h => h.stage !== "failed");
       if (!last) throw new Error("nothing to retry");
       return go(last.stage, last.stage, "", null);
     }
 
     case "approve": {
-      if (!GATE_STAGES.includes(task.stage)) throw new Error(`cannot approve while ${task.stage}`);
+      if (!GATE_STAGES.includes(task.stage)) throw new Conflict(`cannot approve while ${task.stage}`);
       return task.stage === "plan-review" ? go("implementing", "implementing") : go("opening-pr", "opening-pr");
     }
 
     case "request-changes": {
-      if (!GATE_STAGES.includes(task.stage)) throw new Error(`cannot request changes while ${task.stage}`);
+      if (!GATE_STAGES.includes(task.stage)) throw new Conflict(`cannot request changes while ${task.stage}`);
       const back: BugStage = task.stage === "plan-review" ? "analyzing" : "implementing";
       return go(back, back, event.text);
     }
 
     case "stage-done": {
-      if (GATE_STAGES.includes(task.stage)) throw new Error(`${task.stage} is waiting on a human, not on the agent`);
+      if (GATE_STAGES.includes(task.stage)) throw new Conflict(`${task.stage} is waiting on a human, not on the agent`);
       switch (task.stage) {
         case "intake": return go("analyzing", "analyzing");
         case "analyzing": return wait("plan-review", "plan");

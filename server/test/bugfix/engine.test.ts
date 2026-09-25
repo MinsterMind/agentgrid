@@ -219,9 +219,10 @@ describe("concurrent gate calls are serialised per task", () => {
 
     const results = await Promise.allSettled([engine.approve(t.id), engine.approve(t.id)]);
     const fulfilled = results.filter(r => r.status === "fulfilled");
-    const rejected = results.filter(r => r.status === "rejected");
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
     expect(fulfilled).toHaveLength(1);
     expect(rejected).toHaveLength(1);
+    expect(rejected[0].reason?.status).toBe(409); // the loser is a Conflict, not an unhandled 500
     expect(bugs.get(t.id).stage).toBe("implementing");
     expect(bugs.get(t.id).stage).not.toBe("failed");
   });
@@ -233,9 +234,10 @@ describe("concurrent gate calls are serialised per task", () => {
 
     const results = await Promise.allSettled([engine.approve(t.id), engine.requestChanges(t.id, "cover the retry path")]);
     const fulfilled = results.filter(r => r.status === "fulfilled");
-    const rejected = results.filter(r => r.status === "rejected");
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
     expect(fulfilled).toHaveLength(1);
     expect(rejected).toHaveLength(1);
+    expect(rejected[0].reason?.status).toBe(409);
     expect(bugs.get(t.id).stage).not.toBe("failed");
     expect(["implementing", "analyzing"]).toContain(bugs.get(t.id).stage);
   });
@@ -477,6 +479,7 @@ describe("requestChanges never leaks its note into an unrelated stage", () => {
     const t = await engine.intake({ issueRef: "PAY-42", repo });
     // t.stage is "analyzing" — not a gate.
     await expect(engine.requestChanges(t.id, "cover the retry path")).rejects.toThrow(/cannot request changes while analyzing/i);
+    await expect(engine.requestChanges(t.id, "cover the retry path")).rejects.toMatchObject({ status: 409 });
 
     // The next legitimate stage prompt (once the plan gate is reached and approved)
     // must not carry that rejected note.
@@ -493,8 +496,10 @@ describe("requestChanges never leaks its note into an unrelated stage", () => {
     await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
 
     const results = await Promise.allSettled([engine.approve(t.id), engine.requestChanges(t.id, "this note must not leak")]);
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
     expect(results.filter(r => r.status === "fulfilled")).toHaveLength(1);
-    expect(results.filter(r => r.status === "rejected")).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].reason?.status).toBe(409);
     expect(bugs.get(t.id).stage).toBe("implementing"); // approve won
     expect(fake.calls.at(-1)!.prompt).not.toContain("this note must not leak");
 

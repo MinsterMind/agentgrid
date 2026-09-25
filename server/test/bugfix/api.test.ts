@@ -9,6 +9,8 @@ import { createApp } from "../../src/api/app.js";
 import { BugTaskStore } from "../../src/bugfix/store.js";
 import { IntegrationsStore } from "../../src/bugfix/integrations.js";
 import { makeFakeQuery } from "../helpers/fakeQuery.js";
+import { until } from "../helpers/until.js";
+import { createBugFixTestApp } from "./realEngineApp.js";
 import type { BugTask, TrackerIssue } from "../../src/bugfix/types.js";
 
 const ISSUE: TrackerIssue = { key: "PAY-42", title: "Boom", url: "https://x/PAY-42", status: "Open", priority: "High", description: "d", acceptanceCriteria: [] };
@@ -80,10 +82,81 @@ describe("bug task routes", () => {
     expect((await request(app).get("/api/integrations")).body.forge).toEqual({ preset: "github" });
   });
 
+  it("returns a single bug task by id", async () => {
+    await request(app).post("/api/bugtasks").send({ issueRef: "PAY-42", repo: "/r" });
+    const res = await request(app).get("/api/bugtasks/bt1").expect(200);
+    expect(res.body).toMatchObject({ id: "bt1", stage: "intake" });
+  });
+
+  it("404s a malformed id on a route other than the plain GET", async () => {
+    await request(app).post("/api/bugtasks").send({ issueRef: "PAY-42", repo: "/r" });
+    await request(app).post("/api/bugtasks/not-a-real-id/approve").expect(404);
+    await request(app).get("/api/bugtasks/../etc/plan").expect(404);
+  });
+
+  it("rejects an out-of-enum mergePolicy or mergeMethod", async () => {
+    await request(app).post("/api/bugtasks").send({ issueRef: "PAY-42", repo: "/r", mergePolicy: "yolo" }).expect(400);
+    await request(app).post("/api/bugtasks").send({ issueRef: "PAY-42", repo: "/r", mergeMethod: "smash" }).expect(400);
+    expect(calls).not.toContain("intake PAY-42"); // rejected before the engine is ever called
+  });
+
+  it("rejects an out-of-enum forge preset on PUT /api/integrations", async () => {
+    await request(app).put("/api/integrations").send({ forge: { preset: "bitbucket" } }).expect(400);
+    expect((await request(app).get("/api/integrations")).body.forge).toBeUndefined();
+  });
+
   it("returns 501 for every bug route when the feature is not wired", async () => {
     const store = new Store(home, path.resolve("roles")); await store.init();
     const bare = createApp({ store, manager: new Manager(store, { queryFn: makeFakeQuery().queryFn }) });
-    await request(bare).get("/api/bugtasks").expect(501);
-    await request(bare).post("/api/bugtasks").send({ issueRef: "x", repo: "/r" }).expect(501);
+    const routes: Array<[string, string]> = [
+      ["get", "/api/bugtasks"],
+      ["get", "/api/bugtasks/bt1"],
+      ["get", "/api/bugtasks/bt1/plan"],
+      ["get", "/api/bugtasks/bt1/diff"],
+      ["post", "/api/bugtasks"],
+      ["post", "/api/bugtasks/bt1/approve"],
+      ["post", "/api/bugtasks/bt1/cancel"],
+      ["post", "/api/bugtasks/bt1/retry"],
+      ["post", "/api/bugtasks/bt1/request-changes"],
+      ["get", "/api/bugfix/issues"],
+      ["get", "/api/bugfix/preflight?repo=/r"],
+      ["get", "/api/integrations"],
+      ["put", "/api/integrations"],
+    ];
+    for (const [method, url] of routes) {
+      const r = method === "get"
+        ? await request(bare).get(url)
+        : await (request(bare) as any)[method](url).send({ text: "x", issueRef: "x", repo: "/r" });
+      expect(r.status, `${method.toUpperCase()} ${url}`).toBe(501);
+    }
+  });
+});
+
+describe("gate races surface as 409, never 500", () => {
+  it("two concurrent approves over the real engine yield exactly one 200 and one 409", async () => {
+    const repo = await mkdtemp(path.join(tmpdir(), "api-real-repo-"));
+    const { app: realApp, bugs: realBugs, finishStage } = await createBugFixTestApp();
+    const created = await request(realApp).post("/api/bugtasks").send({ issueRef: "PAY-42", repo }).expect(201);
+    const id = created.body.id as string;
+    await realBugs.writeArtifact(id, "plan.md", "# Plan");
+    await finishStage();
+    await until(() => realBugs.get(id).stage === "plan-review");
+
+    const [r1, r2] = await Promise.all([
+      request(realApp).post(`/api/bugtasks/${id}/approve`),
+      request(realApp).post(`/api/bugtasks/${id}/approve`),
+    ]);
+    const statuses = [r1.status, r2.status].sort();
+    expect(statuses).toEqual([200, 409]);
+    expect(realBugs.get(id).stage).toBe("implementing");
+  });
+
+  it("a gate call against a task in the wrong stage is a 409, not a 500", async () => {
+    const repo = await mkdtemp(path.join(tmpdir(), "api-real-repo-"));
+    const { app: realApp } = await createBugFixTestApp();
+    const created = await request(realApp).post("/api/bugtasks").send({ issueRef: "PAY-42", repo }).expect(201);
+    const id = created.body.id as string;
+    // Task is still "analyzing" (an agent stage), which does not accept "approve".
+    await request(realApp).post(`/api/bugtasks/${id}/approve`).expect(409);
   });
 });

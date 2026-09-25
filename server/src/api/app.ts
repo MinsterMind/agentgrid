@@ -184,6 +184,10 @@ export function createApp(deps: AppDeps) {
   const bugs = () => { if (!deps.bugs) throw new NotWired("the bug-fix workflow is not configured"); return deps.bugs; };
   if (deps.bugs) store.bugTasks = () => deps.bugs!.store.list();
 
+  const MERGE_POLICIES = ["ask", "auto"] as const;
+  const MERGE_METHODS = ["squash", "merge", "rebase"] as const;
+  const FORGE_PRESETS = ["github", "gitlab", "custom"] as const;
+
   app.get("/api/bugtasks", wrap((_req, res) => res.json(bugs().store.list())));
   app.get("/api/bugtasks/:id", wrap((req, res) => res.json(bugs().store.get(req.params.id as string))));
   app.get("/api/bugtasks/:id/plan", wrap(async (req, res) => {
@@ -198,6 +202,8 @@ export function createApp(deps: AppDeps) {
     const { issueRef, repo, mergePolicy, mergeMethod } = req.body ?? {};
     if (typeof issueRef !== "string" || !issueRef.trim()) throw new BadRequest("issueRef is required");
     if (typeof repo !== "string" || !path.isAbsolute(repo)) throw new BadRequest("an absolute repo path is required");
+    if (mergePolicy !== undefined && !MERGE_POLICIES.includes(mergePolicy)) throw new BadRequest(`mergePolicy must be one of ${MERGE_POLICIES.join(", ")}`);
+    if (mergeMethod !== undefined && !MERGE_METHODS.includes(mergeMethod)) throw new BadRequest(`mergeMethod must be one of ${MERGE_METHODS.join(", ")}`);
     res.status(201).json(await bugs().engine.intake({ issueRef: issueRef.trim(), repo, mergePolicy, mergeMethod }));
   }));
   app.post("/api/bugtasks/:id/approve", wrap(async (req, res) => res.json(await bugs().engine.approve(req.params.id as string))));
@@ -215,7 +221,22 @@ export function createApp(deps: AppDeps) {
     res.json(await bugs().engine.preflight(repo));
   }));
   app.get("/api/integrations", wrap(async (_req, res) => res.json(await bugs().integrations.read())));
-  app.put("/api/integrations", wrap(async (req, res) => res.json(await bugs().integrations.write(req.body ?? {}))));
+  app.put("/api/integrations", wrap(async (req, res) => {
+    const body = req.body ?? {};
+    // Only the two known top-level fields are accepted; anything else in the body is
+    // deliberately dropped rather than persisted (same "pick the fields you accept"
+    // convention POST /api/agents already uses), not silently merged onto disk.
+    const patch: { tracker?: unknown; forge?: unknown } = {};
+    if (body.tracker !== undefined) patch.tracker = body.tracker;
+    if (body.forge !== undefined) {
+      const forge = body.forge;
+      if (!forge || typeof forge !== "object" || !FORGE_PRESETS.includes(forge.preset)) {
+        throw new BadRequest(`forge.preset must be one of ${FORGE_PRESETS.join(", ")}`);
+      }
+      patch.forge = forge;
+    }
+    res.json(await bugs().integrations.write(patch as never));
+  }));
 
   app.use("/api", (_req, res) => res.status(404).json({ error: "not found" }));
 

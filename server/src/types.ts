@@ -1,3 +1,4 @@
+export type { BugTask } from "./bugfix/types.js";
 import type { BugTask } from "./bugfix/types.js";
 
 export type AgentState = "free" | "working" | "waiting" | "done" | "failed";
