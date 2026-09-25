@@ -21,6 +21,17 @@ const GIT_PUSH = /git push/i;
 const PR_CREATE = /(gh pr create|\bpr create\b)/i;
 const MERGE = /\bmerge\b/i;
 const CHANGE_CODE = /\bmake the change\b/i; // the literal instruction to modify code, as phrased in implement.md
+const PROHIBITION = /\b(do not|don't|never)\b/i;
+
+/**
+ * Lines mentioning `re` that are NOT phrased as a prohibition — i.e. an affirmative instruction to
+ * do the thing, not a "do not"/"don't"/"never" telling the agent not to. Used where the matched
+ * phrase (e.g. "merge") legitimately appears in the prompt's own prohibition, so a blunt
+ * not-present check can't tell "Do not merge." from "Then merge it."
+ */
+function affirmativeLines(text: string, re: RegExp): string[] {
+  return text.split("\n").filter(line => re.test(line) && !PROHIBITION.test(line));
+}
 
 describe("renderStagePrompt", () => {
   it("analyze names the ticket, the worktree and the plan file it must write", async () => {
@@ -59,11 +70,18 @@ describe("renderStagePrompt", () => {
     expect(p).toContain("git push");
   });
 
-  it("open-pr does not instruct merging or changing code, outside of the injected create command", async () => {
+  it("open-pr prohibits merging (rather than omitting the word) and does not instruct changing code", async () => {
     const p = await renderStagePrompt("opening-pr", task, { ...ctx, createPrCommand: prCmd }, presets);
     const withoutCommand = p.replace(prCmd, "");
-    expect(withoutCommand).not.toMatch(MERGE);
+    expect(withoutCommand).toMatch(/do not merge/i); // the explicit prohibition must survive
+    expect(affirmativeLines(withoutCommand, MERGE)).toEqual([]); // but no line instructs merging
     expect(withoutCommand).not.toMatch(CHANGE_CODE);
+  });
+
+  it("affirmativeLines tells an instruction to merge apart from a prohibition on merging", () => {
+    expect(affirmativeLines("Do not merge.", MERGE)).toEqual([]);
+    expect(affirmativeLines("Don't merge yet.", MERGE)).toEqual([]);
+    expect(affirmativeLines("Then merge it now.", MERGE)).toEqual(["Then merge it now."]);
   });
 
   it("open-pr throws when ctx.createPrCommand is missing or empty, naming the stage and the field", async () => {
