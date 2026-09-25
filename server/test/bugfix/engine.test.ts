@@ -280,7 +280,7 @@ describe("opening-pr requires an OPEN pull request", () => {
   });
 });
 
-describe("dispatch ownership is durable, not just in-memory", () => {
+describe("dispatch ownership is tracked in memory, per task", () => {
   it("ignores an assignment event whose id does not match what this task actually dispatched", async () => {
     const t = await engine.intake({ issueRef: "PAY-42", repo });
     const bogus: Assignment = {
@@ -569,5 +569,61 @@ describe("an agent cancelled while the stage is still dispatching does not stran
     const retried = await engine.retry(t.id);
     expect(retried.stage).toBe("analyzing");
     expect(store.getAgent(t.agentId).state).toBe("working");
+  });
+});
+
+describe("an assignment that dies after the dispatch map is written is caught by its event", () => {
+  // The other half of the ownership invariant. Above, the terminal write lands *before*
+  // `assign()` returns, so `runStage`'s re-read catches it. Here the cancellation is
+  // issued inside `assign()` but its terminal store write is held until after
+  // `runStage` has recorded ownership — so the re-read sees a live "working"
+  // assignment and the *event* is what must drive the task to failed. Exactly one
+  // advance may result: the event path working, not merely arriving.
+  //
+  // Deterministic by construction: the terminal write is gated on a promise this test
+  // resolves itself, so no timing assumption is made about which side wins.
+  it("the event drives the task to failed exactly once, frees the agent and prunes the map", async () => {
+    const manager = (engine as any).deps.manager as Manager;
+    const dispatchMap = (engine as any).currentDispatch as Map<string, string>;
+
+    let release!: () => void;
+    const held = new Promise<void>(r => { release = r; });
+    let heldOnce = false;
+    const realUpdateAssignment = store.updateAssignment.bind(store);
+    (store as unknown as { updateAssignment: (id: string, p: Partial<Assignment>) => Promise<Assignment> }).updateAssignment =
+      async (id: string, p: Partial<Assignment>) => {
+        if (!heldOnce && (p.state === "failed" || p.state === "done")) { heldOnce = true; await held; }
+        return realUpdateAssignment(id, p);
+      };
+
+    const realReadMemoryIndex = store.readMemoryIndex.bind(store);
+    let cancelledOnce = false;
+    (store as unknown as { readMemoryIndex: (id: string) => Promise<string> }).readMemoryIndex = async (agentId: string) => {
+      if (!cancelledOnce) {
+        cancelledOnce = true;
+        void manager.cancel(agentId).catch(() => {});   // fired, but its terminal write is held
+      }
+      return realReadMemoryIndex(agentId);
+    };
+
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    // Ownership recorded against an assignment that is, as far as the store knows,
+    // still alive — the re-read cannot help here.
+    expect(cancelledOnce).toBe(true);
+    expect(t.stage).toBe("analyzing");
+    expect(dispatchMap.get(t.id)).toBeTruthy();
+    expect(store.getAssignment(dispatchMap.get(t.id)!).state).toBe("working");
+
+    release();   // now let the cancellation land; only the event can catch it
+
+    await until(() => bugs.get(t.id).stage === "failed");
+    expect(bugs.get(t.id).error).toMatch(/cancelled/i);
+    // Exactly one failure transition — not one from the event and another from anywhere else.
+    expect(bugs.get(t.id).history.filter(h => h.stage === "failed")).toHaveLength(1);
+    await until(() => store.getAgent(t.agentId).state === "free");
+    expect(dispatchMap.has(t.id)).toBe(false);
+
+    const retried = await engine.retry(t.id);
+    expect(retried.stage).toBe("analyzing");
   });
 });

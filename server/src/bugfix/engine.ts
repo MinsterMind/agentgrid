@@ -62,7 +62,11 @@ export class BugFixEngine {
    * transiently in production) — this map is what keeps a non-dispatching instance from
    * reacting to another instance's event: it simply has no entry for that task. Entries
    * are dropped once the task reaches a terminal stage (`settleTerminal`), where there
-   * is nothing left for an event to advance.
+   * is nothing left for an event to advance. That is not a self-emptying map: in
+   * Phase 1 `nextStage` never returns `done`, and the successful terminus is
+   * `monitoring`, which is not terminal — so a task that goes well keeps its entry for
+   * as long as it lives. That is intended (one entry per live task, which Phase 2's
+   * monitoring/merge stages will dispatch against), not a leak.
    */
   private currentDispatch = new Map<string, string>();
 
@@ -248,13 +252,22 @@ export class BugFixEngine {
     // makes the ownership map complete rather than merely well-ordered — no assignment
     // event for a task we are dispatching can be dropped, however that assignment dies.
     const settled = store.getAssignment(assignment.id);
-    if (settled.state === "failed" || settled.state === "done") {
+    // Only `failed` takes this path. A `done` record here would be a *successful* run,
+    // and the map entry written above means its event is ours to handle — so leave it
+    // to `onAssignmentFinished`, which verifies the stage's real-world effect before
+    // advancing. Throwing on `done` would fail a stage that actually succeeded, and
+    // skip verification doing it. (No interleaving reaches `done` here today:
+    // `consume()` only starts after `assign()`'s last await, and `finish()`'s first
+    // write is awaited fs I/O. This is about which way to be wrong if that changes.)
+    if (settled.state === "failed") {
       this.currentDispatch.delete(task.id);
       // Runner.finish() writes the agent's own state in a second store write after the
-      // assignment's; let it land so `stopAgent` (via advanceLocked's failure path)
-      // sees the real state and frees the agent instead of mis-dispatching on a stale one.
+      // assignment's; waiting for it to land lets `stopAgent` (via advanceLocked's
+      // failure path) ack the agent to "free" rather than leaving it "failed" for the
+      // next dispatch's own ack to clean up. Hygiene, not correctness — and bounded, so
+      // it degrades to the old behaviour if the write is slow.
       await this.waitForAgentState(task.agentId, settled.state);
-      throw new Error(settled.error ?? `the agent's run ended (${settled.state}) before the stage could start`);
+      throw new Error(settled.error ?? "the agent's run failed before the stage could start");
     }
     return bugs.get(task.id);
   }
