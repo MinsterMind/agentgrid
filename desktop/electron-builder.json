@@ -18,6 +18,10 @@
     {
       "from": "../server/roles",
       "to": "roles"
+    },
+    {
+      "from": "../server/presets",
+      "to": "presets"
     }
   ],
   "asar": true,

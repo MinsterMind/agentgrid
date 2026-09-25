@@ -14,6 +14,12 @@ import { attachPtyWebSocket } from "./api/ws.js";
 import { listAllSessions, listLiveSessions, LiveSessionWatcher } from "./sessions.js";
 import { SessionStatusWatcher } from "./sessionStatus.js";
 import type { QueryFn } from "./runner/runner.js";
+import { BugTaskStore } from "./bugfix/store.js";
+import { IntegrationsStore } from "./bugfix/integrations.js";
+import { GitOps } from "./bugfix/git.js";
+import { makeForge } from "./bugfix/forge/index.js";
+import { mcpTracker, type TrackerProvider } from "./bugfix/tracker.js";
+import { BugFixEngine } from "./bugfix/engine.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -28,6 +34,8 @@ export interface StartOptions {
   staticDir?: string;
   /** Directory holding the default role templates. Default: server/roles. */
   defaultsDir?: string;
+  /** Directory holding the bug-fix tracker/stage presets. Default: server/presets. */
+  presetsDir?: string;
   /** Scripted runner/terminal/sessions — no Claude Code needed (used by e2e). Default: AGENTGRID_FAKE. */
   fake?: boolean;
   log?: (msg: string) => void;
@@ -88,8 +96,36 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   store.on("event", e => { if (e.type === "agent" || e.type === "agent-removed" || e.type === "assignment") syncWatched(); });
   syncWatched(); statuses.start();
 
+  const bugStore = new BugTaskStore(home);
+  await bugStore.init();
+  store.bugTasks = () => bugStore.list();
+  bugStore.on("event", e => store.emit("event", e));
+
+  const integrations = new IntegrationsStore(home);
+  const cfg = await integrations.read();
+  const presetsDir = opts.presetsDir ?? path.resolve(here, "..", "presets");
+
+  // Fake mode: a canned tracker and forge so the whole flow can be exercised without Jira or gh.
+  const fakeTracker: TrackerProvider = {
+    listMyIssues: async () => [{ key: "FAKE-1", title: "Fake bug for demos", url: "https://example.invalid/FAKE-1", status: "Open", priority: "High" }],
+    fetchIssue: async (ref: string) => ({ key: ref.split("/").pop() || "FAKE-1", title: "Fake bug for demos", url: "https://example.invalid/FAKE-1",
+      status: "Open", priority: "High", description: "A fake ticket used in fake mode.", acceptanceCriteria: ["it stops happening"] }),
+    comment: async () => {},
+  };
+  const fakeForge = {
+    name: "fake", authStatus: async () => ({ ok: true, message: "fake forge" }),
+    createPrCommand: () => "echo 'fake pr created'",
+    findPr: async () => ({ number: 1, url: "https://example.invalid/pr/1", state: "OPEN" as const, reviewDecision: null, checks: "SUCCESS", mergeable: "MERGEABLE", lastSeenEventAt: new Date().toISOString() }),
+  };
+
+  const tracker = fake ? fakeTracker : (cfg.tracker ? mcpTracker(cfg.tracker, presetsDir) : null);
+  const forge = fake ? fakeForge : makeForge(cfg.forge);
+  const engine = tracker ? new BugFixEngine({ store, bugs: bugStore, manager, git: new GitOps(), integrations, tracker, forge, presetsDir }) : null;
+  if (engine) { await engine.recoverOnStart(); engine.attach(); }
+
   const app = createApp({ store, manager, writeToTerminal: (sid, data) => ptys.write(sid, data), transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }),
-    openTerminal, runInTerminal, staticDir, browseRoot: opts.browseRoot ?? process.env.AGENTGRID_BROWSE_ROOT, ...(fakeSessions ? { sessions: fakeSessions } : {}) });
+    openTerminal, runInTerminal, staticDir, browseRoot: opts.browseRoot ?? process.env.AGENTGRID_BROWSE_ROOT, ...(fakeSessions ? { sessions: fakeSessions } : {}),
+    ...(engine && tracker ? { bugs: { engine, store: bugStore, integrations, tracker } } : {}) });
   const server = http.createServer(app);
   attachPtyWebSocket(server, { store, ptys, sessions: () => listAllSessions(store.listAgents(), store.assignmentSessionIds(), fakeSessions) });
 
