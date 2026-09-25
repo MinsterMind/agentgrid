@@ -10,7 +10,7 @@ import type { ForgeAdapter } from "./forge/index.js";
 import type { TrackerProvider } from "./tracker.js";
 import { renderStagePrompt } from "./prompts.js";
 import { nextStage } from "./stages.js";
-import { AGENT_STAGES, type BugStage, type BugTask } from "./types.js";
+import { AGENT_STAGES, TERMINAL_STAGES, type BugStage, type BugTask } from "./types.js";
 
 export interface EngineDeps {
   store: Store; bugs: BugTaskStore; manager: Manager; git: GitOps;
@@ -42,29 +42,27 @@ export class BugFixEngine {
   /**
    * taskId -> the id of the assignment this *instance* most recently dispatched for it.
    * Set synchronously in `runStage`, the instant `manager.assign()` resolves — no
-   * `await` between that and the write, unlike the durable `task.dispatchedAssignmentId`
-   * (a real `writeAtomic` file write, landed only once `bugs.patch` resolves and the
-   * store's in-memory map catches up). That gap mattered: an assignment that fails on
-   * its *first stream iteration* (spawn ENOENT, a bad cwd, an immediate abort, or
+   * `await` between that and the write. That ordering matters: an assignment that fails
+   * on its *first stream iteration* (spawn ENOENT, a bad cwd, an immediate abort, or
    * runner.ts's own "stream ended without result") resolves `manager.assign()`
    * successfully (state "working") and only fails later, asynchronously, once Runner's
    * background consume() loop actually iterates the stream — but reaching that failure
    * still requires strictly more of Runner's own sequential store writes than
    * `manager.assign()` itself needed to resolve, so this in-memory write reliably lands
-   * first. Keyed by task id rather than by assignment id, so it doubles as "the *latest*
-   * assignment I dispatched for this task" — which is what correctly ignores a stale
-   * duplicate event from an *earlier* assignment for the same task (retained here
-   * forever by design; see the round-2 note on not pruning it) without depending on the
-   * durable field at all. `attach()` listens on the shared store's event bus, which any
-   * number of BugFixEngine instances may also be listening on (deliberately, in tests
-   * exercising this; in principle also transiently in production) — this map is what
-   * keeps a non-dispatching instance from reacting to another instance's event: it
-   * simply has no entry for that task.
+   * first. Assignments that died *before* the write (cancelled inside `assign()`, or a
+   * synchronously-throwing queryFn) are caught by `runStage`'s re-read of the store
+   * immediately after it — so between the two, no assignment event for a task this
+   * engine is dispatching can be missed, however that assignment dies.
    *
-   * The durable `task.dispatchedAssignmentId` field is still written (see `runStage`)
-   * for restart-time observability/debugging, but nothing reads it to *gate* a live
-   * decision any more — real-time correctness now rests entirely on this map, which
-   * needs no `await` to be trustworthy at the moment an event arrives.
+   * Keyed by task id rather than by assignment id, so it doubles as "the *latest*
+   * assignment I dispatched for this task" — which is what correctly ignores a stale
+   * duplicate event from an *earlier* assignment for the same task. `attach()` listens
+   * on the shared store's event bus, which any number of BugFixEngine instances may
+   * also be listening on (deliberately, in tests exercising this; in principle also
+   * transiently in production) — this map is what keeps a non-dispatching instance from
+   * reacting to another instance's event: it simply has no entry for that task. Entries
+   * are dropped once the task reaches a terminal stage (`settleTerminal`), where there
+   * is nothing left for an event to advance.
    */
   private currentDispatch = new Map<string, string>();
 
@@ -176,7 +174,7 @@ export class BugFixEngine {
     const t = nextStage(current, event); // throws for an invalid transition — nothing below runs, including storing a note
     if (event.type === "request-changes") this.pendingNote.set(taskId, event.text);
     let task = await this.deps.bugs.apply(taskId, t);
-    if (task.stage === "cancelled" || task.stage === "failed") await this.stopAgent(task);
+    await this.settleTerminal(task);
     if (!t.run) return task;
     try {
       task = await this.runStage(task, t.run);
@@ -187,6 +185,10 @@ export class BugFixEngine {
         // else may have moved this task on while `runStage` was in flight.
         const freshCurrent = this.deps.bugs.get(taskId);
         task = await this.deps.bugs.apply(taskId, nextStage(freshCurrent, { type: "stage-failed", reason: original.message }));
+        // Same cleanup the accepted-transition path above gets: a stage that failed *at
+        // dispatch* (e.g. its assignment was cancelled mid-`assign()`) must not leave
+        // the agent parked in "failed" waiting for some later retry's ack to free it.
+        await this.settleTerminal(task);
       } catch {
         // The task went terminal (e.g. cancelled) underneath this attempt — we can't
         // record our failure over that, but the *original* problem is still the useful
@@ -233,8 +235,27 @@ export class BugFixEngine {
     // event for it can possibly have fired yet (see this field's own comment for why
     // that ordering is guaranteed, not just likely).
     this.currentDispatch.set(task.id, assignment.id);
-    // Durable record for restart-time observability only now — see `currentDispatch`.
-    await bugs.patch(task.id, { dispatchedAssignmentId: assignment.id });
+    // ...but an assignment can also have died *before* that line, in a window the
+    // ordering argument above doesn't cover: `Runner.assign()` sets its own
+    // `assignmentId` right after creating the assignment record and then does more
+    // awaited I/O (updateAgent, readMemoryIndex) before returning. A `manager.cancel()`
+    // landing in that gap — a user pressing stop on the agent card while this stage
+    // dispatches, via POST /api/agents/:id/cancel — finishes the assignment and fires
+    // its event while we still owned nothing, so that event was dropped; and `assign()`
+    // hands back the *pre-failure* snapshot, so the `state === "failed"` guard above
+    // sees "working". Re-read the record now that ownership is recorded: any event from
+    // here on is ours, and anything that already happened is visible in the store. This
+    // makes the ownership map complete rather than merely well-ordered — no assignment
+    // event for a task we are dispatching can be dropped, however that assignment dies.
+    const settled = store.getAssignment(assignment.id);
+    if (settled.state === "failed" || settled.state === "done") {
+      this.currentDispatch.delete(task.id);
+      // Runner.finish() writes the agent's own state in a second store write after the
+      // assignment's; let it land so `stopAgent` (via advanceLocked's failure path)
+      // sees the real state and frees the agent instead of mis-dispatching on a stale one.
+      await this.waitForAgentState(task.agentId, settled.state);
+      throw new Error(settled.error ?? `the agent's run ended (${settled.state}) before the stage could start`);
+    }
     return bugs.get(task.id);
   }
 
@@ -317,6 +338,15 @@ export class BugFixEngine {
       if (Date.now() - t0 > timeoutMs) return;
       await new Promise(r => setTimeout(r, 1));
     }
+  }
+
+  /** A task that just reached a terminal stage owns nothing any more: drop its dispatch
+   *  entry (a stale one is dead weight, and would have to be matched against forever)
+   *  and release its agent. */
+  private async settleTerminal(task: BugTask): Promise<void> {
+    if (!TERMINAL_STAGES.includes(task.stage)) return;
+    this.currentDispatch.delete(task.id);
+    await this.stopAgent(task);
   }
 
   private async stopAgent(task: BugTask): Promise<void> {

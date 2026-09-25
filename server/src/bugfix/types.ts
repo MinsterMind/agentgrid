@@ -39,18 +39,6 @@ export interface BugTask {
   costUsd: number;
   history: Array<{ stage: BugStage; at: string; note: string }>;
   error: string | null;
-  /**
-   * The id of the assignment the engine most recently dispatched for this task, or null
-   * before the first one. Durable (survives a restart, unlike an in-memory set), and
-   * lets `BugFixEngine.onAssignmentFinished` recognise its own work: an "assignment"
-   * event only advances this task when its id matches, so a stray or duplicate event —
-   * including one seen by a second engine instance sharing the same store — is ignored.
-   * Optional because a task persisted before this field existed has no key for it at
-   * all on disk, not even `null` — `undefined` there compares unequal to any real
-   * assignment id exactly like `null` does, so this already fails closed; the `?` just
-   * makes the type honest about what old JSON on disk actually contains.
-   */
-  dispatchedAssignmentId?: string | null;
   createdAt: string;
   updatedAt: string;
 }

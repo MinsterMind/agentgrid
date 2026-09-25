@@ -532,3 +532,42 @@ describe("the per-task serialisation chain survives a rejection", () => {
     expect(bugs.get(t.id).stage).toBe("cancelled");
   });
 });
+
+describe("an agent cancelled while the stage is still dispatching does not strand the task", () => {
+  // `Runner.assign()` writes the assignment record, sets its own `assignmentId`, and
+  // only *then* does more awaited I/O (`updateAgent`, `readMemoryIndex`) before
+  // returning. A `manager.cancel()` landing inside that gap finishes the assignment
+  // ("failed"/"cancelled") and fires its event while the engine has not yet recorded
+  // ownership — so the event is dropped — and `assign()` then hands the engine a
+  // pre-failure snapshot still reading "working". This is reachable in production
+  // through POST /api/agents/:id/cancel (stop pressed while a stage dispatches).
+  //
+  // Deterministic by construction: rather than racing two timers, the cancel is fired
+  // from inside `store.readMemoryIndex`, i.e. at a point `Runner.assign()` provably
+  // reaches after creating the assignment and before returning. That is exactly the
+  // interleaving the reviewer hit by racing, with no timing dependence at all.
+  it("leaves the task failed with the cancellation surfaced, frees the agent, and retry() works", async () => {
+    const manager = (engine as any).deps.manager as Manager;
+    const realReadMemoryIndex = store.readMemoryIndex.bind(store);
+    let cancelledOnce = false;
+    (store as unknown as { readMemoryIndex: (id: string) => Promise<string> }).readMemoryIndex = async (agentId: string) => {
+      if (!cancelledOnce) {
+        cancelledOnce = true;
+        await manager.cancel(agentId);   // mid-assign(): the assignment is live, the engine owns nothing yet
+      }
+      return realReadMemoryIndex(agentId);
+    };
+
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    expect(cancelledOnce).toBe(true);
+    await until(() => bugs.get(t.id).stage === "failed");
+    expect(bugs.get(t.id).error).toMatch(/cancelled/i);
+
+    // The agent must not be left stranded in "failed" waiting for some later ack.
+    await until(() => store.getAgent(t.agentId).state === "free");
+
+    const retried = await engine.retry(t.id);
+    expect(retried.stage).toBe("analyzing");
+    expect(store.getAgent(t.agentId).state).toBe("working");
+  });
+});
