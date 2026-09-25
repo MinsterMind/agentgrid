@@ -58,4 +58,73 @@ describe("github adapter", () => {
     expect(makeForge(undefined)).toBeNull();
     expect(makeForge({ preset: "custom" })).toBeNull();   // Phase 2 implements custom
   });
+
+  describe("check rollup (union of StatusContext and CheckRun shapes)", () => {
+    it("treats an in-progress CheckRun (status set, conclusion null) as PENDING, not SUCCESS", async () => {
+      const running = JSON.stringify([{ ...JSON.parse(GH_PR_LIST)[0],
+        statusCheckRollup: [{ status: "IN_PROGRESS", conclusion: null }] }]);
+      const r = runner({ "gh pr list --head b --state open": { stdout: running, code: 0 } });
+      const pr = await makeForge({ preset: "github" }, r.run)!.findPr("/r", "b");
+      expect(pr!.checks).toBe("PENDING");
+    });
+
+    it("treats a completed CheckRun with conclusion SUCCESS as SUCCESS", async () => {
+      const done = JSON.stringify([{ ...JSON.parse(GH_PR_LIST)[0],
+        statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }] }]);
+      const r = runner({ "gh pr list --head b --state open": { stdout: done, code: 0 } });
+      const pr = await makeForge({ preset: "github" }, r.run)!.findPr("/r", "b");
+      expect(pr!.checks).toBe("SUCCESS");
+    });
+
+    it("treats a completed CheckRun with conclusion FAILURE as FAILURE", async () => {
+      const failed = JSON.stringify([{ ...JSON.parse(GH_PR_LIST)[0],
+        statusCheckRollup: [{ status: "COMPLETED", conclusion: "FAILURE" }] }]);
+      const r = runner({ "gh pr list --head b --state open": { stdout: failed, code: 0 } });
+      const pr = await makeForge({ preset: "github" }, r.run)!.findPr("/r", "b");
+      expect(pr!.checks).toBe("FAILURE");
+    });
+
+    it("treats a check with no recognisable fields at all as PENDING, not SUCCESS", async () => {
+      const unknown = JSON.stringify([{ ...JSON.parse(GH_PR_LIST)[0], statusCheckRollup: [{}] }]);
+      const r = runner({ "gh pr list --head b --state open": { stdout: unknown, code: 0 } });
+      const pr = await makeForge({ preset: "github" }, r.run)!.findPr("/r", "b");
+      expect(pr!.checks).toBe("PENDING");
+    });
+  });
+
+  describe("findPr prefers the open PR over a stale closed one", () => {
+    it("uses the open-state result and does not query --state all when a row is found", async () => {
+      const r = runner({ "gh pr list --head bugfix/PAY-42 --state open": { stdout: GH_PR_LIST, code: 0 } });
+      const pr = await makeForge({ preset: "github" }, r.run)!.findPr("/repo", "bugfix/PAY-42");
+      expect(pr!.number).toBe(482);
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0]).toContain("--state open");
+    });
+
+    it("falls back to --state all when the open query returns no rows, and returns the merged PR", async () => {
+      const merged = JSON.stringify([{ ...JSON.parse(GH_PR_LIST)[0], state: "MERGED" }]);
+      const r = runner({
+        "gh pr list --head bugfix/PAY-42 --state open": { stdout: "[]", code: 0 },
+        "gh pr list --head bugfix/PAY-42 --state all": { stdout: merged, code: 0 },
+      });
+      const pr = await makeForge({ preset: "github" }, r.run)!.findPr("/repo", "bugfix/PAY-42");
+      expect(pr!.state).toBe("MERGED");
+      expect(r.calls).toHaveLength(2);
+      expect(r.calls[1]).toContain("--state all");
+    });
+
+    it("returns null when both the open and the all queries return no rows", async () => {
+      const r = runner({
+        "gh pr list --head b --state open": { stdout: "[]", code: 0 },
+        "gh pr list --head b --state all": { stdout: "[]", code: 0 },
+      });
+      expect(await makeForge({ preset: "github" }, r.run)!.findPr("/r", "b")).toBeNull();
+    });
+
+    it("returns null without throwing when the open-state query itself exits non-zero", async () => {
+      const r = runner({});
+      expect(await makeForge({ preset: "github" }, r.run)!.findPr("/r", "b")).toBeNull();
+      expect(r.calls).toHaveLength(1);
+    });
+  });
 });
