@@ -2,11 +2,23 @@ import type { Agent, Assignment, BugTask, Decision, DirListing, GridEvent, GridS
 
 export interface TranscriptEntry { ts: string; role: "user" | "assistant"; kind: "text" | "tool_use" | "tool_result"; text: string; tool?: string; input?: unknown }
 
-/** Thrown by `call` on a non-2xx response; carries the HTTP status so callers can tell e.g. a 409 (someone already acted) apart from a 500 (the server broke). */
-export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
+/**
+ * Thrown by `call` on a non-2xx response, or when the request never reached the server.
+ * Carries the HTTP status so callers can tell failure modes apart — for the bugfix routes
+ * in particular: 409 means someone else already acted on this task, 501 means the bugfix
+ * workflow isn't wired on this server, and the sentinel 0 means the request never left the
+ * browser (offline, DNS, CORS — there is no real HTTP status to report). Task 13's panel
+ * should say something different for each.
+ */
+export class ApiError extends Error { constructor(message: string, public status: number, options?: ErrorOptions) { super(message, options); } }
 
 async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
-  const res = await fetch(url, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+  let res: Response;
+  try {
+    res = await fetch(url, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+  } catch (cause) {
+    throw new ApiError("request never reached the server", 0, { cause });
+  }
   if (!res.ok) throw new ApiError((await res.json().catch(() => ({}))).error ?? `${res.status} ${res.statusText}`, res.status);
   return res.status === 204 ? (undefined as T) : res.json();
 }
