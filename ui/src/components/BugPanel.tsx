@@ -1,16 +1,19 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import type { BugTask } from "../types";
 
 interface DiffData { patch: string; files: Array<{ path: string; additions: number; deletions: number }>; additions: number; deletions: number }
 
-/** Per-file slice of a unified diff, so each file can be expanded on its own. */
-function hunksFor(patch: string, file: string): string {
+/**
+ * Per-file slice of a unified diff, so each file can be expanded on its own.
+ * When the split can't isolate this file (a rename, or a header format that doesn't literally
+ * name every path in `files[]`), fall back to the whole patch — but flag it as unisolated so the
+ * card never presents unrelated content as if it were this file's diff.
+ */
+function hunksFor(patch: string, file: string): { text: string; isolated: boolean } {
   const parts = patch.split(/^diff --git /m).slice(1);
   const hit = parts.find(p => p.split("\n")[0].includes(file));
-  // Fall back to the whole patch when a per-file section can't be isolated (e.g. a single-file
-  // patch whose header doesn't literally name every file in the summary) rather than show nothing.
-  return hit ? `diff --git ${hit}`.trimEnd() : patch;
+  return hit ? { text: `diff --git ${hit}`.trimEnd(), isolated: true } : { text: patch, isolated: false };
 }
 
 /** Turns a thrown ApiError (or anything else) into what the panel should say — see api.ts's ApiError comment. */
@@ -34,6 +37,12 @@ export function BugPanel({ task, onChanged }: { task: BugTask; onChanged: (t: Bu
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // The freshest task prop the parent has handed us, kept outside render so an in-flight
+  // 409 refetch can compare against the CURRENT props when it resolves, not the ones captured
+  // when the click fired (the SSE stream may have moved the task on in the meantime).
+  const taskRef = useRef(task);
+  useEffect(() => { taskRef.current = task; }, [task]);
+
   const gate = task.gate?.kind;
   useEffect(() => {
     if (gate !== "plan") return;
@@ -55,9 +64,15 @@ export function BugPanel({ task, onChanged }: { task: BugTask; onChanged: (t: Bu
     try { onChanged(await fn()); setAsking(false); setNote(""); }
     catch (e) {
       // 409 means someone else already acted on this task — the local view is just stale.
-      // Refresh it instead of showing an error the user did nothing to cause.
+      // Refresh it instead of showing an error the user did nothing to cause. But only apply
+      // the refetch if it's actually newer than what's in props by the time it lands — a
+      // genuine SSE update may have arrived first, and this correction has no business
+      // overwriting a state that's already fresher than what we're about to write.
       if (e instanceof ApiError && e.status === 409) {
-        try { const fresh = (await api.listBugTasks()).find(t => t.id === task.id); if (fresh) onChanged(fresh); }
+        try {
+          const fresh = (await api.listBugTasks()).find(t => t.id === task.id);
+          if (fresh && fresh.id === taskRef.current.id && fresh.updatedAt > taskRef.current.updatedAt) onChanged(fresh);
+        }
         catch { /* best-effort refresh; the SSE stream will catch us up */ }
       } else {
         setErr(describeError(e));
@@ -116,7 +131,12 @@ export function BugPanel({ task, onChanged }: { task: BugTask; onChanged: (t: Bu
                 <button className="folder" onClick={() => setOpen(open === f.path ? null : f.path)}>
                   {f.path} <span className="add">+{f.additions}</span> <span className="del">−{f.deletions}</span>
                 </button>
-                {open === f.path && <pre className="hunks">{hunksFor(diff!.patch, f.path)}</pre>}
+                {open === f.path && (() => { const h = hunksFor(diff!.patch, f.path); return (
+                  <>
+                    {!h.isolated && <p className="hint">Could not isolate this file's hunks — showing the full diff instead.</p>}
+                    <pre className="hunks">{h.text}</pre>
+                  </>
+                ); })()}
               </li>
             ))}
           </ul>
