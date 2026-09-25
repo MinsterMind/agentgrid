@@ -1,10 +1,13 @@
-import type { Agent, Assignment, Decision, DirListing, GridEvent, GridState, MemoryFile, SessionInfo } from "./types";
+import type { Agent, Assignment, BugTask, Decision, DirListing, GridEvent, GridState, Integrations, IssueSummary, MemoryFile, SessionInfo } from "./types";
 
 export interface TranscriptEntry { ts: string; role: "user" | "assistant"; kind: "text" | "tool_use" | "tool_result"; text: string; tool?: string; input?: unknown }
 
+/** Thrown by `call` on a non-2xx response; carries the HTTP status so callers can tell e.g. a 409 (someone already acted) apart from a 500 (the server broke). */
+export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
+
 async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `${res.status} ${res.statusText}`);
+  if (!res.ok) throw new ApiError((await res.json().catch(() => ({}))).error ?? `${res.status} ${res.statusText}`, res.status);
   return res.status === 204 ? (undefined as T) : res.json();
 }
 
@@ -36,4 +39,16 @@ export const api = {
   listDir: (path?: string) => call<DirListing>("GET", `/api/fs${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   agentTranscript: (agentId: string) => call<{ sessionId: string | null; entries: TranscriptEntry[] }>("GET", `/api/agents/${encodeURIComponent(agentId)}/transcript`),
   transcript: (assignmentId: string) => call<Array<{ ts: string; role: string; kind: string; text: string }>>("GET", `/api/assignments/${assignmentId}/transcript`),
+  listBugTasks: () => call<BugTask[]>("GET", "/api/bugtasks"),
+  createBugTask: (input: { issueRef: string; repo: string; mergePolicy?: "ask" | "auto"; mergeMethod?: string }) => call<BugTask>("POST", "/api/bugtasks", input),
+  bugPlan: (id: string) => call<{ markdown: string }>("GET", `/api/bugtasks/${encodeURIComponent(id)}/plan`),
+  bugDiff: (id: string) => call<{ patch: string; files: Array<{ path: string; additions: number; deletions: number }>; additions: number; deletions: number }>("GET", `/api/bugtasks/${encodeURIComponent(id)}/diff`),
+  approveBug: (id: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/approve`),
+  requestBugChanges: (id: string, text: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/request-changes`, { text }),
+  cancelBug: (id: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/cancel`),
+  retryBug: (id: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/retry`),
+  myIssues: () => call<IssueSummary[]>("GET", "/api/bugfix/issues"),
+  bugPreflight: (repo: string) => call<{ ok: boolean; problems: string[] }>("GET", `/api/bugfix/preflight?repo=${encodeURIComponent(repo)}`),
+  getIntegrations: () => call<Integrations>("GET", "/api/integrations"),
+  putIntegrations: (patch: Partial<Integrations>) => call<Integrations>("PUT", "/api/integrations", patch),
 };

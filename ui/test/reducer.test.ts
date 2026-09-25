@@ -1,7 +1,7 @@
 process.env.TZ = "Asia/Kolkata";
 
 import { describe, it, expect } from "vitest";
-import { reducer, initial, assignmentFor, counts, todaySpend, waitingIds, unclaimedLiveSessions, liveSessionFor, activityFor, sessionIdFor } from "../src/state/reducer";
+import { reducer, initial, assignmentFor, counts, todaySpend, waitingIds, unclaimedLiveSessions, liveSessionFor, activityFor, sessionIdFor, bugTaskFor } from "../src/state/reducer";
 import type { Agent, Assignment } from "../src/types";
 
 const agent = (id: string, state: Agent["state"] = "free", cur: string | null = null): Agent =>
@@ -84,5 +84,20 @@ describe("activity", () => {
     s = reducer(s, { type: "change", event: { type: "session-status", status: { sessionId: "s-a", phase: "waiting", lastMessage: "?", lastPrompt: "go", updatedAt: "t2", question: { text: "Which?", options: ["x", "y"], multiSelect: false } } } });
     expect(activityFor(s, a)?.question?.options).toEqual(["x", "y"]);
     expect(sessionIdFor(s, agent("none"))).toBeNull();
+  });
+});
+
+describe("bug tasks", () => {
+  const bt = (id: string, agentId: string, stage: string): any => ({ id, agentId, stage, issue: { key: "PAY-1", title: "t", url: "u", status: "", priority: "", description: "", acceptanceCriteria: [] }, gate: null, history: [] });
+  it("snapshot fills bugTasks and events upsert them", () => {
+    let s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [], liveSessions: [], sessionStatuses: [], bugTasks: [bt("bt1", "a", "analyzing")] } });
+    expect(bugTaskFor(s, agent("a"))?.id).toBe("bt1");
+    s = reducer(s, { type: "change", event: { type: "bugtask", task: bt("bt1", "a", "plan-review") } });
+    expect(bugTaskFor(s, agent("a"))?.stage).toBe("plan-review");
+    expect(bugTaskFor(s, agent("other"))).toBeNull();
+  });
+  it("ignores tasks that have finished, so a reused agent looks clean", () => {
+    const s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [], liveSessions: [], sessionStatuses: [], bugTasks: [bt("bt1", "a", "done"), bt("bt2", "a", "cancelled")] } });
+    expect(bugTaskFor(s, agent("a"))).toBeNull();
   });
 });

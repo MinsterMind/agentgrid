@@ -1,13 +1,13 @@
 import type { Agent, AgentState, Assignment, BugTask, GridEvent, GridState, RoleDef, SessionInfo, SessionActivity } from "../types";
 
-export interface UiState { roles: RoleDef[]; agents: Agent[]; assignments: Record<string, Assignment>; liveSessions: SessionInfo[]; activity: Record<string, SessionActivity>; bugTasks: BugTask[]; selectedId: string | null; connected: boolean }
+export interface UiState { roles: RoleDef[]; agents: Agent[]; assignments: Record<string, Assignment>; liveSessions: SessionInfo[]; activity: Record<string, SessionActivity>; bugTasks: Record<string, BugTask>; selectedId: string | null; connected: boolean }
 export type Action =
   | { type: "snapshot"; state: GridState }
   | { type: "change"; event: GridEvent }
   | { type: "select"; id: string | null }
   | { type: "connected"; value: boolean };
 
-export const initial: UiState = { roles: [], agents: [], assignments: {}, liveSessions: [], activity: {}, bugTasks: [], selectedId: null, connected: false };
+export const initial: UiState = { roles: [], agents: [], assignments: {}, liveSessions: [], activity: {}, bugTasks: {}, selectedId: null, connected: false };
 
 export function reducer(s: UiState, a: Action): UiState {
   switch (a.type) {
@@ -16,7 +16,7 @@ export function reducer(s: UiState, a: Action): UiState {
         assignments: Object.fromEntries(a.state.assignments.map(x => [x.id, x])),
         liveSessions: a.state.liveSessions ?? [],
         activity: Object.fromEntries((a.state.sessionStatuses ?? []).map(x => [x.sessionId, x])),
-        bugTasks: a.state.bugTasks ?? [],
+        bugTasks: Object.fromEntries((a.state.bugTasks ?? []).map(t => [t.id, t])),
         selectedId: a.state.agents.some(x => x.id === s.selectedId) ? s.selectedId : null };
     case "change": {
       const e = a.event;
@@ -25,11 +25,7 @@ export function reducer(s: UiState, a: Action): UiState {
       if (e.type === "session-status") return { ...s, activity: { ...s.activity, [e.status.sessionId]: e.status } };
       if (e.type === "assignment") return { ...s, assignments: { ...s.assignments, [e.assignment.id]: e.assignment } };
       if (e.type === "agent-removed") return { ...s, agents: s.agents.filter(x => x.id !== e.id), selectedId: s.selectedId === e.id ? null : s.selectedId };
-      if (e.type === "bugtask") {
-        const i = s.bugTasks.findIndex(x => x.id === e.task.id);
-        const bugTasks = i === -1 ? [...s.bugTasks, e.task] : s.bugTasks.map((x, j) => (j === i ? e.task : x));
-        return { ...s, bugTasks };
-      }
+      if (e.type === "bugtask") return { ...s, bugTasks: { ...s.bugTasks, [e.task.id]: e.task } };
       const i = s.agents.findIndex(x => x.id === e.agent.id);
       const agents = i === -1 ? [...s.agents, e.agent] : s.agents.map((x, j) => (j === i ? e.agent : x));
       return { ...s, agents };
@@ -75,3 +71,8 @@ export const sessionIdFor = (s: UiState, agent: Agent): string | null => {
   return Object.values(s.assignments).filter(a => a.agentId === agent.id && a.sessionId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]?.sessionId ?? null;
 };
 export const activityFor = (s: UiState, agent: Agent): SessionActivity | null => { const sid = sessionIdFor(s, agent); return sid ? s.activity[sid] ?? null : null; };
+
+const FINISHED_BUG_STAGES = ["done", "cancelled"];
+/** The bug task an agent is currently working, if any. */
+export const bugTaskFor = (s: UiState, agent: Agent): BugTask | null =>
+  Object.values(s.bugTasks).find(t => t.agentId === agent.id && !FINISHED_BUG_STAGES.includes(t.stage)) ?? null;
