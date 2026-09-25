@@ -26,6 +26,10 @@ function fakeGit() {
   g.commitsAhead = async () => 1;
   g.worktreeRegistered = async () => false;
   g.branchExists = async () => false;
+  // Without this, revParse falls through to the base `run` fake (`async () => ""`), so
+  // `approvedHead` gets set to a falsy "" and the opening-pr pin guard trips on every
+  // run — silently making that stage unreachable through this harness.
+  g.revParse = async () => "abc1234abc1234abc1234abc1234abc1234abc1";
   g.diff = async () => ({ patch: "diff --git a/a b/a\n+x\n", files: [{ path: "a", additions: 1, deletions: 0 }], additions: 1, deletions: 0 });
   return g;
 }

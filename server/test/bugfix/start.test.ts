@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { startServer } from "../../src/start.js";
@@ -107,5 +107,40 @@ describe("startServer with the bug-fix workflow", () => {
       expect(retryTransition.stage).toBe("analyzing");
       expect(retryTransition.run).toBe("analyzing");
     } finally { await running.close(); }
+  });
+
+  // N6: recoverStuckBugTasks runs unconditionally at startup, before server.listen — its
+  // blast radius must stay "the bug workflow", never "the server won't start".
+  it("still boots when startup recovery itself fails", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "ag-bug-recover-fails-"));
+
+    const issue: TrackerIssue = { key: "REC-4", title: "Stuck bug", url: "https://example.invalid/REC-4",
+      status: "Open", priority: "High", description: "d", acceptanceCriteria: [] };
+    const seedBugs = new BugTaskStore(home);
+    await seedBugs.init();
+    const created = await seedBugs.create({
+      issue, trackerProject: "REC", sourceRepo: "/tmp/repo", worktree: "/tmp/repo/.worktrees/bugfix-REC-4",
+      branch: "bugfix/REC-4", baseBranch: "main", agentId: "ag-stuck-4", mergePolicy: "ask", mergeMethod: "squash",
+    });
+    const stranded = await seedBugs.apply(created.id, nextStage(created, { type: "stage-done" }));
+    expect(stranded.stage).toBe("analyzing");
+
+    // Make the bugtasks directory unwritable, so recoverStuckBugTasks's own write (marking
+    // this task "failed") throws — simulating any startup-recovery failure, without relying
+    // on a particular internal error path.
+    const bugtasksDir = path.join(home, "bugtasks");
+    await chmod(bugtasksDir, 0o500);
+    const logs: string[] = [];
+    try {
+      const running = await startServer({ home, port: 0, fake: true, log: m => logs.push(m) });
+      try {
+        // The server itself is up and answering, even though recovery failed.
+        const state = await (await fetch(`${running.url}/api/state`)).json();
+        expect(state.roles.map((r: { name: string }) => r.name)).toContain("bugfix");
+        expect(logs.some(m => /recovery failed/i.test(m))).toBe(true);
+      } finally { await running.close(); }
+    } finally {
+      await chmod(bugtasksDir, 0o700);   // restore, so cleanup of the tmp dir doesn't itself fail
+    }
   });
 });

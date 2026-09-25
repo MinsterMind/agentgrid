@@ -5,7 +5,7 @@ import path from "node:path";
 import { Store } from "../../src/store/store.js";
 import { Manager } from "../../src/runner/manager.js";
 import { BugTaskStore } from "../../src/bugfix/store.js";
-import { BugFixEngine } from "../../src/bugfix/engine.js";
+import { BugFixEngine, recoverStuckBugTasks } from "../../src/bugfix/engine.js";
 import { GitOps } from "../../src/bugfix/git.js";
 import { IntegrationsStore } from "../../src/bugfix/integrations.js";
 import { makeFakeQuery, success } from "../helpers/fakeQuery.js";
@@ -87,8 +87,11 @@ describe("intake", () => {
     const { git: g, calls } = fakeGit(gitState);
     g.worktreeRegistered = async () => true;
     const e2 = new BugFixEngine({ ...(engine as any).deps, git: g });
-    await expect(e2.intake({ issueRef: "PAY-42", repo })).rejects.toThrow(
-      /worktree.*bugfix-PAY-42.*worktree remove --force.*branch -D bugfix\/PAY-42/s);
+    let message = "";
+    await e2.intake({ issueRef: "PAY-42", repo }).catch(err => { message = (err as Error).message; });
+    expect(message).toMatch(/worktree.*bugfix-PAY-42.*worktree remove --force/s);
+    expect(message).not.toContain("rm -rf");        // registered — the real `git worktree remove` works, don't suggest rm -rf
+    expect(message).not.toContain("branch -D");      // only the worktree is leftover here, not the branch — don't suggest deleting a branch that doesn't exist
     expect(calls).not.toContain("create bugfix/PAY-42"); // never got as far as `git worktree add`
   });
 
@@ -96,8 +99,30 @@ describe("intake", () => {
     const { git: g, calls } = fakeGit(gitState);
     g.branchExists = async () => true;
     const e2 = new BugFixEngine({ ...(engine as any).deps, git: g });
-    await expect(e2.intake({ issueRef: "PAY-42", repo })).rejects.toThrow(
-      /branch.*bugfix\/PAY-42.*branch -D bugfix\/PAY-42/s);
+    let message = "";
+    await e2.intake({ issueRef: "PAY-42", repo }).catch(err => { message = (err as Error).message; });
+    expect(message).toMatch(/branch.*bugfix\/PAY-42.*branch -D bugfix\/PAY-42/s);
+    expect(message).not.toContain("worktree remove");   // no leftover worktree — nothing to remove
+    expect(message).not.toContain("rm -rf");
+    expect(calls).not.toContain("create bugfix/PAY-42");
+  });
+
+  // N2: a leftover directory `git worktree list` doesn't know about any more (metadata
+  // pruned/lost some other way) is a THIRD shape distinct from "registered worktree" — and
+  // printing `git worktree remove --force` for it hands the user a command that itself
+  // fails ("fatal: ... is not a working tree"), landing them right back in the raw error
+  // this whole check exists to prevent.
+  it("refuses to re-launch while a worktree directory exists on disk but git has no record of it, suggesting rm -rf instead of worktree remove", async () => {
+    const { git: g, calls } = fakeGit(gitState);
+    g.worktreeRegistered = async () => false;   // git doesn't know about it...
+    const dir = path.join(repo, ".worktrees", "bugfix-PAY-42");
+    await mkdir(dir, { recursive: true });      // ...but the directory is still there
+    const e2 = new BugFixEngine({ ...(engine as any).deps, git: g });
+    let message = "";
+    await e2.intake({ issueRef: "PAY-42", repo }).catch(err => { message = (err as Error).message; });
+    expect(message).toContain(dir);
+    expect(message).toContain(`rm -rf ${dir}`);
+    expect(message).not.toContain("worktree remove");   // `git worktree remove` would fail on this directory
     expect(calls).not.toContain("create bugfix/PAY-42");
   });
 });
@@ -322,17 +347,17 @@ describe("dispatch ownership is tracked in memory, per task", () => {
 
   it("recovers a task stuck mid-stage after a restart: it's marked failed, and retry() works again", async () => {
     const t = await engine.intake({ issueRef: "PAY-42", repo });
-    // Simulate a restart: a fresh engine instance over the same durable stores, with no
-    // in-memory state at all, sees this task still sitting in an agent stage. Task 14's
-    // documented order applies: Manager.recoverOnStart() first (frees the stuck agent),
-    // then the engine's own recoverOnStart().
+    // Simulate a restart: `start.ts` runs `Manager.recoverOnStart()` (frees the stuck
+    // agent) and `recoverStuckBugTasks()` (fails any task left mid-stage) before any
+    // `BugFixEngine` is even built — a fresh engine instance over the same durable
+    // stores, with no in-memory state at all, then sees the already-recovered task.
     const deps = (engine as any).deps;
     await deps.manager.recoverOnStart();
-    const fresh = new BugFixEngine(deps);
-    await fresh.recoverOnStart();
+    await recoverStuckBugTasks(deps.bugs);
     expect(bugs.get(t.id).stage).toBe("failed");
     expect(bugs.get(t.id).error).toMatch(/restart/i);
 
+    const fresh = new BugFixEngine(deps);
     fresh.attach();
     gitState.commits = 0;
     const retried = await fresh.retry(t.id);
@@ -695,6 +720,24 @@ describe("the approved commit is pinned", () => {
     const t = await toDiffGate();
     await engine.approve(t.id);
     await finishStage(); await until(() => bugs.get(t.id).stage === "monitoring");
+  });
+
+  // N1: runStage's revParse check only runs BEFORE dispatch. An agent that commits inside
+  // the worktree during the opening-pr run itself (and pushes) moved HEAD after that check
+  // passed — verify() must catch this too, or a PR containing unreviewed code gets recorded
+  // and the task rests at monitoring as if everything were fine.
+  it("fails opening-pr, naming both commits, when HEAD moves DURING the run (after dispatch, before verify)", async () => {
+    gitState.head = "1111111111111111111111111111111111111111";
+    const t = await toDiffGate();
+    await engine.approve(t.id);   // pre-dispatch pin check passes: HEAD is still 1111...
+    gitState.head = "3333333333333333333333333333333333333333";   // agent commits+pushes mid-run
+    await finishStage();
+    await until(() => bugs.get(t.id).stage === "failed");
+    const err = bugs.get(t.id).error ?? "";
+    expect(err).toContain("1111111111111111111111111111111111111111");
+    expect(err).toContain("3333333333333333333333333333333333333333");
+    expect(err).toMatch(/approved/i);
+    expect(bugs.get(t.id).pr).toBeNull();   // never recorded as verified
   });
 });
 

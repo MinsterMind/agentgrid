@@ -93,6 +93,34 @@ describe("GitOps", () => {
     expect(await git.worktreeRegistered(repo, worktreePath(repo, "OTHER-1"))).toBe(false);
   });
 
+  // N2: git can lose track of a worktree directory (its `.git/worktrees/<name>` admin
+  // metadata removed or corrupted some other way) while the directory itself is still on
+  // disk. `worktreeRegistered` must report false for it — and, since the intake code that
+  // consumes this then tells the user to `rm -rf` rather than `git worktree remove` for
+  // exactly this reason, prove that choice is actually correct: `git worktree remove`
+  // really does fail on it, and `rm -rf` really does clear it.
+  it("does not report an unregistered worktree directory as registered, and proves each remedy actually works", async () => {
+    const wt = await git.createWorktree(repo, "bugfix/PAY-44", "main");
+    expect(await git.worktreeRegistered(repo, wt)).toBe(true);
+
+    // Simulate git losing track of it: drop the worktree's own admin dir directly,
+    // leaving the working directory (and the branch) untouched.
+    const adminDirs = (await sh(repo, ["worktree", "list", "--porcelain"])).split("\n\n")
+      .filter(b => b.includes(wt));
+    expect(adminDirs).toHaveLength(1);
+    await rm(path.join(repo, ".git", "worktrees", "bugfix-PAY-44"), { recursive: true, force: true });
+
+    expect(await git.worktreeRegistered(repo, wt)).toBe(false);   // git no longer knows about it...
+    expect(await git.branchExists(repo, "bugfix/PAY-44")).toBe(true);  // ...but the branch is still there
+
+    // The remedy this shape gets (`rm -rf`) must actually work...
+    await rm(wt, { recursive: true, force: true });
+    expect(await git.worktreeRegistered(repo, wt)).toBe(false);
+    // ...whereas `git worktree remove --force` — the remedy printed for a *registered*
+    // worktree — genuinely fails on this shape, which is the whole reason to tell them apart.
+    await expect(sh(repo, ["worktree", "remove", "--force", wt])).rejects.toThrow(/is not a working tree|does not exist/i);
+  });
+
   it("surfaces a cleanup failure instead of silently succeeding", async () => {
     const failing = new GitOps(async (_cwd, args) => {
       if (args[0] === "worktree" && args[1] === "remove") throw new Error("fatal: worktree is locked");

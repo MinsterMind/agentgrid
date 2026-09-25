@@ -104,7 +104,10 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   // is configured (and so whether or not a BugFixEngine exists below), so a task stranded
   // mid-stage by an unclean shutdown always gets a card and a working Retry rather than
   // being silently orphaned on a server that has no tracker wired up yet.
-  await recoverStuckBugTasks(bugStore);
+  // A failure here is a bug in the bug-fix workflow, not a reason the whole server should
+  // refuse to boot — log it and keep going rather than letting it reach `server.listen`
+  // uncaught.
+  await recoverStuckBugTasks(bugStore).catch(err => log(`bugfix: startup recovery failed: ${(err as Error).message}`));
 
   const integrations = new IntegrationsStore(home);
   const cfg = await integrations.read();
@@ -126,9 +129,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const tracker = fake ? fakeTracker : (cfg.tracker ? mcpTracker(cfg.tracker, presetsDir) : null);
   const forge = fake ? fakeForge : makeForge(cfg.forge);
   const engine = tracker ? new BugFixEngine({ store, bugs: bugStore, manager, git: new GitOps(), integrations, tracker, forge, presetsDir }) : null;
-  // Recovery already ran above (`recoverStuckBugTasks`, tracker or no tracker) — calling
-  // `engine.recoverOnStart()` here too would just re-scan a store with nothing left to
-  // recover.
+  // Recovery already ran above (`recoverStuckBugTasks`, tracker or no tracker) —
+  // `BugFixEngine` has no recovery step of its own to call.
   if (engine) engine.attach();
 
   const app = createApp({ store, manager, writeToTerminal: (sid, data) => ptys.write(sid, data), transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }),

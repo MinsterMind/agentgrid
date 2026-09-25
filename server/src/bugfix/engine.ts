@@ -1,4 +1,5 @@
 import path from "node:path";
+import { stat } from "node:fs/promises";
 import { Conflict } from "../store/store.js";
 import type { Store } from "../store/store.js";
 import type { Manager } from "../runner/manager.js";
@@ -13,10 +14,11 @@ import { nextStage } from "./stages.js";
 import { AGENT_STAGES, RECOVERABLE_STAGES, TERMINAL_STAGES, type BugStage, type BugTask } from "./types.js";
 
 /**
- * Startup recovery, factored out so it can run against just the bug store — no tracker,
- * forge or manager needed. `start.ts` calls this directly when no tracker is configured
- * (there is then no `BugFixEngine` at all), and `BugFixEngine.recoverOnStart()` below
- * calls it too, so both paths share one definition of "stuck".
+ * Startup recovery. Needs only the bug store — no tracker, forge, manager or
+ * `BugFixEngine` — so `start.ts` calls it directly and unconditionally, right after the
+ * bug store initialises and before any `BugFixEngine` is even built (there may not be
+ * one, if no tracker is configured). Call it after `Manager.recoverOnStart()` (so the
+ * agent/assignment side is already settled).
  *
  * Fails any task left in `RECOVERABLE_STAGES` by an unclean shutdown, naming the
  * restart, so it gets a card and a working Retry instead of being orphaned.
@@ -100,21 +102,6 @@ export class BugFixEngine {
     });
   }
 
-  /**
-   * Startup recovery: `Manager.recoverOnStart()` already resets any assignment left
-   * "working"/"waiting" by an unclean shutdown (and frees the agent), but that alone
-   * leaves any bug task that was mid-stage stranded — it's still sitting in an
-   * `AGENT_STAGES` stage with nothing left to finish it, and `retry()` only accepts a
-   * task that's `failed`. This fails those tasks explicitly, naming the restart, so a
-   * human sees why and `retry()` works again.
-   *
-   * Call once at startup: after `Manager.recoverOnStart()` (so the agent/assignment side
-   * is already settled) and before `attach()` starts taking new events.
-   */
-  async recoverOnStart(): Promise<void> {
-    await recoverStuckBugTasks(this.deps.bugs);
-  }
-
   async preflight(repo: string): Promise<{ ok: boolean; problems: string[] }> {
     const problems: string[] = [];
     if (!(await this.deps.git.hasRemote(repo))) problems.push("this repo has no `origin` remote");
@@ -146,17 +133,31 @@ export class BugFixEngine {
     // without this check, re-launching the same ticket fails deep inside `git worktree add
     // -b` with a raw "branch already exists" error and no way out. Catch it up front and
     // say exactly what to run.
+    //
+    // A leftover worktree can be in one of two states git itself disagrees about: still
+    // *registered* (the normal case — `git worktree remove` works), or a directory that
+    // exists on disk but that `git worktree list` doesn't know about any more (e.g. the
+    // `.git/worktrees` metadata was pruned or lost some other way). `git worktree remove`
+    // refuses the latter with "is not a working tree" — printing it as the fix would hand
+    // the user a command that itself fails, reconstructing the exact wedge this check
+    // exists to close. Stat the directory directly so each shape gets a remediation that
+    // actually works.
     const leftoverDir = worktreePath(input.repo, issue.key);
-    const [worktreeLeftover, branchLeftover] = await Promise.all([
+    const [worktreeRegistered, dirExists, branchLeftover] = await Promise.all([
       git.worktreeRegistered(input.repo, leftoverDir),
+      stat(leftoverDir).then(() => true, () => false),
       git.branchExists(input.repo, branch),
     ]);
-    if (worktreeLeftover || branchLeftover) {
+    if (worktreeRegistered || dirExists || branchLeftover) {
+      const steps: string[] = [];
+      if (worktreeRegistered) steps.push(`git -C ${input.repo} worktree remove --force ${leftoverDir}`);
+      else if (dirExists) steps.push(`rm -rf ${leftoverDir}`);
+      if (branchLeftover) steps.push(`git -C ${input.repo} branch -D ${branch}`);
+      const dirNote = !worktreeRegistered && dirExists ? " (present on disk but not registered with git)" : "";
       throw new Conflict(
-        `a worktree and/or branch for ${issue.key} already exist from an earlier run — worktree ${leftoverDir}, branch ${branch}. ` +
-        `Nothing is removed automatically (the worktree may hold unpushed work). To clear them and try again, run:\n` +
-        `  git -C ${input.repo} worktree remove --force ${leftoverDir}\n` +
-        `  git -C ${input.repo} branch -D ${branch}`
+        `a worktree and/or branch for ${issue.key} already exist from an earlier run — worktree ${leftoverDir}${dirNote}, branch ${branch}. ` +
+        `Nothing is removed automatically (the worktree may hold unpushed work). To clear ${steps.length > 1 ? "them" : "it"} and try again, run:\n` +
+        steps.map(s => `  ${s}`).join("\n")
       );
     }
 
@@ -371,6 +372,17 @@ export class BugFixEngine {
       return;
     }
     if (task.stage === "opening-pr") {
+      // `runStage`'s pin check only runs BEFORE dispatch: it proves HEAD hadn't moved at
+      // the moment this stage was launched, not that it stayed put for the run's whole
+      // duration. An agent that commits (and pushes) inside the worktree during the run
+      // itself moves HEAD after that check already passed — this is "the only stage that
+      // touches the outside world" per `runStage`'s own comment, and `open-pr.md` already
+      // tells the agent not to change code here, so the server must be what actually
+      // checks. Re-assert the pin before trusting anything this stage reports.
+      const head = await git.revParse(task.worktree);
+      if (head !== task.approvedHead) {
+        throw new Error(`the branch moved during opening-pr: approved ${task.approvedHead}, HEAD is now ${head}. Review the new diff (request changes, then approve again) before opening a pull request.`);
+      }
       const pr = forge ? await forge.findPr(task.sourceRepo, task.branch) : null;
       if (!pr) throw new Error("no pull request found for this branch");
       // The adapter deliberately falls back to `--state all`, so a reused branch can
