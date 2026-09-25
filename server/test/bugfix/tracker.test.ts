@@ -1,7 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import path from "node:path";
-import { mcpTracker, parseIssue, parseIssueList } from "../../src/bugfix/tracker.js";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { mcpTracker, parseIssue, parseIssueList, defaultJsonRunner } from "../../src/bugfix/tracker.js";
 import type { TrackerConfig } from "../../src/bugfix/integrations.js";
+
+vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: vi.fn() }));
+import { query } from "@anthropic-ai/claude-agent-sdk";
 
 const cfg: TrackerConfig = { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: { atlassian: { type: "sse", url: "https://x" } }, hints: "Bugs live in PAY" };
 const presets = path.resolve("presets");
@@ -29,6 +34,14 @@ describe("parsers", () => {
       .toEqual([{ key: "A-1", title: "t", url: "u", status: "Open", priority: "Low" }]);
     expect(parseIssueList("[]")).toEqual([]);
   });
+  it("rejects a key that isn't a real issue key (e.g. the preset's own placeholder)", () => {
+    expect(() => parseIssue(`{"key":"…","title":"t","url":"u"}`)).toThrow(/…/);
+    expect(() => parseIssue(`{"key":"PAY 42","title":"t","url":"u"}`)).toThrow(/PAY 42/);
+  });
+  it("drops list rows with an invalid key instead of throwing", () => {
+    expect(parseIssueList(`[{"key":"A-1","title":"t","url":"u","status":"Open","priority":"Low"},{"key":"…","title":"junk","url":"u","status":"","priority":""}]`))
+      .toEqual([{ key: "A-1", title: "t", url: "u", status: "Open", priority: "Low" }]);
+  });
 });
 
 describe("mcpTracker", () => {
@@ -54,5 +67,43 @@ describe("mcpTracker", () => {
     await mcpTracker(cfg, presets, r.run).comment("PAY-42", "PR is up: https://gh/pr/1");
     expect(r.seen[0].prompt).toContain("PAY-42");
     expect(r.seen[0].prompt).toContain("PR is up: https://gh/pr/1");
+  });
+
+  it("throws a clear error for an unknown preset name", async () => {
+    const bad = mcpTracker({ ...cfg, preset: "no-such-tracker" }, presets, runner("[]").run);
+    await expect(bad.listMyIssues()).rejects.toThrow();
+  });
+
+  it("throws a clear error when presetsDir doesn't exist", async () => {
+    const bad = mcpTracker(cfg, path.resolve("no-such-presets-dir"), runner("[]").run);
+    await expect(bad.listMyIssues()).rejects.toThrow();
+  });
+});
+
+describe("defaultJsonRunner", () => {
+  const savedOverride = process.env.AGENTGRID_CLAUDE_PATH;
+  afterEach(() => {
+    if (savedOverride === undefined) delete process.env.AGENTGRID_CLAUDE_PATH;
+    else process.env.AGENTGRID_CLAUDE_PATH = savedOverride;
+    vi.mocked(query).mockReset();
+  });
+
+  it("resolves the on-PATH claude executable and injects it into the SDK query options, instead of silently falling back to the bundled binary", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "claude-bin-"));
+    const exe = path.join(dir, "claude");
+    await writeFile(exe, "#!/bin/sh\n", { mode: 0o755 });
+    process.env.AGENTGRID_CLAUDE_PATH = exe;
+
+    vi.mocked(query).mockReturnValue((async function* () {
+      yield { type: "result", subtype: "success" } as never;
+    })() as never);
+
+    await defaultJsonRunner({ prompt: "p", allowedTools: ["mcp__atlassian"], mcpServers: { atlassian: { type: "sse", url: "https://x" } }, cwd: "/tmp" });
+
+    expect(vi.mocked(query)).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(query).mock.calls[0][0] as { options: { pathToClaudeCodeExecutable?: string; mcpServers?: unknown; allowedTools?: string[] } };
+    expect(call.options.pathToClaudeCodeExecutable).toBe(exe);
+    expect(call.options.mcpServers).toEqual({ atlassian: { type: "sse", url: "https://x" } });
+    expect(call.options.allowedTools).toEqual(["mcp__atlassian"]);
   });
 });

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { realQuery } from "../runner/sdk.js";
+import { ISSUE_KEY, assertIssueKey } from "./git.js";
 import type { TrackerConfig } from "./integrations.js";
 import type { IssueSummary, TrackerIssue } from "./types.js";
 
@@ -30,6 +31,7 @@ function extractJson(raw: string): unknown {
 export function parseIssue(raw: string): TrackerIssue {
   const o = extractJson(raw) as Record<string, unknown>;
   if (!o || typeof o !== "object" || typeof o.key !== "string" || !o.key) throw new Error(`tracker issue has no key: ${raw.slice(0, 200)}`);
+  assertIssueKey(o.key); // e.g. a model echoing the preset's own "…" placeholder — the key becomes a branch name and worktree path downstream
   return {
     key: o.key, title: String(o.title ?? ""), url: String(o.url ?? ""),
     status: String(o.status ?? ""), priority: String(o.priority ?? ""),
@@ -41,7 +43,8 @@ export function parseIssue(raw: string): TrackerIssue {
 export function parseIssueList(raw: string): IssueSummary[] {
   const arr = extractJson(raw);
   if (!Array.isArray(arr)) throw new Error(`tracker returned no list: ${raw.slice(0, 200)}`);
-  return arr.filter((r): r is Record<string, unknown> => !!r && typeof r === "object" && typeof (r as Record<string, unknown>).key === "string")
+  return arr.filter((r): r is Record<string, unknown> =>
+      !!r && typeof r === "object" && typeof (r as Record<string, unknown>).key === "string" && ISSUE_KEY.test((r as Record<string, unknown>).key as string))
     .map(r => ({ key: String(r.key), title: String(r.title ?? ""), url: String(r.url ?? ""), status: String(r.status ?? ""), priority: String(r.priority ?? "") }));
 }
 
@@ -55,13 +58,18 @@ async function section(presetsDir: string, preset: string, name: string, vars: R
     .replace(/\{\{(\w+)\}\}/g, (_, k: string) => vars[k] ?? "");
 }
 
-/** One-shot headless SDK query returning the model's final text. */
+/**
+ * One-shot headless SDK query returning the model's final text. Routed through `realQuery`
+ * (not the SDK's `query()` directly) so it resolves and uses the on-PATH `claude` executable
+ * the same way the agent runner does — the packaged Electron app doesn't ship the SDK's bundled
+ * binary, so without this every tracker call there would fail.
+ */
 export const defaultJsonRunner: JsonRunner = async ({ prompt, allowedTools, mcpServers, cwd }) => {
   let last = "";
   // mcpServers must be passed explicitly: a 2026-09-25 spike showed settingSources alone surfaces no MCP tools.
-  for await (const m of query({ prompt, options: { cwd, settingSources: ["user"], model: "claude-opus-5",
+  for await (const m of realQuery({ prompt, options: { cwd, settingSources: ["user"], model: "claude-opus-5",
       effort: "low", maxTurns: 12, allowedTools, mcpServers: mcpServers as never,
-      permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true } })) {
+      permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true } as never })) {
     if (m.type === "assistant") for (const b of (m as any).message.content) if (b.type === "text" && b.text.trim()) last = b.text;
     if (m.type === "result" && (m as any).subtype !== "success") throw new Error(`tracker query failed: ${(m as any).subtype}`);
   }
