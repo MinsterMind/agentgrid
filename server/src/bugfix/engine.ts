@@ -131,7 +131,12 @@ export class BugFixEngine {
   retry(taskId: string): Promise<BugTask> { return this.advance(taskId, { type: "retry" }); }
   async requestChanges(taskId: string, text: string): Promise<BugTask> {
     if (!text.trim()) throw new Conflict("say what should change");
-    this.pendingNote.set(taskId, text.trim());
+    // The note is stored inside `advanceLocked`, only once the transition itself has
+    // been accepted — not here. Storing it up front, before the task is even known to
+    // be at a gate, let a rejected request-changes call (wrong stage, or the loser of a
+    // race against `approve`) leave its note behind for whatever the *next* successful
+    // stage dispatch turned out to be, appearing as a reviewer note on a stage no
+    // reviewer commented on.
     return this.advance(taskId, { type: "request-changes", text: text.trim() });
   }
 
@@ -155,7 +160,8 @@ export class BugFixEngine {
    *  call's turn. */
   private async advanceLocked(taskId: string, event: Parameters<typeof nextStage>[1]): Promise<BugTask> {
     const current = this.deps.bugs.get(taskId);
-    const t = nextStage(current, event);
+    const t = nextStage(current, event); // throws for an invalid transition — nothing below runs, including storing a note
+    if (event.type === "request-changes") this.pendingNote.set(taskId, event.text);
     let task = await this.deps.bugs.apply(taskId, t);
     if (task.stage === "cancelled" || task.stage === "failed") await this.stopAgent(task);
     if (!t.run) return task;
@@ -200,6 +206,16 @@ export class BugFixEngine {
     const agent = store.getAgent(task.agentId);
     if (agent.state !== "free") await manager.ack(task.agentId).catch(() => {});
     const assignment = await manager.assign(task.agentId, prompt);
+    // Runner.assign() handles a synchronously-throwing queryFn (e.g. no Claude Code
+    // executable on PATH) by calling its own finish({state:"failed"}) *before*
+    // assign() returns — so the "assignment" event for it fires, and is seen by
+    // `onAssignmentFinished`, before we get control back here to record ownership
+    // below. That event is correctly dropped (we don't own it yet), but the failure
+    // itself must not be: `assignment` already carries the terminal state and error,
+    // so surface it directly rather than relying on an event that already came and
+    // went. This throw is caught by `advanceLocked`, which fails the task exactly as
+    // it would for any other stage failure.
+    if (assignment.state === "failed") throw new Error(assignment.error ?? "the agent's run failed to start");
     this.dispatchedByMe.add(assignment.id);
     // Record durably which assignment this task is now waiting on, so
     // `onAssignmentFinished` can recognise it later — including across a restart, when

@@ -45,8 +45,12 @@ export interface BugTask {
    * lets `BugFixEngine.onAssignmentFinished` recognise its own work: an "assignment"
    * event only advances this task when its id matches, so a stray or duplicate event —
    * including one seen by a second engine instance sharing the same store — is ignored.
+   * Optional because a task persisted before this field existed has no key for it at
+   * all on disk, not even `null` — `undefined` there compares unequal to any real
+   * assignment id exactly like `null` does, so this already fails closed; the `?` just
+   * makes the type honest about what old JSON on disk actually contains.
    */
-  dispatchedAssignmentId: string | null;
+  dispatchedAssignmentId?: string | null;
   createdAt: string;
   updatedAt: string;
 }

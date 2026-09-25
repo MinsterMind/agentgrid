@@ -13,6 +13,7 @@ import { until } from "../helpers/until.js";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
 import type { BugTask, TrackerIssue } from "../../src/bugfix/types.js";
 import type { Assignment } from "../../src/types.js";
+import type { QueryFn } from "../../src/runner/runner.js";
 
 const ISSUE: TrackerIssue = { key: "PAY-42", title: "Boom", url: "https://x/PAY-42", status: "Open", priority: "High", description: "d", acceptanceCriteria: [] };
 
@@ -405,5 +406,81 @@ describe("adversarial: a duplicate or late stage-done event", () => {
     (store as unknown as { emit: (e: string, v: unknown) => void }).emit("event", { type: "assignment", assignment: finished });
     await new Promise(r => setTimeout(r, 50));
     expect(bugs.get(t.id).stage).toBe("plan-review"); // still at the gate, not re-advanced
+  });
+});
+
+describe("a synchronously-throwing queryFn does not strand the task", () => {
+  it("leaves the task failed with the error surfaced, and retry() then succeeds", async () => {
+    const throwingQueryFn: QueryFn = () => { throw new Error("Native CLI binary for darwin-arm64 not found"); };
+    const failingManager = new Manager(store, { queryFn: throwingQueryFn, buildOptions: (_r, a, e) => ({ cwd: a.repo, abortController: e.abortController, canUseTool: e.canUseTool } as Options) });
+    const e2 = new BugFixEngine({ ...(engine as any).deps, manager: failingManager });
+    e2.attach();
+
+    // Runner.assign() catches a synchronously-throwing queryFn internally and calls
+    // finish({state:"failed"}) *before* assign() itself returns — so the "assignment"
+    // event fires while the engine is still mid-dispatch, before it can record
+    // ownership of the (by-then-already-terminal) assignment. intake() must still end
+    // up with the task failed, not stuck in "analyzing" forever.
+    const t = await e2.intake({ issueRef: "PAY-42", repo });
+    expect(t.stage).toBe("failed");
+    expect(t.error).toMatch(/could not start claude code/i);
+
+    // The durable failure is not a dead end: retry() (via the normal, working manager)
+    // dispatches a fresh attempt on the same task.
+    const retried = await engine.retry(t.id);
+    expect(retried.stage).toBe("analyzing");
+  });
+});
+
+describe("requestChanges never leaks its note into an unrelated stage", () => {
+  it("does not store the note when the task isn't at a gate", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    // t.stage is "analyzing" — not a gate.
+    await expect(engine.requestChanges(t.id, "cover the retry path")).rejects.toThrow(/cannot request changes while analyzing/i);
+
+    // The next legitimate stage prompt (once the plan gate is reached and approved)
+    // must not carry that rejected note.
+    await bugs.writeArtifact(t.id, "plan.md", "# Plan");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    await engine.approve(t.id);
+    expect(fake.calls.at(-1)!.prompt).not.toContain("cover the retry path");
+    expect(fake.calls.at(-1)!.prompt).not.toContain("Additional instructions from the reviewer");
+  });
+
+  it("does not leak the loser's note when requestChanges loses a race against approve", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "# Plan");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+
+    const results = await Promise.allSettled([engine.approve(t.id), engine.requestChanges(t.id, "this note must not leak")]);
+    expect(results.filter(r => r.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter(r => r.status === "rejected")).toHaveLength(1);
+    expect(bugs.get(t.id).stage).toBe("implementing"); // approve won
+    expect(fake.calls.at(-1)!.prompt).not.toContain("this note must not leak");
+
+    // ...and it doesn't resurface on the *next* stage transition either.
+    gitState.commits = 1;
+    await finishStage(); await until(() => bugs.get(t.id).stage === "diff-review");
+    await engine.approve(t.id);
+    expect(fake.calls.at(-1)!.prompt).not.toContain("this note must not leak");
+  });
+});
+
+describe("the per-task serialisation chain survives a rejection", () => {
+  it("a subsequent advance on the same task still runs after a losing one rejects", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "# Plan");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+
+    const results = await Promise.allSettled([engine.approve(t.id), engine.approve(t.id)]);
+    expect(results.filter(r => r.status === "rejected")).toHaveLength(1);
+    expect(bugs.get(t.id).stage).toBe("implementing");
+
+    // The chain must not be wedged by the loser's rejection — the task can still be
+    // advanced normally afterward.
+    gitState.commits = 1;
+    await finishStage(); await until(() => bugs.get(t.id).stage === "diff-review");
+    await engine.approve(t.id);
+    expect(fake.calls.at(-1)!.prompt).toContain("gh pr create");
   });
 });
