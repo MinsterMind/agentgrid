@@ -432,6 +432,46 @@ describe("a synchronously-throwing queryFn does not strand the task", () => {
   });
 });
 
+describe("an assignment that fails on the first stream iteration does not strand the task", () => {
+  // Unlike a synchronously-throwing queryFn, manager.assign() resolves normally here
+  // (state "working") — the failure only surfaces later, asynchronously, once Runner's
+  // background consume() loop actually iterates the stream. That's exactly the window
+  // between assign() resolving and the engine finishing recording ownership of it.
+  it("an async generator that throws on its first next() leaves the task failed, and retry() works", async () => {
+    const throwingStreamQueryFn: QueryFn = () => (async function* () {
+      throw new Error("spawn ENOENT");
+    })();
+    const failingManager = new Manager(store, { queryFn: throwingStreamQueryFn, buildOptions: (_r, a, e) => ({ cwd: a.repo, abortController: e.abortController, canUseTool: e.canUseTool } as Options) });
+    const e2 = new BugFixEngine({ ...(engine as any).deps, manager: failingManager });
+    e2.attach();
+
+    const t = await e2.intake({ issueRef: "PAY-42", repo });
+    await until(() => bugs.get(t.id).stage === "failed");
+    expect(bugs.get(t.id).error).toMatch(/spawn enoent/i);
+
+    const retried = await engine.retry(t.id);
+    expect(retried.stage).toBe("analyzing");
+  });
+
+  // runner.ts produces this one on its own whenever a stream ends without ever
+  // yielding a "result" message — e.g. an immediately-aborted or empty stream.
+  it("a stream that ends without a result leaves the task failed, and retry() works", async () => {
+    const emptyStreamQueryFn: QueryFn = () => (async function* () {
+      /* yields nothing, returns immediately */
+    })();
+    const failingManager = new Manager(store, { queryFn: emptyStreamQueryFn, buildOptions: (_r, a, e) => ({ cwd: a.repo, abortController: e.abortController, canUseTool: e.canUseTool } as Options) });
+    const e2 = new BugFixEngine({ ...(engine as any).deps, manager: failingManager });
+    e2.attach();
+
+    const t = await e2.intake({ issueRef: "PAY-42", repo });
+    await until(() => bugs.get(t.id).stage === "failed");
+    expect(bugs.get(t.id).error).toMatch(/stream ended without result/i);
+
+    const retried = await engine.retry(t.id);
+    expect(retried.stage).toBe("analyzing");
+  });
+});
+
 describe("requestChanges never leaks its note into an unrelated stage", () => {
   it("does not store the note when the task isn't at a gate", async () => {
     const t = await engine.intake({ issueRef: "PAY-42", repo });
@@ -467,20 +507,28 @@ describe("requestChanges never leaks its note into an unrelated stage", () => {
 });
 
 describe("the per-task serialisation chain survives a rejection", () => {
-  it("a subsequent advance on the same task still runs after a losing one rejects", async () => {
+  it("a call queued directly behind a losing one still runs its own logic, not just inherits the rejection", async () => {
     const t = await engine.intake({ issueRef: "PAY-42", repo });
     await bugs.writeArtifact(t.id, "plan.md", "# Plan");
     await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
 
-    const results = await Promise.allSettled([engine.approve(t.id), engine.approve(t.id)]);
-    expect(results.filter(r => r.status === "rejected")).toHaveLength(1);
-    expect(bugs.get(t.id).stage).toBe("implementing");
+    // All three calls fire synchronously, in the same tick, with no `await` between
+    // them — p3 is issued while p2's rejection is still `taskChains`' current entry
+    // for this task (the `.finally()` that would remove it only runs in a later
+    // microtask). This is the scenario `prev.catch(() => {})` exists for: without it,
+    // p3's `.then()` would never even call its own `advanceLocked`, and would instead
+    // just inherit p2's rejection — a *different* task (cancel, always legal from any
+    // non-terminal stage) makes that distinguishable from p3 genuinely running its own
+    // check: if p3 merely inherited p2's failure it would reject with p2's "cannot
+    // approve" message instead of fulfilling by actually cancelling the task.
+    const p1 = engine.approve(t.id);       // wins: plan-review -> implementing
+    const p2 = engine.approve(t.id);       // loses: implementing doesn't accept "approve" again
+    const p3 = engine.cancel(t.id);        // must still run its own check and succeed
 
-    // The chain must not be wedged by the loser's rejection — the task can still be
-    // advanced normally afterward.
-    gitState.commits = 1;
-    await finishStage(); await until(() => bugs.get(t.id).stage === "diff-review");
-    await engine.approve(t.id);
-    expect(fake.calls.at(-1)!.prompt).toContain("gh pr create");
+    const [r1, r2, r3] = await Promise.allSettled([p1, p2, p3]);
+    expect(r1.status).toBe("fulfilled");
+    expect(r2.status).toBe("rejected");
+    expect(r3.status).toBe("fulfilled");
+    expect(bugs.get(t.id).stage).toBe("cancelled");
   });
 });

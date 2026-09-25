@@ -40,20 +40,33 @@ export class BugFixEngine {
    */
   private taskChains = new Map<string, Promise<unknown>>();
   /**
-   * Assignment ids this *instance* has personally dispatched (set in `runStage`).
-   * `attach()` listens on the shared store's event bus, which any number of
-   * BugFixEngine instances may also be listening on (deliberately, in tests exercising
-   * this; in principle also transiently in production). The durable
-   * `task.dispatchedAssignmentId` check in `onAssignmentFinished` is necessary but not
-   * sufficient here: it says an assignment was genuinely dispatched *for this task*, but
-   * every listener sharing the store sees that as equally true and would all try to
-   * verify and advance the same task. This in-memory set narrows that further to "and I
-   * am the instance that dispatched it" — cheap, and correct for exactly as long as an
-   * instance lives, which is exactly how long it needs to matter: after a restart the
-   * durable field alone is what makes `recoverOnStart()`/`retry()` correct, and by then
-   * there is no other instance racing anyway.
+   * taskId -> the id of the assignment this *instance* most recently dispatched for it.
+   * Set synchronously in `runStage`, the instant `manager.assign()` resolves — no
+   * `await` between that and the write, unlike the durable `task.dispatchedAssignmentId`
+   * (a real `writeAtomic` file write, landed only once `bugs.patch` resolves and the
+   * store's in-memory map catches up). That gap mattered: an assignment that fails on
+   * its *first stream iteration* (spawn ENOENT, a bad cwd, an immediate abort, or
+   * runner.ts's own "stream ended without result") resolves `manager.assign()`
+   * successfully (state "working") and only fails later, asynchronously, once Runner's
+   * background consume() loop actually iterates the stream — but reaching that failure
+   * still requires strictly more of Runner's own sequential store writes than
+   * `manager.assign()` itself needed to resolve, so this in-memory write reliably lands
+   * first. Keyed by task id rather than by assignment id, so it doubles as "the *latest*
+   * assignment I dispatched for this task" — which is what correctly ignores a stale
+   * duplicate event from an *earlier* assignment for the same task (retained here
+   * forever by design; see the round-2 note on not pruning it) without depending on the
+   * durable field at all. `attach()` listens on the shared store's event bus, which any
+   * number of BugFixEngine instances may also be listening on (deliberately, in tests
+   * exercising this; in principle also transiently in production) — this map is what
+   * keeps a non-dispatching instance from reacting to another instance's event: it
+   * simply has no entry for that task.
+   *
+   * The durable `task.dispatchedAssignmentId` field is still written (see `runStage`)
+   * for restart-time observability/debugging, but nothing reads it to *gate* a live
+   * decision any more — real-time correctness now rests entirely on this map, which
+   * needs no `await` to be trustworthy at the moment an event arrives.
    */
-  private dispatchedByMe = new Set<string>();
+  private currentDispatch = new Map<string, string>();
 
   constructor(deps: EngineDeps) { this.deps = deps; this.role = deps.role ?? "bugfix"; }
 
@@ -216,10 +229,11 @@ export class BugFixEngine {
     // went. This throw is caught by `advanceLocked`, which fails the task exactly as
     // it would for any other stage failure.
     if (assignment.state === "failed") throw new Error(assignment.error ?? "the agent's run failed to start");
-    this.dispatchedByMe.add(assignment.id);
-    // Record durably which assignment this task is now waiting on, so
-    // `onAssignmentFinished` can recognise it later — including across a restart, when
-    // no in-memory record of having dispatched it would otherwise survive.
+    // Synchronous — no `await` before this line since `assignment` resolved, so no
+    // event for it can possibly have fired yet (see this field's own comment for why
+    // that ordering is guaranteed, not just likely).
+    this.currentDispatch.set(task.id, assignment.id);
+    // Durable record for restart-time observability only now — see `currentDispatch`.
     await bugs.patch(task.id, { dispatchedAssignmentId: assignment.id });
     return bugs.get(task.id);
   }
@@ -229,13 +243,10 @@ export class BugFixEngine {
     const { bugs, store, manager } = this.deps;
     const task = bugs.byAgent(a.agentId);
     if (!task || !AGENT_STAGES.includes(task.stage)) return;
-    // Two checks, for two different failure modes (see `dispatchedByMe`'s own comment):
-    // the durable one says this assignment was genuinely dispatched *for this task*,
-    // surviving a restart; the in-memory one says *this instance* is the one that
-    // dispatched it, which is what keeps two live instances sharing a store from both
-    // reacting to the same event.
-    if (task.dispatchedAssignmentId !== a.id) return;
-    if (!this.dispatchedByMe.has(a.id)) return;
+    // Only react to the assignment this *instance* most recently dispatched for this
+    // task — see `currentDispatch`'s own comment for why this alone is both necessary
+    // and sufficient (no separate durable-field check needed).
+    if (this.currentDispatch.get(task.id) !== a.id) return;
 
     await bugs.patch(task.id, { costUsd: Number((task.costUsd + (a.costUsd ?? 0)).toFixed(4)) });
     // The "assignment" event fires as soon as the assignment record itself is written,
