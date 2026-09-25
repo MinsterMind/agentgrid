@@ -1,5 +1,5 @@
 import { Conflict } from "../store/store.js";
-import { GATE_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask, type GateKind, type Transition } from "./types.js";
+import { AGENT_STAGES, GATE_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask, type GateKind, type Transition } from "./types.js";
 
 const gate = (kind: GateKind): Transition["gate"] => ({ kind, openedAt: new Date().toISOString() });
 const go = (stage: BugStage, run: BugStage | null, note = "", error: string | null = null): Transition => ({ stage, run, gate: null, note, error });
@@ -19,12 +19,26 @@ export function nextStage(task: BugTask, event: BugEvent): Transition {
       return go("cancelled", null);
 
     case "stage-failed":
+      // A gate stage isn't running anything — nothing dispatched for it, so nothing can
+      // legitimately report it failed. Refusing here keeps the state machine from ever
+      // landing a "failed" task whose last stage is a gate, which `retry` below could
+      // otherwise be asked to resume by re-dispatching a stage `runStage` has no prompt for.
+      if (GATE_STAGES.includes(task.stage)) throw new Conflict(`cannot fail ${task.stage}: it is waiting on a human, not on the agent`);
       return go("failed", null, "", event.reason);
 
     case "retry": {
       if (task.stage !== "failed") throw new Conflict(`can only retry a failed task (is ${task.stage})`);
       const last = [...task.history].reverse().find(h => h.stage !== "failed");
       if (!last) throw new Error("nothing to retry");
+      // "intake" has no agent-dispatched prompt: its work (tracker fetch, worktree,
+      // agent) runs synchronously inside `BugFixEngine.intake()`, before the task even
+      // exists in the store — by the time a task record can be stuck at "intake", that
+      // work is already done. Resuming it means finishing the transition to "analyzing",
+      // not re-dispatching an "intake" stage that `renderStagePrompt` has no template for.
+      if (last.stage === "intake") return go("analyzing", "analyzing", "", null);
+      // Anything else must be an agent stage: a gate stage has no prompt either, and
+      // recovery/failure paths must never hand `runStage` a stage it can't dispatch.
+      if (!AGENT_STAGES.includes(last.stage)) throw new Conflict(`cannot retry: ${last.stage} is not a resumable stage`);
       return go(last.stage, last.stage, "", null);
     }
 

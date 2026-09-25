@@ -57,4 +57,25 @@ describe("nextStage — loops, failures, cancel", () => {
     expect(() => nextStage(task("analyzing"), { type: "approve" })).toThrow(/cannot approve/i);
     expect(() => nextStage(task("plan-review"), { type: "stage-done" })).toThrow(/waiting/i);
   });
+
+  it("retry from a task that failed while sitting at a gate is refused, not dispatched", () => {
+    // Not reachable today through nextStage itself (stage-failed now guards gates below),
+    // but retry must not trust a hand-built/legacy history either: a gate stage is never
+    // something `runStage` can dispatch a prompt for.
+    const t = task("failed", { history: [{ stage: "plan-review", at: "", note: "" }] });
+    expect(() => nextStage(t, { type: "retry" })).toThrow(/plan-review/);
+  });
+
+  it("retry resumes an intake-stuck task straight into analyzing, not by re-dispatching intake", () => {
+    // A task recovered by startup recovery while still at "intake" (worktree/agent already
+    // created, but the transition to analyzing never landed) has no prompt for "intake" —
+    // resuming it must skip straight to the stage that actually runs.
+    const t = task("failed", { history: [{ stage: "intake", at: "", note: "" }] });
+    expect(nextStage(t, { type: "retry" })).toMatchObject({ stage: "analyzing", run: "analyzing", error: null });
+  });
+
+  it("stage-failed refuses to fail a task that is waiting on a human at a gate", () => {
+    expect(() => nextStage(task("plan-review"), { type: "stage-failed", reason: "x" })).toThrow(/plan-review/);
+    expect(() => nextStage(task("diff-review"), { type: "stage-failed", reason: "x" })).toThrow(/diff-review/);
+  });
 });
