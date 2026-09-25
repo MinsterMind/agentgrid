@@ -53,6 +53,15 @@ describe("IntegrationsStore", () => {
     expect(await store.read()).toEqual({ projectRepos: {} });
   });
 
+  it("refuses to write onto a corrupt file rather than silently destroying it", async () => {
+    const { writeFile, readFile } = await import("node:fs/promises");
+    const file = path.join(home, "integrations.json");
+    await writeFile(file, "{ not json");
+    await expect(store.write({ forge: { preset: "github" } })).rejects.toThrow(/corrupt/i);
+    // The file on disk must be untouched — not overwritten with just the new patch.
+    expect(await readFile(file, "utf8")).toBe("{ not json");
+  });
+
   it("keeps both patches when two writes race", async () => {
     await Promise.all([
       store.write({ tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: {} } }),

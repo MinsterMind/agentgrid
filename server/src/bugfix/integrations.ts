@@ -1,5 +1,6 @@
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
+import { Conflict } from "../store/store.js";
 
 export interface TrackerConfig { preset: string; toolPrefix: string; mcpServers: Record<string, unknown>; hints?: string }
 export interface ForgeConfig { preset: "github" | "gitlab" | "custom"; getPr?: string; merge?: string; map?: Record<string, string> }
@@ -43,13 +44,31 @@ export class IntegrationsStore {
   }
 
   /**
+   * Like `read()`, but a parse error is not swallowed: a missing file still reads as
+   * empty (there is nothing to lose), but a corrupt one must stop `write()` cold rather
+   * than let it merge the new patch onto `{}` and overwrite whatever was actually on
+   * disk — `projectRepos` and the tracker/forge config included.
+   */
+  private async readForWrite(): Promise<Integrations> {
+    const raw = await readFile(this.file, "utf8").catch(() => "");
+    if (!raw) return { projectRepos: {} };
+    let parsed: Partial<Integrations>;
+    try { parsed = JSON.parse(raw); }
+    catch (err) {
+      throw new Conflict(`integrations.json is corrupt and cannot be safely updated (${(err as Error).message}). ` +
+        `Fix or remove ${this.file}, then try again.`);
+    }
+    return { ...parsed, projectRepos: parsed.projectRepos ?? {} };
+  }
+
+  /**
    * Merges `patch` (or the result of calling it with the freshly-read current config) onto disk.
    * The read and the write happen inside the same chained turn, so racing writers each see the
    * other's result rather than both merging onto a stale base.
    */
   async write(patch: Partial<Integrations> | ((cur: Integrations) => Partial<Integrations>)): Promise<Integrations> {
     return withWriteChain(this.file, async () => {
-      const cur = await this.read();
+      const cur = await this.readForWrite();
       const effective = typeof patch === "function" ? patch(cur) : patch;
       const next = { ...cur, ...effective };
       await mkdir(this.home, { recursive: true });
