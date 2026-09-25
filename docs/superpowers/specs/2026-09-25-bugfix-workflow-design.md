@@ -91,8 +91,8 @@ Config (`~/.agentgrid/integrations.json`):
 ```jsonc
 "tracker": {
   "preset": "jira",
-  "mcpServer": "atlassian",
   "toolPrefix": "mcp__atlassian",
+  "mcpServers": { "atlassian": { "type": "sse", "url": "https://mcp.atlassian.com/v1/sse" } },
   "hints": "Bugs live in project PAY"
 }
 ```
@@ -110,7 +110,7 @@ Prompts per preset live in `presets/tracker/<preset>.md` and are user-editable; 
 
 **Connect flow:** Settings → Integrations → *Connect tracker* runs `claude mcp add --scope user …`, then opens an embedded terminal on a throwaway session where the user completes `/mcp` OAuth. *Test connection* runs `listMyIssues()` and reports the result. Scope is user-level, so the user's own terminal sessions gain the same tools.
 
-**Risk:** headless SDK sessions must reuse the MCP OAuth credentials established interactively. This is verified by the first implementation task; if it fails, the fallback is a REST-token tracker adapter (site URL + email + API token in settings, server-side fetch), which satisfies the same four calls.
+**Verified (2026-09-25 spike):** headless SDK sessions *can* call MCP tools, including a remote OAuth server authenticated interactively — a probe session executed both a local stdio tool and a remote `claude.ai` connector tool successfully. One condition: the session must pass the server definitions in `Options.mcpServers`; relying on `settingSources: ["user"]` alone surfaced zero tools in this environment. Tracker config therefore stores the MCP **server definition**, not just a name, and the tracker queries pass it explicitly. The REST-token fallback is not needed.
 
 ### 5.2 Forge (server-side CLI adapters)
 
