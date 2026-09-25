@@ -68,3 +68,11 @@ export const AGENT_STAGES: BugStage[] = ["analyzing", "implementing", "opening-p
 /** Stages that are waiting on a human click. */
 export const GATE_STAGES: BugStage[] = ["plan-review", "diff-review"];
 export const TERMINAL_STAGES: BugStage[] = ["done", "cancelled", "failed"];
+/**
+ * Stages a startup crash can strand a task in with nothing left to finish it: the
+ * AGENT_STAGES (an assignment was dispatched but never reported back) plus "intake"
+ * (the task record was written, but the transition into "analyzing" never landed).
+ * Recovery fails tasks sitting in any of these so they get a card and a working Retry
+ * instead of being silently orphaned.
+ */
+export const RECOVERABLE_STAGES: BugStage[] = ["intake", ...AGENT_STAGES];

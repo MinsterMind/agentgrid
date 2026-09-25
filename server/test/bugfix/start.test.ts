@@ -53,4 +53,59 @@ describe("startServer with the bug-fix workflow", () => {
       expect(retryTransition.run).toBe("analyzing");
     } finally { await running.close(); }
   });
+
+  it("recovers a stuck task even when no tracker is configured (no BugFixEngine exists at all)", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "ag-bug-recover-notracker-"));
+
+    const issue: TrackerIssue = { key: "REC-2", title: "Stuck bug, no tracker", url: "https://example.invalid/REC-2",
+      status: "Open", priority: "High", description: "d", acceptanceCriteria: [] };
+    const seedBugs = new BugTaskStore(home);
+    await seedBugs.init();
+    const created = await seedBugs.create({
+      issue, trackerProject: "REC", sourceRepo: "/tmp/repo", worktree: "/tmp/repo/.worktrees/bugfix-REC-2",
+      branch: "bugfix/REC-2", baseBranch: "main", agentId: "ag-stuck-2", mergePolicy: "ask", mergeMethod: "squash",
+    });
+    const stranded = await seedBugs.apply(created.id, nextStage(created, { type: "stage-done" }));
+    expect(stranded.stage).toBe("analyzing");
+
+    // fake: false and no integrations.json at all — the server boots with no tracker
+    // configured, so `bugStore.bugTasks`/`store.bugTasks` exist but no BugFixEngine does
+    // (all /api/bugtasks* routes answer 501). Recovery must still have run.
+    const running = await startServer({ home, port: 0, fake: false, log: () => {} });
+    try {
+      const state = await (await fetch(`${running.url}/api/state`)).json();
+      const task = state.bugTasks.find((t: BugTask) => t.id === created.id);
+      expect(task).toBeDefined();
+      expect(task.stage).toBe("failed");
+      expect(task.error).toMatch(/restart/i);
+    } finally { await running.close(); }
+  });
+
+  it("recovers a task stuck at intake (crash between bugs.create() and the first advance())", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "ag-bug-recover-intake-"));
+
+    const issue: TrackerIssue = { key: "REC-3", title: "Stuck at intake", url: "https://example.invalid/REC-3",
+      status: "Open", priority: "High", description: "d", acceptanceCriteria: [] };
+    const seedBugs = new BugTaskStore(home);
+    await seedBugs.init();
+    // A task freshly created by `bugs.create()` and never advanced — exactly what a crash
+    // between that write and `engine.intake()`'s follow-up `advance()` call leaves behind.
+    const created = await seedBugs.create({
+      issue, trackerProject: "REC", sourceRepo: "/tmp/repo", worktree: "/tmp/repo/.worktrees/bugfix-REC-3",
+      branch: "bugfix/REC-3", baseBranch: "main", agentId: "ag-stuck-3", mergePolicy: "ask", mergeMethod: "squash",
+    });
+    expect(created.stage).toBe("intake");
+
+    const running = await startServer({ home, port: 0, fake: true, log: () => {} });
+    try {
+      const task = await (await fetch(`${running.url}/api/bugtasks/${created.id}`)).json() as BugTask;
+      expect(task.stage).toBe("failed");
+      expect(task.error).toMatch(/restart/i);
+
+      // retry() must resume straight into analyzing — "intake" has no dispatchable prompt.
+      const retryTransition = nextStage(task, { type: "retry" });
+      expect(retryTransition.stage).toBe("analyzing");
+      expect(retryTransition.run).toBe("analyzing");
+    } finally { await running.close(); }
+  });
 });

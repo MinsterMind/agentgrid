@@ -24,6 +24,8 @@ function fakeGit() {
   g.removeWorktree = async () => {};
   g.currentBranch = async () => "bugfix/PAY-42";
   g.commitsAhead = async () => 1;
+  g.worktreeRegistered = async () => false;
+  g.branchExists = async () => false;
   g.diff = async () => ({ patch: "diff --git a/a b/a\n+x\n", files: [{ path: "a", additions: 1, deletions: 0 }], additions: 1, deletions: 0 });
   return g;
 }

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { realpath } from "node:fs/promises";
 import path from "node:path";
 
 export interface DiffFile { path: string; additions: number; deletions: number }
@@ -87,5 +88,24 @@ export class GitOps {
   async hasRemote(repo: string): Promise<string | null> {
     const out = await this.run(repo, ["remote", "get-url", "origin"]).catch(() => "");
     return out.trim() || null;
+  }
+
+  /** Whether `branch` already exists — `git worktree add -b` refuses otherwise. Spec §8
+   *  deliberately leaves a cancelled task's branch and worktree in place, so re-launching
+   *  the same ticket must detect this itself rather than surface git's raw error. */
+  async branchExists(repo: string, branch: string): Promise<boolean> {
+    return this.run(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).then(() => true, () => false);
+  }
+
+  /** Whether `dir` is already registered as a worktree of `repo` — `git worktree add`
+   *  refuses otherwise, for the same cancelled-task-leftover reason as `branchExists`. */
+  async worktreeRegistered(repo: string, dir: string): Promise<boolean> {
+    const out = await this.run(repo, ["worktree", "list", "--porcelain"]).catch(() => "");
+    // `git worktree list` reports real, symlink-resolved paths (e.g. macOS's
+    // /private/var vs. the /var alias) — resolve `repo` the same way before comparing,
+    // rather than comparing `dir` as given, or every leftover would go undetected.
+    const realRepo = await realpath(repo).catch(() => repo);
+    const target = path.resolve(realRepo, path.relative(repo, dir));
+    return out.split("\n").some(l => l.startsWith("worktree ") && path.resolve(l.slice("worktree ".length).trim()) === target);
   }
 }

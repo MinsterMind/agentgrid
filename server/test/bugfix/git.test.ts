@@ -83,6 +83,16 @@ describe("GitOps", () => {
     expect(d.files.map(f => f.path).sort()).toEqual(["a.txt", "renamed.txt"]);
   });
 
+  it("detects a leftover branch and worktree from an earlier, cancelled run", async () => {
+    expect(await git.branchExists(repo, "bugfix/PAY-42")).toBe(false);
+    expect(await git.worktreeRegistered(repo, worktreePath(repo, "PAY-42"))).toBe(false);
+    const wt = await git.createWorktree(repo, "bugfix/PAY-42", "main");
+    expect(await git.branchExists(repo, "bugfix/PAY-42")).toBe(true);
+    expect(await git.worktreeRegistered(repo, wt)).toBe(true);
+    // A different, unrelated path must not be mistaken for this one.
+    expect(await git.worktreeRegistered(repo, worktreePath(repo, "OTHER-1"))).toBe(false);
+  });
+
   it("surfaces a cleanup failure instead of silently succeeding", async () => {
     const failing = new GitOps(async (_cwd, args) => {
       if (args[0] === "worktree" && args[1] === "remove") throw new Error("fatal: worktree is locked");

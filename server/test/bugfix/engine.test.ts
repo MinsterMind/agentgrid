@@ -29,6 +29,8 @@ function fakeGit(state: { commits: number; head?: string }) {
   g.revParse = async () => state.head ?? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   g.commitsAhead = async () => state.commits;
   g.diff = async () => ({ patch: "diff --git a/a b/a\n+x\n", files: [{ path: "a", additions: 1, deletions: 0 }], additions: 1, deletions: 0 });
+  g.worktreeRegistered = async () => false;
+  g.branchExists = async () => false;
   return { git: g, calls };
 }
 
@@ -79,6 +81,24 @@ describe("intake", () => {
     const g = fakeGit(gitState).git; g.hasRemote = async () => null;
     const e2 = new BugFixEngine({ ...(engine as any).deps, git: g });
     await expect(e2.intake({ issueRef: "PAY-42", repo })).rejects.toThrow(/remote/i);
+  });
+
+  it("refuses to re-launch the same ticket while its worktree is still registered, naming the path and what to run", async () => {
+    const { git: g, calls } = fakeGit(gitState);
+    g.worktreeRegistered = async () => true;
+    const e2 = new BugFixEngine({ ...(engine as any).deps, git: g });
+    await expect(e2.intake({ issueRef: "PAY-42", repo })).rejects.toThrow(
+      /worktree.*bugfix-PAY-42.*worktree remove --force.*branch -D bugfix\/PAY-42/s);
+    expect(calls).not.toContain("create bugfix/PAY-42"); // never got as far as `git worktree add`
+  });
+
+  it("refuses to re-launch the same ticket while its branch still exists, naming the branch and what to run", async () => {
+    const { git: g, calls } = fakeGit(gitState);
+    g.branchExists = async () => true;
+    const e2 = new BugFixEngine({ ...(engine as any).deps, git: g });
+    await expect(e2.intake({ issueRef: "PAY-42", repo })).rejects.toThrow(
+      /branch.*bugfix\/PAY-42.*branch -D bugfix\/PAY-42/s);
+    expect(calls).not.toContain("create bugfix/PAY-42");
   });
 });
 

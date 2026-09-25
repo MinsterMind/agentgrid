@@ -19,7 +19,7 @@ import { IntegrationsStore } from "./bugfix/integrations.js";
 import { GitOps } from "./bugfix/git.js";
 import { makeForge } from "./bugfix/forge/index.js";
 import { mcpTracker, type TrackerProvider } from "./bugfix/tracker.js";
-import { BugFixEngine } from "./bugfix/engine.js";
+import { BugFixEngine, recoverStuckBugTasks } from "./bugfix/engine.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -100,6 +100,11 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   await bugStore.init();
   store.bugTasks = () => bugStore.list();
   bugStore.on("event", e => store.emit("event", e));
+  // Recovery only needs the bug store — run it unconditionally, whether or not a tracker
+  // is configured (and so whether or not a BugFixEngine exists below), so a task stranded
+  // mid-stage by an unclean shutdown always gets a card and a working Retry rather than
+  // being silently orphaned on a server that has no tracker wired up yet.
+  await recoverStuckBugTasks(bugStore);
 
   const integrations = new IntegrationsStore(home);
   const cfg = await integrations.read();
@@ -121,7 +126,10 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const tracker = fake ? fakeTracker : (cfg.tracker ? mcpTracker(cfg.tracker, presetsDir) : null);
   const forge = fake ? fakeForge : makeForge(cfg.forge);
   const engine = tracker ? new BugFixEngine({ store, bugs: bugStore, manager, git: new GitOps(), integrations, tracker, forge, presetsDir }) : null;
-  if (engine) { await engine.recoverOnStart(); engine.attach(); }
+  // Recovery already ran above (`recoverStuckBugTasks`, tracker or no tracker) — calling
+  // `engine.recoverOnStart()` here too would just re-scan a store with nothing left to
+  // recover.
+  if (engine) engine.attach();
 
   const app = createApp({ store, manager, writeToTerminal: (sid, data) => ptys.write(sid, data), transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }),
     openTerminal, runInTerminal, staticDir, browseRoot: opts.browseRoot ?? process.env.AGENTGRID_BROWSE_ROOT, ...(fakeSessions ? { sessions: fakeSessions } : {}),

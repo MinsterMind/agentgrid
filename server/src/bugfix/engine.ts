@@ -4,13 +4,29 @@ import type { Store } from "../store/store.js";
 import type { Manager } from "../runner/manager.js";
 import type { Assignment } from "../types.js";
 import { BugTaskStore } from "./store.js";
-import { GitOps, branchName, type DiffResult } from "./git.js";
+import { GitOps, branchName, worktreePath, type DiffResult } from "./git.js";
 import { IntegrationsStore } from "./integrations.js";
 import type { ForgeAdapter } from "./forge/index.js";
 import type { TrackerProvider } from "./tracker.js";
 import { renderStagePrompt } from "./prompts.js";
 import { nextStage } from "./stages.js";
-import { AGENT_STAGES, TERMINAL_STAGES, type BugStage, type BugTask } from "./types.js";
+import { AGENT_STAGES, RECOVERABLE_STAGES, TERMINAL_STAGES, type BugStage, type BugTask } from "./types.js";
+
+/**
+ * Startup recovery, factored out so it can run against just the bug store — no tracker,
+ * forge or manager needed. `start.ts` calls this directly when no tracker is configured
+ * (there is then no `BugFixEngine` at all), and `BugFixEngine.recoverOnStart()` below
+ * calls it too, so both paths share one definition of "stuck".
+ *
+ * Fails any task left in `RECOVERABLE_STAGES` by an unclean shutdown, naming the
+ * restart, so it gets a card and a working Retry instead of being orphaned.
+ */
+export async function recoverStuckBugTasks(bugs: BugTaskStore): Promise<void> {
+  for (const task of bugs.list()) {
+    if (!RECOVERABLE_STAGES.includes(task.stage)) continue;
+    await bugs.apply(task.id, nextStage(task, { type: "stage-failed", reason: "server restarted while this stage was running" }));
+  }
+}
 
 export interface EngineDeps {
   store: Store; bugs: BugTaskStore; manager: Manager; git: GitOps;
@@ -96,10 +112,7 @@ export class BugFixEngine {
    * is already settled) and before `attach()` starts taking new events.
    */
   async recoverOnStart(): Promise<void> {
-    for (const task of this.deps.bugs.list()) {
-      if (!AGENT_STAGES.includes(task.stage)) continue;
-      await this.deps.bugs.apply(task.id, nextStage(task, { type: "stage-failed", reason: "server restarted while this stage was running" }));
-    }
+    await recoverStuckBugTasks(this.deps.bugs);
   }
 
   async preflight(repo: string): Promise<{ ok: boolean; problems: string[] }> {
@@ -127,6 +140,25 @@ export class BugFixEngine {
     const branch = branchName(issue.key);
     const baseBranch = await git.defaultBranch(input.repo);
     if (branch === baseBranch) throw new Conflict(`refusing to work on the default branch (${baseBranch})`);
+
+    // A cancelled task deliberately leaves its worktree and branch in place (spec §8) — a
+    // leftover worktree may hold unpushed work, so nothing here is ever auto-deleted. But
+    // without this check, re-launching the same ticket fails deep inside `git worktree add
+    // -b` with a raw "branch already exists" error and no way out. Catch it up front and
+    // say exactly what to run.
+    const leftoverDir = worktreePath(input.repo, issue.key);
+    const [worktreeLeftover, branchLeftover] = await Promise.all([
+      git.worktreeRegistered(input.repo, leftoverDir),
+      git.branchExists(input.repo, branch),
+    ]);
+    if (worktreeLeftover || branchLeftover) {
+      throw new Conflict(
+        `a worktree and/or branch for ${issue.key} already exist from an earlier run — worktree ${leftoverDir}, branch ${branch}. ` +
+        `Nothing is removed automatically (the worktree may hold unpushed work). To clear them and try again, run:\n` +
+        `  git -C ${input.repo} worktree remove --force ${leftoverDir}\n` +
+        `  git -C ${input.repo} branch -D ${branch}`
+      );
+    }
 
     const worktree = await git.createWorktree(input.repo, branch, baseBranch);
     const agent = await store.createAgent({ role: this.role, repo: worktree, displayName: issue.key });
