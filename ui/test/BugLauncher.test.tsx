@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BugLauncher } from "../src/components/BugLauncher";
 
@@ -13,7 +13,10 @@ vi.mock("../src/api", () => ({ api: {
   pickFolder: vi.fn(async () => ({ path: "/r/picked" })),
 } }));
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  bugPreflight.mockImplementation(async (_repo: string) => ({ ok: true, problems: [] as string[] }));
+});
 
 describe("BugLauncher", () => {
   it("lists my open bugs and starts one, pre-filling the remembered repo", async () => {
@@ -23,6 +26,7 @@ describe("BugLauncher", () => {
     await userEvent.click(screen.getByRole("button", { name: /PAY-42/ }));
     expect(screen.getByLabelText("Repo")).toHaveValue("/r/payments");     // remembered for project PAY
     await waitFor(() => expect(bugPreflight).toHaveBeenCalledWith("/r/payments"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start fixing" })).not.toBeDisabled());
     await userEvent.click(screen.getByRole("button", { name: "Start fixing" }));
     expect(createBugTask).toHaveBeenCalledWith({ issueRef: "PAY-42", repo: "/r/payments", mergePolicy: "ask" });
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "bt1" })));
@@ -33,6 +37,8 @@ describe("BugLauncher", () => {
     await userEvent.type(screen.getByLabelText("Issue URL or key"), "https://x/browse/WEB-9");
     await userEvent.clear(screen.getByLabelText("Repo"));
     await userEvent.type(screen.getByLabelText("Repo"), "/r/web");
+    await waitFor(() => expect(bugPreflight).toHaveBeenCalledWith("/r/web"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start fixing" })).not.toBeDisabled());
     await userEvent.click(screen.getByRole("button", { name: "Start fixing" }));
     expect(createBugTask).toHaveBeenCalledWith({ issueRef: "https://x/browse/WEB-9", repo: "/r/web", mergePolicy: "ask" });
   });
@@ -46,18 +52,60 @@ describe("BugLauncher", () => {
     expect(screen.getByRole("button", { name: "Start fixing" })).toBeDisabled();
   });
 
+  it("disables Start before any preflight check has run for a freshly-entered repo", async () => {
+    bugPreflight.mockImplementation(() => new Promise(() => {})); // never resolves within the test
+    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} />);
+    await userEvent.type(screen.getByLabelText("Issue URL or key"), "PAY-42");
+    await userEvent.type(screen.getByLabelText("Repo"), "/r/payments");
+    expect(screen.getByRole("button", { name: "Start fixing" })).toBeDisabled();
+    await waitFor(() => expect(screen.getByText(/Checking repo/)).toBeInTheDocument());
+  });
+
+  it("disables Start when the repo changes after a successful preflight, until the new check resolves", async () => {
+    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} />);
+    await userEvent.type(screen.getByLabelText("Issue URL or key"), "PAY-42");
+    await userEvent.type(screen.getByLabelText("Repo"), "/r/payments");
+    await waitFor(() => expect(bugPreflight).toHaveBeenCalledWith("/r/payments"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start fixing" })).not.toBeDisabled());
+
+    let resolveSecond: (v: { ok: boolean; problems: string[] }) => void = () => {};
+    bugPreflight.mockImplementationOnce(() => new Promise(res => { resolveSecond = res; }));
+
+    await userEvent.clear(screen.getByLabelText("Repo"));
+    await userEvent.type(screen.getByLabelText("Repo"), "/r/other");
+    // The stale "ok" result from /r/payments must not leak into the field's new value.
+    expect(screen.getByRole("button", { name: "Start fixing" })).toBeDisabled();
+
+    await waitFor(() => expect(bugPreflight).toHaveBeenCalledWith("/r/other"));
+    resolveSecond({ ok: true, problems: [] });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start fixing" })).not.toBeDisabled());
+  });
+
+  it("keeps Start disabled for a relative repo path and never checks or starts it", async () => {
+    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} />);
+    await userEvent.type(screen.getByLabelText("Issue URL or key"), "PAY-42");
+    await userEvent.type(screen.getByLabelText("Repo"), "myrepo");
+    expect(screen.getByText(/absolute repo path/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start fixing" })).toBeDisabled();
+    expect(bugPreflight).not.toHaveBeenCalled();
+    expect(createBugTask).not.toHaveBeenCalled();
+  });
+
   it("surfaces a failed issue lookup instead of silently doing nothing", async () => {
     createBugTask.mockRejectedValueOnce(new Error("tracker returned no usable JSON"));
     render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} />);
     await userEvent.type(screen.getByLabelText("Issue URL or key"), "PAY-42");
     await userEvent.type(screen.getByLabelText("Repo"), "/r/payments");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start fixing" })).not.toBeDisabled());
     await userEvent.click(screen.getByRole("button", { name: "Start fixing" }));
     await waitFor(() => expect(screen.getByText(/no usable JSON/)).toBeInTheDocument());
   });
 
-  it("says so when the tracker is not connected", async () => {
+  it("says so, within the issue-list section, when the tracker is not connected", async () => {
     myIssues.mockRejectedValueOnce(new Error("the bug-fix workflow is not configured"));
     render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} />);
-    await waitFor(() => expect(screen.getByText(/not configured/)).toBeInTheDocument());
+    const section = screen.getByText("My open bugs").closest(".bugs");
+    expect(section).not.toBeNull();
+    await waitFor(() => expect(within(section as HTMLElement).getByText(/not configured/)).toBeInTheDocument());
   });
 });
