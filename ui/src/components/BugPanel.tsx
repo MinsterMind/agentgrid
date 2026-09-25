@@ -12,7 +12,10 @@ interface DiffData { patch: string; files: Array<{ path: string; additions: numb
  */
 function hunksFor(patch: string, file: string): { text: string; isolated: boolean } {
   const parts = patch.split(/^diff --git /m).slice(1);
-  const hit = parts.find(p => p.split("\n")[0].includes(file));
+  // Match the header exactly, not by substring: in a monorepo one path is routinely a suffix of
+  // another ("package.json" vs "ui/package.json"), and a substring match then picks the wrong
+  // section *and* reports it as isolated, showing file B's hunks under file A's name.
+  const hit = parts.find(p => p.split("\n")[0].trimEnd() === `a/${file} b/${file}`);
   return hit ? { text: `diff --git ${hit}`.trimEnd(), isolated: true } : { text: patch, isolated: false };
 }
 

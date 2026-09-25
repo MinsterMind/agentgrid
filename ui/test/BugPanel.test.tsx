@@ -57,6 +57,24 @@ const isolatedPatch = [
   "+new test line",
 ].join("\n") + "\n";
 
+// I1: two paths where one is a genuine suffix of the other — everyday in a monorepo (this repo
+// has three package.json files). A substring match on the `diff --git` header picks the wrong
+// section for the shorter path AND calls it isolated, so file B's hunks show under file A's name.
+const suffixCollisionPatch = [
+  "diff --git a/ui/package.json b/ui/package.json",
+  "index 111..222 100644",
+  "--- a/ui/package.json",
+  "+++ b/ui/package.json",
+  "@@ -1,1 +1,2 @@",
+  "+ui package line",
+  "diff --git a/package.json b/package.json",
+  "index 333..444 100644",
+  "--- a/package.json",
+  "+++ b/package.json",
+  "@@ -1,1 +1,2 @@",
+  "+root package line",
+].join("\n") + "\n";
+
 beforeEach(() => vi.clearAllMocks());
 
 describe("BugPanel", () => {
@@ -209,5 +227,25 @@ describe("BugPanel", () => {
     await waitFor(() => expect(screen.getByText(/rotated twice/)).toBeInTheDocument());
     await userEvent.click(screen.getByRole("button", { name: "Approve & implement" }));
     await waitFor(() => expect(onChanged).toHaveBeenCalledWith(fresh));
+  });
+
+  it("matches a file to its own diff section when another path is a suffix of it", async () => {
+    bugDiff.mockImplementation(async () => ({
+      patch: suffixCollisionPatch, additions: 2, deletions: 0,
+      files: [{ path: "ui/package.json", additions: 1, deletions: 0 }, { path: "package.json", additions: 1, deletions: 0 }],
+    }));
+    render(<BugPanel task={task("diff-review")} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText("ui/package.json")).toBeInTheDocument());
+
+    // The root package.json must show ITS own hunk, not ui/package.json's.
+    await userEvent.click(screen.getByRole("button", { name: /^package\.json/ }));
+    expect(screen.getByText(/root package line/)).toBeInTheDocument();
+    expect(screen.queryByText(/ui package line/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/could not isolate/i)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /^package\.json/ })); // collapse
+    await userEvent.click(screen.getByRole("button", { name: /^ui\/package\.json/ }));
+    expect(screen.getByText(/ui package line/)).toBeInTheDocument();
+    expect(screen.queryByText(/root package line/)).not.toBeInTheDocument();
   });
 });
