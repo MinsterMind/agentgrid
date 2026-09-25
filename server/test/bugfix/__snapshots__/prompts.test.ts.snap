@@ -1,0 +1,27 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renderStagePrompt > analyze names the ticket, the worktree and the plan file it must write 1`] = `
+"You are fixing a tracked bug. Work only inside /r/pay/.worktrees/bugfix-PAY-42 (a git worktree on branch bugfix/PAY-42).
+
+## Ticket PAY-42 — Refresh token rotates twice
+https://x/PAY-42
+Priority: High · Status: Open
+
+Steps: retry a request…
+
+Acceptance criteria:
+- no double rotation
+
+## Your job in this step: understand and plan. Do not change any code yet.
+
+1. Reproduce the problem if it is cheap to do so (a failing test, a script, a log trace).
+2. Read the relevant code and find the root cause — not just the symptom.
+3. Write your plan to /home/.agentgrid/bugtasks/bt1/plan.md with these headings:
+   - Root cause
+   - Fix (files and what changes in each)
+   - Test strategy (how we will know it is fixed)
+   - Risks and anything you are unsure about
+Keep it under 400 words; the human reads this before approving.
+
+Finish with a 2–3 line summary of the root cause."
+`;
