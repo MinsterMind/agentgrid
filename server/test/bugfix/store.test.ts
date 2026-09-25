@@ -65,4 +65,16 @@ describe("BugTaskStore", () => {
   it("unknown ids throw NotFound", () => {
     expect(() => store.get("nope")).toThrow(NotFound);
   });
+
+  it("refuses artifact names and task ids that would escape the task directory", async () => {
+    const t = await mk();
+    await expect(store.writeArtifact(t.id, "../escape.md", "x")).rejects.toThrow(/invalid artifact name/);
+    await expect(store.writeArtifact(t.id, "../../etc/cron.d/x", "x")).rejects.toThrow(/invalid artifact name/);
+    await expect(store.readArtifact(t.id, "..")).rejects.toThrow(/invalid artifact name/);
+    expect(() => store.dir("../../../etc")).toThrow(NotFound);
+    await expect(store.readArtifact("../../etc", "passwd")).rejects.toThrow(NotFound);
+    // the normal path still works
+    await store.writeArtifact(t.id, "plan.md", "ok");
+    expect(await store.readArtifact(t.id, "plan.md")).toBe("ok");
+  });
 });

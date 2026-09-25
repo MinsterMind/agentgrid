@@ -42,11 +42,34 @@ export class BugTaskStore extends EventEmitter {
     }
   }
 
-  private file(id: string) { return path.join(this.root, `${id}.json`); }
-  dir(id: string) { return path.join(this.root, id); }
+  /** Only ever accept our own id shape — a route param must not be usable to escape the store root. */
+  private safeId(id: string): string {
+    if (!/^bt\d+$/.test(id)) throw new NotFound(`bug task ${id}`);
+    return id;
+  }
+  /** Artifact names are plain filenames — no separators, no dot-segments. */
+  private safeName(name: string): string {
+    if (!/^[A-Za-z0-9._-]+$/.test(name) || name === "." || name === "..") {
+      throw new Error(`invalid artifact name: ${name}`);
+    }
+    return name;
+  }
+  /** Belt and braces: whatever the joined path resolves to must stay under the task's directory. */
+  private safeArtifactPath(id: string, name: string): string {
+    const base = path.resolve(this.dir(id));
+    const full = path.resolve(base, this.safeName(name));
+    if (full !== base && !full.startsWith(base + path.sep)) {
+      throw new Error(`invalid artifact name: ${name}`);
+    }
+    return full;
+  }
+
+  private file(id: string) { return path.join(this.root, `${this.safeId(id)}.json`); }
+  dir(id: string) { return path.join(this.root, this.safeId(id)); }
 
   list(): BugTask[] { return [...this.tasks.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)); }
   get(id: string): BugTask {
+    this.safeId(id);
     const t = this.tasks.get(id);
     if (!t) throw new NotFound(`bug task ${id}`);
     return t;
@@ -88,10 +111,13 @@ export class BugTaskStore extends EventEmitter {
 
   async writeArtifact(id: string, name: string, data: string): Promise<void> {
     this.get(id);
+    const file = this.safeArtifactPath(id, name);
     await mkdir(this.dir(id), { recursive: true });
-    await writeFile(path.join(this.dir(id), name), data);
+    await writeFile(file, data);
   }
   async readArtifact(id: string, name: string): Promise<string | null> {
-    return readFile(path.join(this.dir(id), name), "utf8").catch(() => null);
+    this.get(id);
+    const file = this.safeArtifactPath(id, name);
+    return readFile(file, "utf8").catch(() => null);
   }
 }
