@@ -10,10 +10,16 @@ import { attachCommand } from "../terminal.js";
 import { listAllSessions, listHistorySessions, getHistorySession, renameSession, takeOverSession, type LiveSession, type HistorySession } from "../sessions.js";
 import os from "node:os";
 import type { Agent, Assignment, Decision, SessionInfo } from "../types.js";
+import type { BugFixEngine } from "../bugfix/engine.js";
+import type { BugTaskStore } from "../bugfix/store.js";
+import type { IntegrationsStore } from "../bugfix/integrations.js";
+import type { TrackerProvider } from "../bugfix/tracker.js";
 
 export interface AppDeps {
   store: Store;
   manager: Manager;
+  /** Bug-fix workflow; absent when the feature is not configured (routes answer 501). */
+  bugs?: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider };
   transcript?: (assignment: Assignment, agent: Agent) => Promise<unknown[]>;
   /** Full, untruncated transcript of a session in a repo. */
   fullTranscript?: (cwd: string, sessionId: string) => Promise<unknown[]>;
@@ -173,6 +179,43 @@ export function createApp(deps: AppDeps) {
     const agent = store.getAgent(asg.agentId);
     res.json(deps.transcript ? await deps.transcript(asg, agent) : []);
   }));
+
+  class NotWired extends Error { status = 501; }
+  const bugs = () => { if (!deps.bugs) throw new NotWired("the bug-fix workflow is not configured"); return deps.bugs; };
+  if (deps.bugs) store.bugTasks = () => deps.bugs!.store.list();
+
+  app.get("/api/bugtasks", wrap((_req, res) => res.json(bugs().store.list())));
+  app.get("/api/bugtasks/:id", wrap((req, res) => res.json(bugs().store.get(req.params.id as string))));
+  app.get("/api/bugtasks/:id/plan", wrap(async (req, res) => {
+    const b = bugs(); b.store.get(req.params.id as string);
+    res.json({ markdown: (await b.store.readArtifact(req.params.id as string, "plan.md")) ?? "" });
+  }));
+  app.get("/api/bugtasks/:id/diff", wrap(async (req, res) => {
+    const b = bugs(); b.store.get(req.params.id as string);
+    res.json(await b.engine.diffFor(req.params.id as string));
+  }));
+  app.post("/api/bugtasks", wrap(async (req, res) => {
+    const { issueRef, repo, mergePolicy, mergeMethod } = req.body ?? {};
+    if (typeof issueRef !== "string" || !issueRef.trim()) throw new BadRequest("issueRef is required");
+    if (typeof repo !== "string" || !path.isAbsolute(repo)) throw new BadRequest("an absolute repo path is required");
+    res.status(201).json(await bugs().engine.intake({ issueRef: issueRef.trim(), repo, mergePolicy, mergeMethod }));
+  }));
+  app.post("/api/bugtasks/:id/approve", wrap(async (req, res) => res.json(await bugs().engine.approve(req.params.id as string))));
+  app.post("/api/bugtasks/:id/cancel", wrap(async (req, res) => res.json(await bugs().engine.cancel(req.params.id as string))));
+  app.post("/api/bugtasks/:id/retry", wrap(async (req, res) => res.json(await bugs().engine.retry(req.params.id as string))));
+  app.post("/api/bugtasks/:id/request-changes", wrap(async (req, res) => {
+    const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+    if (!text) throw new BadRequest("text is required");
+    res.json(await bugs().engine.requestChanges(req.params.id as string, text));
+  }));
+  app.get("/api/bugfix/issues", wrap(async (_req, res) => res.json(await bugs().tracker.listMyIssues())));
+  app.get("/api/bugfix/preflight", wrap(async (req, res) => {
+    const repo = req.query.repo;
+    if (typeof repo !== "string" || !repo) throw new BadRequest("repo is required");
+    res.json(await bugs().engine.preflight(repo));
+  }));
+  app.get("/api/integrations", wrap(async (_req, res) => res.json(await bugs().integrations.read())));
+  app.put("/api/integrations", wrap(async (req, res) => res.json(await bugs().integrations.write(req.body ?? {}))));
 
   app.use("/api", (_req, res) => res.status(404).json({ error: "not found" }));
 

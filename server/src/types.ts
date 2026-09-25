@@ -1,3 +1,5 @@
+import type { BugTask } from "./bugfix/types.js";
+
 export type AgentState = "free" | "working" | "waiting" | "done" | "failed";
 export type AssignmentState = Exclude<AgentState, "free">;
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -64,9 +66,10 @@ export type GridEvent =
   | { type: "assignment"; assignment: Assignment }
   | { type: "roles"; roles: RoleDef[] }
   | { type: "sessions"; sessions: SessionInfo[] }
-  | { type: "session-status"; status: SessionActivity };
+  | { type: "session-status"; status: SessionActivity }
+  | { type: "bugtask"; task: BugTask };
 
-export interface GridState { roles: RoleDef[]; agents: Agent[]; assignments: Assignment[]; liveSessions: SessionInfo[]; sessionStatuses: SessionActivity[] }
+export interface GridState { roles: RoleDef[]; agents: Agent[]; assignments: Assignment[]; liveSessions: SessionInfo[]; sessionStatuses: SessionActivity[]; bugTasks: BugTask[] }
 
 export interface DirEntry { name: string; path: string; isRepo: boolean }
 export interface DirListing { root: string; path: string; parent: string | null; entries: DirEntry[] }
