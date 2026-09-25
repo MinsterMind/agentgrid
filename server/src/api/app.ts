@@ -217,7 +217,7 @@ export function createApp(deps: AppDeps) {
   app.get("/api/bugfix/issues", wrap(async (_req, res) => res.json(await bugs().tracker.listMyIssues())));
   app.get("/api/bugfix/preflight", wrap(async (req, res) => {
     const repo = req.query.repo;
-    if (typeof repo !== "string" || !repo) throw new BadRequest("repo is required");
+    if (typeof repo !== "string" || !path.isAbsolute(repo)) throw new BadRequest("an absolute repo path is required");
     res.json(await bugs().engine.preflight(repo));
   }));
   app.get("/api/integrations", wrap(async (_req, res) => res.json(await bugs().integrations.read())));

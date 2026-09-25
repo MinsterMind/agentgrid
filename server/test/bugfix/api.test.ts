@@ -75,6 +75,12 @@ describe("bug task routes", () => {
     await request(app).get("/api/bugfix/preflight").expect(400);
   });
 
+  it("rejects a non-absolute repo path for preflight, same as it does for POST /api/bugtasks", async () => {
+    const res = await request(app).get("/api/bugfix/preflight").query({ repo: "relative/path" }).expect(400);
+    expect(res.body.error).toMatch(/absolute repo/i);
+    expect(calls).not.toContain("preflight relative/path");
+  });
+
   it("reads and writes integrations", async () => {
     expect((await request(app).get("/api/integrations").expect(200)).body).toEqual({ projectRepos: {} });
     const saved = await request(app).put("/api/integrations").send({ forge: { preset: "github" } }).expect(200);
