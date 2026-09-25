@@ -16,6 +16,13 @@ describe("detectForge", () => {
     expect(detectForge("https://bitbucket.org/acme/pay")).toBeNull();
     expect(detectForge(null)).toBeNull();
   });
+
+  it("does not mistake lookalike hosts for gitlab, and accepts self-hosted gitlab", () => {
+    expect(detectForge("https://gitlab-mirror.example.com/a/b")).toBeNull();
+    expect(detectForge("https://notgitlab.io/a/b")).toBeNull();
+    expect(detectForge("git@gitlab.example.com:a/b.git")).toBe("gitlab");
+    expect(detectForge("https://gitlab.com/a/b")).toBe("gitlab");
+  });
 });
 
 describe("IntegrationsStore", () => {
@@ -44,5 +51,15 @@ describe("IntegrationsStore", () => {
     const { writeFile } = await import("node:fs/promises");
     await writeFile(path.join(home, "integrations.json"), "{ not json");
     expect(await store.read()).toEqual({ projectRepos: {} });
+  });
+
+  it("keeps both patches when two writes race", async () => {
+    await Promise.all([
+      store.write({ tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: {} } }),
+      store.rememberRepo("PAY", "/r/payments"),
+    ]);
+    const after = await store.read();
+    expect(after.tracker?.preset).toBe("jira");
+    expect(after.projectRepos.PAY).toBe("/r/payments");
   });
 });
