@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { api } from "./api";
-import { reducer, initial, assignmentFor, counts, todaySpend, waitingIds, unclaimedLiveSessions, liveSessionFor, activityFor, sessionIdFor } from "./state/reducer";
+import { reducer, initial, assignmentFor, counts, todaySpend, waitingIds, unclaimedLiveSessions, liveSessionFor, activityFor, sessionIdFor, bugTaskFor } from "./state/reducer";
 import { visualOrder } from "./state/sections";
 import { AgentGrid } from "./components/AgentGrid";
 import { SidePanel } from "./components/SidePanel";
@@ -85,14 +85,17 @@ export function App() {
           onSelect={id => dispatch({ type: "select", id })}
           onAssign={(id, prompt) => api.assign(id, prompt).then(() => dispatch({ type: "select", id })).catch(showErr)}
           liveSessions={unclaimedLiveSessions(s)} liveFor={ag => liveSessionFor(s, ag)} activityFor={ag => activityFor(s, ag)}
-          onPullIn={(sid, role, takeover) => api.adoptSession(sid, { role, takeover }).then(a => { dispatch({ type: "select", id: a.id }); if (takeover) setOpenTerminalRequest(n => n + 1); }).catch(showErr)} />
+          onPullIn={(sid, role, takeover) => api.adoptSession(sid, { role, takeover }).then(a => { dispatch({ type: "select", id: a.id }); if (takeover) setOpenTerminalRequest(n => n + 1); }).catch(showErr)}
+          bugStageFor={ag => bugTaskFor(s, ag)?.stage} />
         <SidePanel agent={selected} role={s.roles.find(r => r.name === selected?.role)} assignment={selectedAsg}
           onDecide={decide} onCancel={id => api.cancel(id).catch(showErr)} onAck={id => api.ack(id).catch(showErr)} onOpenTerminal={openTerminal} onTranscript={id => setTranscriptFor(id)} hasSession={!!selected && Object.values(s.assignments).some(a => a.agentId === selected.id && a.sessionId)} terminalSessionId={terminalSessionId} live={selected ? liveSessionFor(s, selected) : null} openTerminalRequest={openTerminalRequest}
           activity={selected ? activityFor(s, selected) : null}
           onSay={(id, text) => api.say(id, text).catch(showErr)}
           onReset={id => api.resetSession(id).catch(showErr)}
           onRenameSession={(sid, title) => api.renameSession(sid, title).catch(showErr)}
-          onDelete={id => api.deleteAgent(id).catch(showErr)} />
+          onDelete={id => api.deleteAgent(id).catch(showErr)}
+          bugTask={selected ? bugTaskFor(s, selected) : null}
+          onBugChanged={t => dispatch({ type: "change", event: { type: "bugtask", task: t } })} />
       </div>
       <footer className="foot">
         <label><input type="checkbox" defaultChecked={settings.notifyWaiting} onChange={e => (settings.notifyWaiting = e.target.checked)} /> notify when someone needs me</label>

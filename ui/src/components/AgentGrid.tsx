@@ -3,13 +3,14 @@ import { SessionTile } from "./SessionTile";
 import { AgentTile } from "./AgentTile";
 import { sectionize } from "../state/sections";
 
-export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, onSelect, onAssign, liveSessions = [], liveFor, activityFor, onPullIn }: {
+export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, onSelect, onAssign, liveSessions = [], liveFor, activityFor, onPullIn, bugStageFor }: {
   agents: Agent[]; roles: RoleDef[]; assignments: Record<string, Assignment>; selectedId: string | null;
   recentFor: (agentId: string) => string[]; onSelect: (id: string) => void; onAssign: (id: string, prompt: string) => void;
   /** Live sessions with no tile yet. */ liveSessions?: SessionInfo[];
   /** Live session bound to an adopted agent, if its process is running. */ liveFor?: (agent: Agent) => SessionInfo | null;
   activityFor?: (agent: Agent) => SessionActivity | null;
   onPullIn?: (sessionId: string, role: string, takeover: boolean) => Promise<void>;
+  /** Stage of an agent's in-flight bug-fix task, if any. */ bugStageFor?: (agent: Agent) => string | undefined;
 }) {
   const sections = sectionize(agents);
   let index = 0;
@@ -22,7 +23,7 @@ export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, o
             {sec.agents.map(agent => (
               <AgentTile key={agent.id} agent={agent} index={index++} role={roles.find(r => r.name === agent.role)}
                 assignment={agent.currentAssignmentId ? assignments[agent.currentAssignmentId] ?? null : null}
-                selected={agent.id === selectedId} recent={recentFor(agent.id)} onSelect={onSelect} onAssign={onAssign} live={liveFor?.(agent) ?? null} activity={activityFor?.(agent) ?? null} />
+                selected={agent.id === selectedId} recent={recentFor(agent.id)} onSelect={onSelect} onAssign={onAssign} live={liveFor?.(agent) ?? null} activity={activityFor?.(agent) ?? null} bugStage={bugStageFor?.(agent)} />
             ))}
           </div>
         </section>

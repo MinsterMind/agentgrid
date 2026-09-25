@@ -1,7 +1,8 @@
 import { Suspense, lazy, useEffect, useState } from "react";
-import type { Agent, Assignment, Decision, MemoryFile, RoleDef, SessionInfo, SessionActivity } from "../types";
+import type { Agent, Assignment, BugTask, Decision, MemoryFile, RoleDef, SessionInfo, SessionActivity } from "../types";
 import { api } from "../api";
 import { PendingPrompt } from "./PendingPrompt";
+import { BugPanel } from "./BugPanel";
 const TerminalPane = lazy(() => import("./TerminalPane").then(m => ({ default: m.TerminalPane })));
 import { elapsed, usd } from "../format";
 
@@ -17,7 +18,7 @@ function fallbackCopy(text: string): void {
   document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); } catch { /* ignore */ } ta.remove();
 }
 
-export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, onOpenTerminal, onTranscript, onDelete, hasSession, terminalSessionId, live, openTerminalRequest, activity, onSay, onReset, onRenameSession }: {
+export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, onOpenTerminal, onTranscript, onDelete, hasSession, terminalSessionId, live, openTerminalRequest, activity, onSay, onReset, onRenameSession, bugTask, onBugChanged }: {
   agent: Agent | null; role: RoleDef | undefined; assignment: Assignment | null;
   onDecide: (agentId: string, toolUseId: string, d: Decision) => void; onCancel: (id: string) => void; onAck: (id: string) => void; onOpenTerminal: (id: string) => void; onTranscript?: (id: string) => void; onDelete: (id: string) => void; hasSession?: boolean;
   /** Session the Terminal tab would open; null when the agent has none yet. */ terminalSessionId?: string | null;
@@ -27,6 +28,8 @@ export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, 
   onSay?: (id: string, text: string) => Promise<unknown>;
   onReset?: (id: string) => Promise<unknown>;
   onRenameSession?: (sessionId: string, title: string) => Promise<unknown>;
+  /** In-flight bug-fix task for the selected agent, if any. */ bugTask?: BugTask | null;
+  onBugChanged?: (t: BugTask) => void;
 }) {
   const [feed, setFeed] = useState<Entry[]>([]); const [memory, setMemory] = useState<MemoryFile[]>([]);
   const [tab, setTab] = useState<"details" | "terminal">("details"); const [wide, setWide] = useState(false);
@@ -80,6 +83,7 @@ export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, 
           <button className="btn p sm" type="submit">Save</button><button className="btn sm" type="button" onClick={() => setRenaming(null)}>Cancel</button>
         </form>
       )}</div></div>
+      {bugTask && <BugPanel task={bugTask} onChanged={t => onBugChanged?.(t)} />}
       {activity && (
         <div className={`status ${activity.phase}`} data-testid="session-status">
           <div className="st-head"><span className={`dot ${activity.phase}`} />
