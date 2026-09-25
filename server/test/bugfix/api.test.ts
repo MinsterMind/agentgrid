@@ -105,6 +105,17 @@ describe("bug task routes", () => {
     expect((await request(app).get("/api/integrations")).body.forge).toBeUndefined();
   });
 
+  it("rejects a malformed tracker on PUT /api/integrations, and accepts a well-formed one", async () => {
+    await request(app).put("/api/integrations").send({ tracker: "garbage" }).expect(400);
+    await request(app).put("/api/integrations").send({ tracker: 42 }).expect(400);
+    expect((await request(app).get("/api/integrations")).body.tracker).toBeUndefined();
+
+    const tracker = { preset: "jira", toolPrefix: "mcp__jira__", mcpServers: { jira: { command: "x" } }, hints: "h" };
+    const saved = await request(app).put("/api/integrations").send({ tracker }).expect(200);
+    expect(saved.body.tracker).toEqual(tracker);
+    expect((await request(app).get("/api/integrations")).body.tracker).toEqual(tracker);
+  });
+
   it("returns 501 for every bug route when the feature is not wired", async () => {
     const store = new Store(home, path.resolve("roles")); await store.init();
     const bare = createApp({ store, manager: new Manager(store, { queryFn: makeFakeQuery().queryFn }) });

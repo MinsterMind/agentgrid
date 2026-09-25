@@ -227,7 +227,28 @@ export function createApp(deps: AppDeps) {
     // deliberately dropped rather than persisted (same "pick the fields you accept"
     // convention POST /api/agents already uses), not silently merged onto disk.
     const patch: { tracker?: unknown; forge?: unknown } = {};
-    if (body.tracker !== undefined) patch.tracker = body.tracker;
+    if (body.tracker !== undefined) {
+      const tracker = body.tracker;
+      if (!tracker || typeof tracker !== "object" || Array.isArray(tracker)) {
+        throw new BadRequest("tracker must be an object");
+      }
+      // `preset` is deliberately not enum-checked: it's a free-form lookup key into
+      // presets/tracker/<preset>.md, not a fixed set like forge's. Every other field on
+      // TrackerConfig is checked for shape when present; unknown keys are dropped, same
+      // as the rest of this body.
+      if (tracker.preset !== undefined && typeof tracker.preset !== "string") throw new BadRequest("tracker.preset must be a string");
+      if (tracker.toolPrefix !== undefined && typeof tracker.toolPrefix !== "string") throw new BadRequest("tracker.toolPrefix must be a string");
+      if (tracker.mcpServers !== undefined && (typeof tracker.mcpServers !== "object" || tracker.mcpServers === null || Array.isArray(tracker.mcpServers))) {
+        throw new BadRequest("tracker.mcpServers must be an object");
+      }
+      if (tracker.hints !== undefined && typeof tracker.hints !== "string") throw new BadRequest("tracker.hints must be a string");
+      const t: Record<string, unknown> = {};
+      if (tracker.preset !== undefined) t.preset = tracker.preset;
+      if (tracker.toolPrefix !== undefined) t.toolPrefix = tracker.toolPrefix;
+      if (tracker.mcpServers !== undefined) t.mcpServers = tracker.mcpServers;
+      if (tracker.hints !== undefined) t.hints = tracker.hints;
+      patch.tracker = t;
+    }
     if (body.forge !== undefined) {
       const forge = body.forge;
       if (!forge || typeof forge !== "object" || !FORGE_PRESETS.includes(forge.preset)) {
