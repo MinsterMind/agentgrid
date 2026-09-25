@@ -94,7 +94,7 @@ export class BugTaskStore extends EventEmitter {
   async create(input: CreateBugTask): Promise<BugTask> {
     const now = new Date().toISOString();
     const task: BugTask = {
-      id: `bt${this.next++}`, ...input, stage: "intake", gate: null, pr: null,
+      id: `bt${this.next++}`, ...input, stage: "intake", gate: null, approvedHead: null, pr: null,
       costUsd: 0, history: [{ stage: "intake", at: now, note: "" }], error: null,
       createdAt: now, updatedAt: now,
     };

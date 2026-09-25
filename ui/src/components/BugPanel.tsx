@@ -122,6 +122,9 @@ export function BugPanel({ task, onChanged }: { task: BugTask; onChanged: (t: Bu
       {gate === "diff" && (
         <div className="gate" data-testid="gate-diff">
           <h4>Diff review</h4>
+          {/* The diff above is a live `git diff`; this is the commit the server pinned when the
+              gate opened, and the one it will insist on before pushing. */}
+          {task.approvedHead && <p className="hint" data-testid="diff-commit">Reviewing commit {task.approvedHead.slice(0, 7)}</p>}
           {diffErr && <div className="err">{diffErr}</div>}
           <div className="row" data-testid="diff-summary">
             <b>{diff ? `${diff.files.length} files` : diffErr ? "Failed to load" : "Loading…"}</b>

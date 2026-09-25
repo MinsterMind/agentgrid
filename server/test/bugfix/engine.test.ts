@@ -18,7 +18,7 @@ import type { QueryFn } from "../../src/runner/runner.js";
 const ISSUE: TrackerIssue = { key: "PAY-42", title: "Boom", url: "https://x/PAY-42", status: "Open", priority: "High", description: "d", acceptanceCriteria: [] };
 
 /** Fake git: records calls, pretends a worktree and commits exist. */
-function fakeGit(state: { commits: number }) {
+function fakeGit(state: { commits: number; head?: string }) {
   const calls: string[] = [];
   const g = new GitOps(async () => "");
   g.defaultBranch = async () => "main";
@@ -26,6 +26,7 @@ function fakeGit(state: { commits: number }) {
   g.createWorktree = async (repo, branch) => { calls.push(`create ${branch}`); const d = path.join(repo, ".worktrees", branch.replace("/", "-")); await mkdir(d, { recursive: true }); return d; };
   g.removeWorktree = async () => { calls.push("remove"); };
   g.currentBranch = async () => "bugfix/PAY-42";
+  g.revParse = async () => state.head ?? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   g.commitsAhead = async () => state.commits;
   g.diff = async () => ({ patch: "diff --git a/a b/a\n+x\n", files: [{ path: "a", additions: 1, deletions: 0 }], additions: 1, deletions: 0 });
   return { git: g, calls };
@@ -39,7 +40,7 @@ const forge = {
 };
 
 let home: string; let repo: string; let store: Store; let bugs: BugTaskStore; let fake: ReturnType<typeof makeFakeQuery>;
-let engine: BugFixEngine; let comments: Array<[string, string]>; let gitState: { commits: number };
+let engine: BugFixEngine; let comments: Array<[string, string]>; let gitState: { commits: number; head?: string };
 
 beforeEach(async () => {
   home = await mkdtemp(path.join(tmpdir(), "eng-home-"));
@@ -632,3 +633,48 @@ describe("an assignment that dies after the dispatch map is written is caught by
     expect(retried.stage).toBe("analyzing");
   });
 });
+
+/**
+ * I2: the diff card shows a LIVE `git diff`, and `opening-pr` used to check only that the branch
+ * differed from base and had commits — so an agent that amended or added a commit between the
+ * human's approval and the push opened a PR nobody approved, and the server called that verified.
+ */
+describe("the approved commit is pinned", () => {
+  const toDiffGate = async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "# Plan");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    await engine.approve(t.id);
+    gitState.commits = 1;
+    await finishStage(); await until(() => bugs.get(t.id).stage === "diff-review");
+    return t;
+  };
+
+  it("records the HEAD commit when the diff gate opens", async () => {
+    gitState.head = "1111111111111111111111111111111111111111";
+    const t = await toDiffGate();
+    expect(bugs.get(t.id).approvedHead).toBe("1111111111111111111111111111111111111111");
+  });
+
+  it("fails opening-pr, naming both commits, when HEAD moved after the approval", async () => {
+    gitState.head = "1111111111111111111111111111111111111111";
+    const t = await toDiffGate();
+    const dispatched = fake.calls.length;
+    gitState.head = "2222222222222222222222222222222222222222";   // the agent amended/added a commit
+    await engine.approve(t.id);
+    await until(() => bugs.get(t.id).stage === "failed");
+    const err = bugs.get(t.id).error ?? "";
+    expect(err).toContain("1111111111111111111111111111111111111111");
+    expect(err).toContain("2222222222222222222222222222222222222222");
+    expect(err).toMatch(/approved/i);
+    expect(fake.calls.length).toBe(dispatched);   // and no open-pr assignment was ever dispatched
+  });
+
+  it("lets opening-pr through when HEAD is still the approved commit", async () => {
+    gitState.head = "1111111111111111111111111111111111111111";
+    const t = await toDiffGate();
+    await engine.approve(t.id);
+    await finishStage(); await until(() => bugs.get(t.id).stage === "monitoring");
+  });
+});
+

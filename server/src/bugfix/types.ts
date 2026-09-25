@@ -35,6 +35,9 @@ export interface BugTask {
   gate: { kind: GateKind; openedAt: string } | null;
   mergePolicy: "ask" | "auto";
   mergeMethod: "squash" | "merge" | "rebase";
+  /** The commit HEAD pointed at when the diff gate opened — i.e. exactly what the human
+   *  approved. `opening-pr` refuses to run unless HEAD is still this commit. */
+  approvedHead: string | null;
   pr: PrInfo | null;
   costUsd: number;
   history: Array<{ stage: BugStage; at: string; note: string }>;

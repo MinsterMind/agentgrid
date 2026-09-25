@@ -218,6 +218,14 @@ export class BugFixEngine {
       if (!forge) throw new Error("no forge configured — cannot open a pull request");
       if (task.branch === task.baseBranch) throw new Error(`refusing to push the default branch (${task.baseBranch})`);
       if ((await this.deps.git.commitsAhead(task.worktree, task.baseBranch)) === 0) throw new Error("no commits to open a pull request with");
+      // The human approved a specific commit at the diff gate. If the agent amended or added
+      // one since, the PR would contain code nobody reviewed — and the old branch/commits-ahead
+      // checks would have waved it through. Fail loudly, naming both commits.
+      if (!task.approvedHead) throw new Error("no approved commit recorded for this task — re-run the implement stage so the diff can be reviewed again");
+      const head = await this.deps.git.revParse(task.worktree);
+      if (head !== task.approvedHead) {
+        throw new Error(`the branch moved since the diff was approved: approved ${task.approvedHead}, HEAD is now ${head}. Review the new diff (request changes, then approve again) before opening a pull request.`);
+      }
     }
     const prompt = await renderStagePrompt(stage, task, ctx, this.deps.presetsDir);
     this.pendingNote.delete(task.id);
@@ -323,6 +331,9 @@ export class BugFixEngine {
       if (branch !== task.branch) throw new Error(`worktree is on ${branch}, not the task branch ${task.branch}`);
       if ((await git.commitsAhead(task.worktree, task.baseBranch)) === 0) throw new Error("no commits on the task branch");
       const diff = await git.diff(task.worktree, task.baseBranch);
+      // Pin what the human is about to approve. The diff card renders a LIVE `git diff`, so
+      // without this there is nothing tying the reviewed change to the commit that gets pushed.
+      await bugs.patch(task.id, { approvedHead: await git.revParse(task.worktree) });
       await bugs.writeArtifact(task.id, "diff.patch", diff.patch);
       await bugs.writeArtifact(task.id, "diffstat.json", JSON.stringify({ files: diff.files, additions: diff.additions, deletions: diff.deletions }, null, 2));
       return;

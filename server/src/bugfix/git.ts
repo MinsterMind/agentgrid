@@ -53,6 +53,12 @@ export class GitOps {
     }
   }
 
+  /** The exact commit a ref points at — the evidence that pins what a human approved to
+   *  what actually gets pushed. */
+  async revParse(dir: string, rev = "HEAD"): Promise<string> {
+    return (await this.run(dir, ["rev-parse", rev])).trim();
+  }
+
   async currentBranch(dir: string): Promise<string> {
     return (await this.run(dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
   }

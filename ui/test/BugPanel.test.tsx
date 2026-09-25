@@ -248,4 +248,15 @@ describe("BugPanel", () => {
     expect(screen.getByText(/ui package line/)).toBeInTheDocument();
     expect(screen.queryByText(/root package line/)).not.toBeInTheDocument();
   });
+
+  it("names the commit the diff gate pinned, and shows nothing when none was recorded", async () => {
+    const { unmount } = render(<BugPanel task={task("diff-review", { approvedHead: "1234567890abcdef1234567890abcdef12345678" })} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId("diff-commit")).toHaveTextContent("1234567"));
+    expect(screen.getByTestId("diff-commit")).not.toHaveTextContent("1234567890abcdef");
+    unmount();
+    render(<BugPanel task={task("diff-review")} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId("diff-summary")).toBeInTheDocument());
+    expect(screen.queryByTestId("diff-commit")).not.toBeInTheDocument();
+  });
 });
+

@@ -47,6 +47,17 @@ describe("GitOps", () => {
     expect(d.patch).toContain("+two");
   });
 
+  it("reports the exact commit HEAD points at", async () => {
+    const head = await git.revParse(repo);
+    expect(head).toMatch(/^[0-9a-f]{40}$/);
+    expect(head).toBe((await sh(repo, ["rev-parse", "HEAD"])).trim());
+    const wt = await git.createWorktree(repo, "bugfix/PAY-42", "main");
+    expect(await git.revParse(wt)).toBe(head);            // same commit, new branch
+    await appendFile(path.join(wt, "a.txt"), "two\n");
+    await sh(wt, ["add", "."]); await sh(wt, ["commit", "-m", "fix"]);
+    expect(await git.revParse(wt)).not.toBe(head);        // and it moves with a commit
+  });
+
   it("reports the origin remote, or null when there is none", async () => {
     expect(await git.hasRemote(repo)).toBeNull();
     await sh(repo, ["remote", "add", "origin", "git@github.com:acme/payments.git"]);
