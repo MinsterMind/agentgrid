@@ -104,6 +104,71 @@ describe("PrWatcher", () => {
     expect(spy).toHaveBeenCalledTimes(4);
   });
 
+  it("reports a head move even when lastSeenEventAt doesn't change, since no event represents a push", async () => {
+    const { bugs } = await monitoringTask();
+    const { found, onFinding } = collect();
+    // Same lastSeenEventAt as the stored PR (pr()'s default) — only headSha differs, as if
+    // the forge's updatedAt didn't move but the branch head did.
+    const forge = forgeWith([{ found: pr({ headSha: "def456" }) }]);
+    const w = new PrWatcher({ bugs, forge, onFinding, now: () => 0, jitter: ms => ms });
+    await w.poll();
+    expect(found).toHaveLength(1);
+    expect(found[0].pr?.headSha).toBe("def456");
+  });
+
+  it("keeps backing off through a bare lastSeenEventAt bump with no state change (bot noise)", async () => {
+    const { bugs } = await monitoringTask();
+    const { found, onFinding } = collect();
+    let clock = 0;
+    let tick = 0;
+    // Every call bumps lastSeenEventAt (as a bot comment would) but never touches any state
+    // field — checks/reviewDecision/mergeable/state/headSha all stay exactly as stored.
+    const forge: ForgeAdapter = {
+      name: "fake", authStatus: async () => ({ ok: true, message: "" }), createPrCommand: () => "",
+      findPr: async () => null, merge: async () => ({ ok: true, message: "merged" }),
+      getPr: async () => ({ found: pr({ lastSeenEventAt: `2026-09-26T09:${String(30 + tick++).padStart(2, "0")}:00Z` }) }),
+      listReviewEvents: async () => [],
+    };
+    const spy = vi.spyOn(forge, "getPr");
+    const w = new PrWatcher({ bugs, forge, onFinding, now: () => clock, jitter: ms => ms, baseMs: 100, ceilingMs: 400 });
+
+    await w.poll();                    // tick1 at t=0: reported (timestamp moved), backoff still grows
+    expect(spy).toHaveBeenCalledTimes(1);
+    clock = 100; await w.poll();       // due at base
+    expect(spy).toHaveBeenCalledTimes(2);
+    clock = 200; await w.poll();       // NOT due — interval kept doubling to 200 despite two "changes"
+    expect(spy).toHaveBeenCalledTimes(2);
+    clock = 300; await w.poll();
+    expect(spy).toHaveBeenCalledTimes(3);
+    // Every tick still produced a finding (the card needs the fresh lastSeenEventAt) —
+    // reporting and backoff-reset are decided independently.
+    expect(found.length).toBe(3);
+    expect(found.every(f => f.event === null)).toBe(true);
+  });
+
+  it("snaps an elevated interval back to base on a genuine state change, not just any change", async () => {
+    const { bugs } = await monitoringTask();
+    const { found, onFinding } = collect();
+    let clock = 0;
+    const forge = forgeWith([
+      { found: pr() },                                                              // no change
+      { found: pr() },                                                              // no change again: interval keeps doubling
+      { found: pr({ checks: "FAILURE", lastSeenEventAt: "2026-09-26T09:30:00Z" }) }, // genuine state change
+    ]);
+    const spy = vi.spyOn(forge, "getPr");
+    const w = new PrWatcher({ bugs, forge, onFinding, now: () => clock, jitter: ms => ms, baseMs: 100, ceilingMs: 400 });
+
+    await w.poll();                    // t=0: no change, dueAt=100, interval grows to 200
+    clock = 100; await w.poll();       // due; no change, dueAt=300, interval grows to 400
+    clock = 300; await w.poll();       // due; state change -> checks-failed, resets to base
+    expect(spy).toHaveBeenCalledTimes(3);
+    expect(found.at(-1)?.event).toMatchObject({ type: "checks-failed" });
+    clock = 399; await w.poll();       // not due yet if truly reset to base (400), not the elevated 700
+    expect(spy).toHaveBeenCalledTimes(3);
+    clock = 400; await w.poll();       // due exactly at base — proves the snap-back, not the elevated interval
+    expect(spy).toHaveBeenCalledTimes(4);
+  });
+
   it("treats an unreadable forge as no information: no event, and a warning after three failures", async () => {
     const { bugs } = await monitoringTask();
     const { found, onFinding } = collect();

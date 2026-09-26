@@ -2,7 +2,15 @@ import { WATCHED_STAGES, type BugEvent, type BugTask, type PrInfo } from "./type
 import type { BugTaskStore } from "./store.js";
 import type { ForgeAdapter, ReviewEvent } from "./forge/types.js";
 
-export interface PrFinding { taskId: string; pr: PrInfo | null; event: BugEvent | null; unavailable?: string }
+export interface PrFinding {
+  taskId: string;
+  /** Latest view, for the card. Null only when the PR itself is gone (`lookup.found === null`);
+   *  an unreadable forge instead keeps and reports the last known view — no information is
+   *  never allowed to read as "the PR vanished". */
+  pr: PrInfo | null;
+  event: BugEvent | null;            // the transition to apply, if any
+  unavailable?: string;              // set when the forge could not be read
+}
 
 export interface WatcherDeps {
   bugs: BugTaskStore;
@@ -16,6 +24,14 @@ export interface WatcherDeps {
 }
 
 interface Backoff { dueAt: number; intervalMs: number; failures: number; warned: boolean }
+
+/** Fields whose change is "interesting": it either feeds `decide()` directly, or (headSha)
+ *  is the only proof a push actually landed — no ReviewEvent kind represents one. A bare
+ *  `lastSeenEventAt` bump with none of these different is comment/timestamp noise. */
+function statesDiffer(pr: PrInfo, prev: PrInfo): boolean {
+  return pr.state !== prev.state || pr.reviewDecision !== prev.reviewDecision
+    || pr.checks !== prev.checks || pr.mergeable !== prev.mergeable || pr.headSha !== prev.headSha;
+}
 
 /** How a human describes what reviewers said, for the agent's prompt. */
 function describeComments(events: ReviewEvent[]): string {
@@ -91,13 +107,20 @@ export class PrWatcher {
     }
 
     const pr = lookup.found;
-    const changed = pr.lastSeenEventAt !== task.pr!.lastSeenEventAt
-      || pr.state !== task.pr!.state || pr.reviewDecision !== task.pr!.reviewDecision
-      || pr.checks !== task.pr!.checks || pr.mergeable !== task.pr!.mergeable;
-    this.schedule(task.id, b, changed);
-    if (!changed) return;
+    const prev = task.pr!;
+    // Anything different at all is worth a card update. But a bare `lastSeenEventAt` bump —
+    // a bot commenting on every CI run, say — must not by itself hold the interval at base:
+    // that field alone says "something happened", not "something that matters happened".
+    const stateChanged = statesDiffer(pr, prev);
+    const anyChange = pr.lastSeenEventAt !== prev.lastSeenEventAt || stateChanged;
+    if (!anyChange) { this.schedule(task.id, b, false); return; }
 
-    await this.deps.onFinding({ taskId: task.id, pr, event: await this.decide(task, pr, forge) });
+    const event = await this.decide(task, pr, forge);
+    // Reset to base only when the tick produced an event, or the change was to a state field.
+    // A bot-driven timestamp bump with no event and no state change still gets reported —
+    // the card needs the latest `lastSeenEventAt` — but the backoff keeps growing regardless.
+    this.schedule(task.id, b, event !== null || stateChanged);
+    await this.deps.onFinding({ taskId: task.id, pr, event });
   }
 
   /** Order matters: a conflicting PR cannot be merged, so conflict outranks an approval. */
