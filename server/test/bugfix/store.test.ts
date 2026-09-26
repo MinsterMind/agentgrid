@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { BugTaskStore } from "../../src/bugfix/store.js";
@@ -24,9 +24,20 @@ describe("BugTaskStore", () => {
     const t = await mk();
     expect(t.id).toBe("bt1");
     expect(t).toMatchObject({ stage: "intake", gate: null, pr: null, error: null, costUsd: 0 });
+    expect(t.feedbackRounds).toBe(0);
     expect(JSON.parse(await readFile(path.join(home, "bugtasks", "bt1.json"), "utf8"))).toEqual(t);
     expect(events).toEqual([{ type: "bugtask", task: t }]);
     expect((await mk()).id).toBe("bt2");
+  });
+
+  it("normalises a task written before feedbackRounds existed to 0 on load", async () => {
+    const t = await mk();
+    const raw = JSON.parse(await readFile(path.join(home, "bugtasks", `${t.id}.json`), "utf8"));
+    delete raw.feedbackRounds;
+    await writeFile(path.join(home, "bugtasks", `${t.id}.json`), JSON.stringify(raw));
+    const reloaded = new BugTaskStore(home);
+    await reloaded.init();
+    expect(reloaded.get(t.id).feedbackRounds).toBe(0);
   });
 
   it("reloads from disk and continues the id counter", async () => {

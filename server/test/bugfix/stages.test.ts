@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { nextStage } from "../../src/bugfix/stages.js";
-import type { BugStage, BugTask } from "../../src/bugfix/types.js";
+import type { BugEvent, BugStage, BugTask } from "../../src/bugfix/types.js";
 
 const task = (stage: BugStage, extra: Partial<BugTask> = {}): BugTask => ({
   id: "bt1",
   issue: { key: "PAY-1", title: "t", url: "u", status: "Open", priority: "High", description: "d", acceptanceCriteria: [] },
   trackerProject: "PAY", sourceRepo: "/r", worktree: "/r/.worktrees/bugfix-PAY-1", branch: "bugfix/PAY-1",
   baseBranch: "main", agentId: "bugfix@r", stage, gate: null, mergePolicy: "ask", mergeMethod: "squash",
-  pr: null, costUsd: 0, history: [], error: null, createdAt: "", updatedAt: "", ...extra,
+  pr: null, costUsd: 0, history: [], error: null, createdAt: "", updatedAt: "", feedbackRounds: 0, ...extra,
 });
 
 describe("nextStage — happy path through Phase 1", () => {
@@ -104,8 +104,16 @@ describe("Phase 2: the monitoring loop", () => {
   });
 
   it("refuses a monitoring event anywhere but monitoring", () => {
-    expect(() => nextStage(at("implementing"), { type: "review-approved" })).toThrow(/only while monitoring/i);
-    expect(() => nextStage(at("diff-review"), { type: "conflicting" })).toThrow(/only while monitoring/i);
+    const events: BugEvent[] = [
+      { type: "review-changes-requested", comments: "x" },
+      { type: "checks-failed", checks: "x" },
+      { type: "review-approved" },
+      { type: "conflicting" },
+      { type: "pr-closed" },
+    ];
+    for (const event of events) {
+      expect(() => nextStage(at("implementing"), event)).toThrow(/only while monitoring/i);
+    }
   });
 });
 

@@ -47,9 +47,10 @@ export interface BugTask {
   createdAt: string;
   updatedAt: string;
   /** Incremented when a review-feedback stage is dispatched. Durable, so a restart cannot
-   *  reset a task's budget against the cap. Tasks persisted before this field existed read
-   *  back as `undefined` — never assume it is a number without checking. */
-  feedbackRounds: number | undefined;
+   *  reset a task's budget against the cap. Tasks persisted before this field existed are
+   *  normalised to 0 in `BugTaskStore.init` — the one place old records enter the system —
+   *  so every consumer here can treat it as an honest `number`. */
+  feedbackRounds: number;
 }
 
 export type BugEvent =

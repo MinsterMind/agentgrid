@@ -48,6 +48,9 @@ export class BugTaskStore extends EventEmitter {
     await mkdir(this.root, { recursive: true });
     for (const f of (await readdir(this.root)).filter(f => f.endsWith(".json"))) {
       const t = JSON.parse(await readFile(path.join(this.root, f), "utf8")) as BugTask;
+      // Records written before this field existed load without it — normalise here, the one
+      // place old records enter the system, same as Phase 1 did for `approvedHead`.
+      t.feedbackRounds ??= 0;
       this.tasks.set(t.id, t);
       const n = Number(t.id.slice(2));
       if (n >= this.next) this.next = n + 1;
