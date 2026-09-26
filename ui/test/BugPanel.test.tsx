@@ -306,12 +306,26 @@ describe("the labelled diff gate", () => {
 });
 
 describe("the merge gate", () => {
-  it("merges with the shown method and refuses while the diff has not loaded", async () => {
+  it("merges with the shown method", async () => {
     render(<BugPanel task={atGate("approved", { kind: "merge", openedAt: "t" })} onChanged={() => {}} />);
     const select = screen.getByLabelText(/merge method/i);
     await userEvent.selectOptions(select, "merge");
     await userEvent.click(screen.getByRole("button", { name: /^Merge/ }));
     expect(approveBug).toHaveBeenCalledWith("bt1", "merge");
+  });
+
+  it("resets the selected merge method when the panel is repointed at a different task", async () => {
+    // SidePanel keeps one BugPanel mounted across the whole sidebar's lifetime and just
+    // re-renders it with a new `task` prop on selection change — no `key`, no remount — so
+    // this simulates that exact case: the same mounted component, a different task's props.
+    const taskA = atGate("approved", { kind: "merge", openedAt: "t" }, { id: "bt1", mergeMethod: "squash" });
+    const taskB = atGate("approved", { kind: "merge", openedAt: "t" }, { id: "bt2", mergeMethod: "merge" });
+    const { rerender } = render(<BugPanel task={taskA} onChanged={() => {}} />);
+    expect(screen.getByLabelText(/merge method/i)).toHaveValue("squash");
+    rerender(<BugPanel task={taskB} onChanged={() => {}} />);
+    expect(screen.getByLabelText(/merge method/i)).toHaveValue("merge");
+    await userEvent.click(screen.getByRole("button", { name: /^Merge/ }));
+    expect(approveBug).toHaveBeenCalledWith("bt2", "merge");
   });
 });
 
@@ -324,16 +338,36 @@ describe("the done card", () => {
     expect(dismissBug).toHaveBeenCalledWith("bt1");
   });
 
-  it("shows what cleanup left behind, on its own lines", () => {
-    render(<BugPanel task={done({ error: "worktree cleanup incomplete: …\n  git -C /r worktree remove --force /r/.worktrees/bugfix-W-1" })} onChanged={() => {}} />);
-    const lines = screen.getAllByText(/git -C \/r/);
-    expect(lines).toHaveLength(1);
+  it("shows what cleanup left behind, each command on its own element, and stays a merged outcome", () => {
+    const { container } = render(<BugPanel task={done({ error: "worktree cleanup incomplete: …\n  git -C /r worktree remove --force /r/.worktrees/bugfix-W-1\n  git -C /r branch -D bugfix/PAY-42" })} onChanged={() => {}} />);
+    // The heading must stay "Merged" — this fixture's `pr.state` is "MERGED" (from `done()`),
+    // and the error text deliberately does NOT match the old literal ("the pull request was
+    // closed without merging"), so this would fail if the classification ever went back to
+    // matching prose instead of `pr.state`.
+    expect(screen.getByText("Merged")).toBeInTheDocument();
+    const errBlock = container.querySelector(".outcome.err");
+    const lines = errBlock ? Array.from(errBlock.children) : [];
+    // Three lines in the source text must be three separate elements — not one collapsed
+    // text node, which `getByText`/`getNodeText` would match either way.
+    expect(lines).toHaveLength(3);
+    expect(lines[1]).toHaveTextContent(/git -C \/r worktree remove --force/);
+    expect(lines[2]).toHaveTextContent(/git -C \/r branch -D/);
   });
 
-  it("shows a PR closed without merging as not-a-success", () => {
-    render(<BugPanel task={done({ pr: null, error: "the pull request was closed without merging" })} onChanged={() => {}} />);
-    expect(screen.getAllByText(/closed without merging/i).length).toBeGreaterThan(0);
-    expect(screen.queryByText(/^merged$/i)).not.toBeInTheDocument();
+  it("shows a PR closed without merging as not-a-success, by the PR's own state — not by matching the error's wording", () => {
+    // Same error-shaped string a copy-edit could produce, but `pr.state` never reached
+    // "MERGED" (a pr-closed ending doesn't set it) — this must still read as a failure.
+    render(<BugPanel task={done({ pr: null, error: "closed without a merge, per the forge" })} onChanged={() => {}} />);
+    expect(screen.getByText("Closed without merging")).toBeInTheDocument();
+    expect(screen.getByText(/closed without a merge, per the forge/)).toBeInTheDocument();
+    expect(screen.queryByText("Merged")).not.toBeInTheDocument();
+  });
+
+  it("offers a transcript link when the host provides one", async () => {
+    const onTranscript = vi.fn();
+    render(<BugPanel task={done()} onChanged={() => {}} onTranscript={onTranscript} />);
+    await userEvent.click(screen.getByRole("button", { name: /Transcript/i }));
+    expect(onTranscript).toHaveBeenCalledWith("bugfix@r");
   });
 });
 

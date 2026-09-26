@@ -83,7 +83,7 @@ export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, 
           <button className="btn p sm" type="submit">Save</button><button className="btn sm" type="button" onClick={() => setRenaming(null)}>Cancel</button>
         </form>
       )}</div></div>
-      {bugTask && <BugPanel task={bugTask} onChanged={t => onBugChanged?.(t)} />}
+      {bugTask && <BugPanel task={bugTask} onChanged={t => onBugChanged?.(t)} onTranscript={onTranscript} />}
       {activity && (
         <div className={`status ${activity.phase}`} data-testid="session-status">
           <div className="st-head"><span className={`dot ${activity.phase}`} />

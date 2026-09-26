@@ -54,7 +54,7 @@ function PrChips({ pr }: { pr: PrInfo }) {
   );
 }
 
-export function BugPanel({ task, onChanged }: { task: BugTask; onChanged: (t: BugTask) => void }) {
+export function BugPanel({ task, onChanged, onTranscript }: { task: BugTask; onChanged: (t: BugTask) => void; onTranscript?: (agentId: string) => void }) {
   const [plan, setPlan] = useState<string | null>(null);
   const [planErr, setPlanErr] = useState<string | null>(null);
   const [diff, setDiff] = useState<DiffData | null>(null);
@@ -65,6 +65,13 @@ export function BugPanel({ task, onChanged }: { task: BugTask; onChanged: (t: Bu
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [mergeMethod, setMergeMethod] = useState<MergeMethod>(task.mergeMethod);
+  // The select's own override, only — it must NOT track every prop update (an SSE-refreshed
+  // `task` for the SAME task shouldn't clobber what the human just picked), but it MUST reset
+  // when the panel is repointed at a DIFFERENT task: SidePanel keeps one BugPanel mounted
+  // across the whole sidebar's lifetime and re-renders it with a new `task` prop on selection
+  // change, with no `key` to force a remount — so without this, switching from task A to task
+  // B while A's method is still selected would merge B with A's method.
+  useEffect(() => { setMergeMethod(task.mergeMethod); }, [task.id]);
 
   // The freshest task prop the parent has handed us, kept outside render so an in-flight
   // 409 refetch can compare against the CURRENT props when it resolves, not the ones captured
@@ -248,22 +255,27 @@ export function BugPanel({ task, onChanged }: { task: BugTask; onChanged: (t: Bu
       )}
 
       {task.stage === "done" && (() => {
-        // A `done` task with an error isn't automatically a failure: "the pull request was
-        // closed without merging" (from `pr-closed`) genuinely is one, but any other error on
-        // a done task is cleanup left behind by a merge that already landed — a worktree or
-        // branch teardown that didn't finish, never the merge itself. Treat that as "merged,
-        // with leftovers", not as a failed outcome, per Task 9's `doMerge`.
-        const closedWithoutMerging = task.error === "the pull request was closed without merging";
+        // A `done` task with an error isn't automatically a failure: any error on a task
+        // whose PR actually landed as "MERGED" is cleanup left behind by that merge — a
+        // worktree or branch teardown that didn't finish, never the merge itself — and must
+        // render as "merged, with leftovers", not as a failed outcome (Task 9's `doMerge`).
+        // A "pr-closed" ending never sets `pr.state` to "MERGED" (only `doMerge` does, after
+        // asserting the forge itself reports "MERGED"), so this checks that field rather than
+        // matching the human-readable error text: a copy edit to that message must not be
+        // able to flip a real "closed without merging" into a reported success.
+        const merged = task.pr?.state === "MERGED";
         return (
           <div className="gate" data-testid="gate-done">
-            <h4>{closedWithoutMerging ? "Closed without merging" : "Merged"}</h4>
-            {task.error && !closedWithoutMerging && (
+            <h4>{merged ? "Merged" : "Closed without merging"}</h4>
+            {task.error && merged && (
               <>
                 <p className="hint">Merged, but cleanup left something behind:</p>
                 <Lines className="outcome err" text={task.error} />
               </>
             )}
-            {closedWithoutMerging && <div className="err">{task.error}</div>}
+            {task.error && !merged && <div className="err">{task.error}</div>}
+            {onTranscript && task.agentId && <div className="row"><button className="btn" onClick={() => onTranscript(task.agentId)}>Transcript</button></div>}
+            <p className="hint">Dismissing removes this task and frees its agent — this cannot be undone.</p>
             <div className="row">
               <button className="btn d" disabled={busy} onClick={() => act(async () => { await api.dismissBug(task.id); return task; })}>Dismiss</button>
             </div>
