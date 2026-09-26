@@ -173,6 +173,20 @@ describe("renderStagePrompt", () => {
       expect(q).toContain("High"); expect(q).toContain("Open");
     });
 
+    // I4/item-2 regression: the trusted preamble must never itself contain a dangling opener
+    // (or, worse, a complete open+close pair) using the real nonce — either would make the
+    // FIRST `MARK` match span from the preamble into (or entirely be) trusted prose, instead
+    // of exactly one real quoted field, blunting every escape test above without failing any
+    // of them outright (they only check `toContain`, which an inflated match still satisfies).
+    it("the first MARK match is exactly one real quoted field, not the preamble's own explanation", async () => {
+      const p = await renderStagePrompt("analyzing", task, ctx, presets);
+      const first = [...p.matchAll(MARK)][0];
+      expect(first).toBeTruthy();
+      // The template's first quoted placeholder is {{issueUrl}} — the match must be tight
+      // around exactly that field's content, nothing more, nothing from trusted prose.
+      expect(first[2]).toBe(task.issue.url);
+    });
+
     it("uses a fresh, unguessable id for every render", async () => {
       const ids = new Set<string>();
       for (let i = 0; i < 5; i++) {

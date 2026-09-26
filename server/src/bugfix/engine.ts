@@ -11,12 +11,22 @@ import type { ForgeAdapter } from "./forge/index.js";
 import type { TrackerProvider } from "./tracker.js";
 import { renderStagePrompt } from "./prompts.js";
 import { nextStage } from "./stages.js";
-import { AGENT_STAGES, RECOVERABLE_STAGES, TERMINAL_STAGES, type BugStage, type BugTask } from "./types.js";
+import { AGENT_STAGES, RECOVERABLE_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask } from "./types.js";
 import type { PrFinding } from "./watcher.js";
 
 /** After this many rounds the watcher's findings stop dispatching and only report. A
  *  pathological review thread should not quietly spend the user's budget. */
 export const FEEDBACK_ROUND_CAP = 5;
+
+/**
+ * Every watcher event type that routes to `review-feedback` (see `nextStage`'s
+ * "review-changes-requested"/"checks-failed" cases in stages.ts). The cap in `onPrFinding`
+ * applies to this whole set, not to one member of it: it exists to stop the *watcher* from
+ * spending the user's budget unattended, and that purpose doesn't care which kind of finding
+ * is what keeps re-triggering a round — a PR whose CI keeps failing burns exactly as much
+ * agent time per round as one whose reviewers keep asking for changes.
+ */
+const REVIEW_FEEDBACK_EVENTS: ReadonlySet<BugEvent["type"]> = new Set(["review-changes-requested", "checks-failed"]);
 
 /**
  * Startup recovery. Needs only the bug store — no tracker, forge, manager or
@@ -202,8 +212,8 @@ export class BugFixEngine {
     if (f.pr) await this.deps.bugs.patch(task.id, { pr: f.pr });
     if (f.unavailable) { await this.deps.bugs.patch(task.id, { error: `could not check the pull request: ${f.unavailable}` }); return; }
     if (!f.event) return;
-    if (f.event.type === "review-changes-requested" && task.feedbackRounds >= FEEDBACK_ROUND_CAP) {
-      await this.deps.bugs.patch(task.id, { error: `reviewers have asked for changes ${task.feedbackRounds} times; AgentGrid has stopped dispatching after ${FEEDBACK_ROUND_CAP} feedback rounds — use "Ask the agent to address these" to continue` });
+    if (REVIEW_FEEDBACK_EVENTS.has(f.event.type) && task.feedbackRounds >= FEEDBACK_ROUND_CAP) {
+      await this.deps.bugs.patch(task.id, { error: `this task has hit ${task.feedbackRounds} feedback rounds; AgentGrid has stopped dispatching after ${FEEDBACK_ROUND_CAP} feedback rounds — use "Ask the agent to address these" to continue` });
       return;
     }
     await this.advance(task.id, f.event);

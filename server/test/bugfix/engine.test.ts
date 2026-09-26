@@ -17,8 +17,11 @@ import type { QueryFn } from "../../src/runner/runner.js";
 
 const ISSUE: TrackerIssue = { key: "PAY-42", title: "Boom", url: "https://x/PAY-42", status: "Open", priority: "High", description: "d", acceptanceCriteria: [] };
 
-/** Fake git: records calls, pretends a worktree and commits exist. */
-function fakeGit(state: { commits: number; head?: string }) {
+/** Fake git: records calls, pretends a worktree and commits exist. `commitsAhead`, when set,
+ *  overrides `commits` — the feedback-round harness (`onMonitoringTask`, below) sets it after
+ *  reaching monitoring, and it has to actually drive this mock's `commitsAhead()` rather than
+ *  just look like it does. */
+function fakeGit(state: { commits: number; head?: string; commitsAhead?: number }) {
   const calls: string[] = [];
   const g = new GitOps(async () => "");
   g.defaultBranch = async () => "main";
@@ -27,7 +30,7 @@ function fakeGit(state: { commits: number; head?: string }) {
   g.removeWorktree = async () => { calls.push("remove"); };
   g.currentBranch = async () => "bugfix/PAY-42";
   g.revParse = async () => state.head ?? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-  g.commitsAhead = async () => state.commits;
+  g.commitsAhead = async () => state.commitsAhead ?? state.commits;
   g.diff = async () => ({ patch: "diff --git a/a b/a\n+x\n", files: [{ path: "a", additions: 1, deletions: 0 }], additions: 1, deletions: 0 });
   g.worktreeRegistered = async () => false;
   g.branchExists = async () => false;
@@ -45,7 +48,8 @@ const forge = {
 };
 
 let home: string; let repo: string; let store: Store; let bugs: BugTaskStore; let fake: ReturnType<typeof makeFakeQuery>;
-let engine: BugFixEngine; let comments: Array<[string, string]>; let gitState: { commits: number; head?: string };
+let engine: BugFixEngine; let comments: Array<[string, string]>;
+let gitState: { commits: number; head?: string; commitsAhead?: number };
 
 beforeEach(async () => {
   home = await mkdtemp(path.join(tmpdir(), "eng-home-"));
@@ -781,7 +785,13 @@ async function onMonitoringTask() {
   const gs = gitState as typeof gitState & { commitsAhead: number; prHead: string; pr: PrInfo };
   gs.commitsAhead = gs.commits;
   gs.prHead = gs.head!;
-  gs.pr = task.pr!;
+  // `pr` is a getter, not a snapshot: it always reflects the current `prHead` as `headSha`, so
+  // a test that sets `gitState.prHead` and then reads (or passes on) `gitState.pr` genuinely
+  // sees that change, rather than the two fields being independent and one of them decorative.
+  Object.defineProperty(gs, "pr", {
+    configurable: true,
+    get(): PrInfo { return { ...task.pr!, headSha: gs.prHead }; },
+  });
   return { engine, bugs, fake, gitState: gs };
 }
 
@@ -818,12 +828,48 @@ describe("a feedback round", () => {
     expect(t.error).toMatch(/feedback rounds/i);
   });
 
+  // The cap exists to stop the WATCHER spending unattended, not to single out one kind of
+  // finding — a PR whose CI keeps failing after every round is exactly the pathological case
+  // the cap is for, and previously it dispatched forever because only "review-changes-requested"
+  // was checked against it while "checks-failed" (which also routes to review-feedback, per
+  // stages.ts) was advanced unconditionally.
+  it("stops dispatching a checks-failed finding after the cap too, and reports it the same way", async () => {
+    const { engine, bugs, gitState } = await onMonitoringTask();
+    await bugs.patch("bt1", { feedbackRounds: FEEDBACK_ROUND_CAP });
+    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "checks-failed", checks: "checks are failing" } });
+    const t = bugs.get("bt1");
+    expect(t.stage).toBe("monitoring");                                  // no agent dispatched
+    expect(t.error).toMatch(/feedback rounds/i);
+  });
+
+  // The other half of the fix: under the cap, a checks-failed finding must still dispatch —
+  // the cap gates the round budget, not this particular event type.
+  it("still dispatches review-feedback for a checks-failed finding when under the cap", async () => {
+    const { engine, bugs, gitState } = await onMonitoringTask();
+    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "checks-failed", checks: "checks are failing" } });
+    const t = bugs.get("bt1");
+    expect(t.stage).toBe("review-feedback");
+    expect(t.feedbackRounds).toBe(1);
+  });
+
   it("records the latest PR view even when there is nothing to do", async () => {
     const { engine, bugs, gitState } = await onMonitoringTask();
     const pr = { ...gitState.pr, lastSeenEventAt: "2026-09-26T10:00:00Z", checks: "PENDING" };
     await engine.onPrFinding({ taskId: "bt1", pr, event: null });
     expect(bugs.get("bt1").pr).toMatchObject({ checks: "PENDING", lastSeenEventAt: "2026-09-26T10:00:00Z" });
     expect(bugs.get("bt1").stage).toBe("monitoring");
+  });
+
+  // item 4: the "forge unreachable" branch — no event, but a reason the watcher couldn't check
+  // must still land on the task, without touching its stage or dispatching anything.
+  it("records the unavailable error without dispatching or changing stage", async () => {
+    const { engine, bugs, fake, gitState } = await onMonitoringTask();
+    const callsBefore = fake.calls.length;
+    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: null, unavailable: "gh: rate limited" });
+    const t = bugs.get("bt1");
+    expect(t.stage).toBe("monitoring");
+    expect(t.error).toMatch(/could not check the pull request.*rate limited/i);
+    expect(fake.calls.length).toBe(callsBefore);   // no agent dispatched
   });
 });
 
