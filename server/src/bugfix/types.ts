@@ -1,7 +1,7 @@
 export type BugStage =
   | "intake" | "analyzing" | "plan-review" | "implementing" | "diff-review"
-  | "opening-pr" | "monitoring" | "review-feedback" | "rebase" | "approved"
-  | "merging" | "done" | "cancelled" | "failed";
+  | "opening-pr" | "monitoring" | "review-feedback" | "rebase" | "pushing"
+  | "approved" | "merging" | "done" | "cancelled" | "failed";
 
 export type GateKind = "plan" | "diff" | "review" | "merge" | "rebase";
 
@@ -34,7 +34,7 @@ export interface BugTask {
   baseBranch: string;
   agentId: string;
   stage: BugStage;
-  gate: { kind: GateKind; openedAt: string } | null;
+  gate: { kind: GateKind; openedAt: string; reason?: "feedback" | "rebase" } | null;
   mergePolicy: "ask" | "auto";
   mergeMethod: "squash" | "merge" | "rebase";
   /** The commit HEAD pointed at when the diff gate opened — i.e. exactly what the human
@@ -46,6 +46,10 @@ export interface BugTask {
   error: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Incremented when a review-feedback stage is dispatched. Durable, so a restart cannot
+   *  reset a task's budget against the cap. Tasks persisted before this field existed read
+   *  back as `undefined` — never assume it is a number without checking. */
+  feedbackRounds: number | undefined;
 }
 
 export type BugEvent =
@@ -54,21 +58,36 @@ export type BugEvent =
   | { type: "approve" }
   | { type: "request-changes"; text: string }
   | { type: "cancel" }
-  | { type: "retry" };
+  | { type: "retry" }
+  | { type: "review-changes-requested"; comments: string }
+  | { type: "checks-failed"; checks: string }
+  | { type: "review-approved" }
+  | { type: "conflicting" }
+  | { type: "pr-closed" };
 
 export interface Transition {
   stage: BugStage;
-  gate: { kind: GateKind; openedAt: string } | null;
+  gate: { kind: GateKind; openedAt: string; reason?: "feedback" | "rebase" } | null;
   error: string | null;
   note: string;
-  /** Stage the engine must now run an assignment for; null when waiting on a human or resting. */
+  /** Stage the engine must now run an assignment for; null when waiting on a human or resting
+   *  (a gate stage), or when a server stage is what's next (the engine runs it, not an agent). */
   run: BugStage | null;
 }
 
 /** Stages whose work is done by an agent assignment. */
-export const AGENT_STAGES: BugStage[] = ["analyzing", "implementing", "opening-pr"];
+export const AGENT_STAGES: BugStage[] = ["analyzing", "implementing", "opening-pr", "review-feedback", "rebase"];
 /** Stages that are waiting on a human click. */
-export const GATE_STAGES: BugStage[] = ["plan-review", "diff-review"];
+export const GATE_STAGES: BugStage[] = ["plan-review", "diff-review", "approved"];
+/** Stages the ENGINE performs itself — no assignment, no agent, no tokens. They still
+ *  report stage-done/stage-failed, so failure and retry work exactly as for agent stages. */
+export const SERVER_STAGES: BugStage[] = ["pushing", "merging"];
+/** Resting stages the watcher polls. Never an agent stage: two things driving one task is
+ *  the bug class Phase 1 spent its Criticals on. */
+export const WATCHED_STAGES: BugStage[] = ["monitoring", "approved"];
+/** Agent stages dispatched to resolve a review round; distinct from the other AGENT_STAGES
+ *  because they're the ones a feedback-round budget must count against. */
+export const FEEDBACK_AGENT_STAGES: BugStage[] = ["review-feedback", "rebase"];
 export const TERMINAL_STAGES: BugStage[] = ["done", "cancelled", "failed"];
 /**
  * Stages a startup crash can strand a task in with nothing left to finish it: the

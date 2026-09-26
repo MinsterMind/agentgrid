@@ -1,9 +1,14 @@
 import { Conflict } from "../store/store.js";
-import { AGENT_STAGES, GATE_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask, type GateKind, type Transition } from "./types.js";
+import { AGENT_STAGES, GATE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask, type GateKind, type Transition } from "./types.js";
 
-const gate = (kind: GateKind): Transition["gate"] => ({ kind, openedAt: new Date().toISOString() });
+const gate = (kind: GateKind): NonNullable<Transition["gate"]> => ({ kind, openedAt: new Date().toISOString() });
 const go = (stage: BugStage, run: BugStage | null, note = "", error: string | null = null): Transition => ({ stage, run, gate: null, note, error });
-const wait = (stage: BugStage, kind: GateKind): Transition => ({ stage, run: null, gate: gate(kind), note: "", error: null });
+const wait = (stage: BugStage, kind: GateKind, reason?: "feedback" | "rebase"): Transition =>
+  ({ stage, run: null, gate: { ...gate(kind), ...(reason ? { reason } : {}) }, note: "", error: null });
+/** A server stage: the engine runs it, so `run` stays null — `run` means "dispatch an agent". */
+const serverRun = (stage: BugStage, note = ""): Transition => ({ stage, run: null, gate: null, note, error: null });
+
+const MONITORING_ONLY: BugEvent["type"][] = ["review-changes-requested", "checks-failed", "review-approved", "conflicting", "pr-closed"];
 
 /**
  * The whole Phase 1 workflow in one pure function: given where a task is and what
@@ -14,9 +19,20 @@ export function nextStage(task: BugTask, event: BugEvent): Transition {
   if (TERMINAL_STAGES.includes(task.stage) && event.type !== "retry") {
     throw new Conflict(`task ${task.id} is in terminal stage ${task.stage}`);
   }
+  if (MONITORING_ONLY.includes(event.type) && task.stage !== "monitoring") {
+    throw new Conflict(`${event.type} is only while monitoring (task is ${task.stage})`);
+  }
   switch (event.type) {
     case "cancel":
       return go("cancelled", null);
+
+    case "review-changes-requested": return go("review-feedback", "review-feedback", event.comments);
+    case "checks-failed":            return go("review-feedback", "review-feedback", event.checks);
+    case "review-approved":          return wait("approved", "merge");
+    case "conflicting":              return go("rebase", "rebase");
+    case "pr-closed":
+      return { stage: "done", run: null, gate: null, note: "",
+               error: "the pull request was closed without merging" };
 
     case "stage-failed":
       // A gate stage isn't running anything — nothing dispatched for it, so nothing can
@@ -36,20 +52,29 @@ export function nextStage(task: BugTask, event: BugEvent): Transition {
       // work is already done. Resuming it means finishing the transition to "analyzing",
       // not re-dispatching an "intake" stage that `renderStagePrompt` has no template for.
       if (last.stage === "intake") return go("analyzing", "analyzing", "", null);
-      // Anything else must be an agent stage: a gate stage has no prompt either, and
-      // recovery/failure paths must never hand `runStage` a stage it can't dispatch.
-      if (!AGENT_STAGES.includes(last.stage)) throw new Conflict(`cannot retry: ${last.stage} is not a resumable stage`);
-      return go(last.stage, last.stage, "", null);
+      // Anything else must be an agent stage or a server stage: a gate stage has no prompt
+      // either, and recovery/failure paths must never hand `runStage` a stage it can't dispatch.
+      if (!AGENT_STAGES.includes(last.stage) && !SERVER_STAGES.includes(last.stage)) {
+        throw new Conflict(`cannot retry: ${last.stage} is not a resumable stage`);
+      }
+      return SERVER_STAGES.includes(last.stage) ? serverRun(last.stage) : go(last.stage, last.stage, "", null);
     }
 
     case "approve": {
       if (!GATE_STAGES.includes(task.stage)) throw new Conflict(`cannot approve while ${task.stage}`);
-      return task.stage === "plan-review" ? go("implementing", "implementing") : go("opening-pr", "opening-pr");
+      if (task.stage === "plan-review") return go("implementing", "implementing");
+      if (task.stage === "approved") return serverRun("merging");
+      // diff-review: a feedback or rebase round already has a PR, so approving means push;
+      // the first time through, it means open the PR.
+      return task.gate?.reason ? serverRun("pushing") : go("opening-pr", "opening-pr");
     }
 
     case "request-changes": {
       if (!GATE_STAGES.includes(task.stage)) throw new Conflict(`cannot request changes while ${task.stage}`);
-      const back: BugStage = task.stage === "plan-review" ? "analyzing" : "implementing";
+      if (task.stage === "plan-review") return go("analyzing", "analyzing", event.text);
+      if (task.stage === "approved") return go("review-feedback", "review-feedback", event.text);
+      const back: BugStage = task.gate?.reason === "rebase" ? "rebase"
+        : task.gate?.reason === "feedback" ? "review-feedback" : "implementing";
       return go(back, back, event.text);
     }
 
@@ -60,6 +85,10 @@ export function nextStage(task: BugTask, event: BugEvent): Transition {
         case "analyzing": return wait("plan-review", "plan");
         case "implementing": return wait("diff-review", "diff");
         case "opening-pr": return go("monitoring", null);   // Phase 2 starts the watcher here
+        case "review-feedback": return wait("diff-review", "diff", "feedback");
+        case "rebase": return wait("diff-review", "diff", "rebase");
+        case "pushing": return go("monitoring", null);
+        case "merging": return go("done", null);
         default: throw new Error(`no transition from ${task.stage} on stage-done`);
       }
     }
