@@ -108,4 +108,15 @@ export class GitOps {
     const target = path.resolve(realRepo, path.relative(repo, dir));
     return out.split("\n").some(l => l.startsWith("worktree ") && path.resolve(l.slice("worktree ".length).trim()) === target);
   }
+
+  /**
+   * Push the task's branch. `force` uses --force-with-lease, never --force: a lease refuses
+   * when the remote moved under us, which is the difference between rewriting our own history
+   * and destroying someone else's. Only the rebase path passes force, and only after the human
+   * has approved the rebased diff.
+   */
+  async push(dir: string, branch: string, opts: { force?: boolean } = {}): Promise<void> {
+    const args = ["push", ...(opts.force ? ["--force-with-lease"] : []), "origin", `${branch}:${branch}`];
+    await this.run(dir, args);
+  }
 }

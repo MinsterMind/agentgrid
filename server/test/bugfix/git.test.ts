@@ -8,6 +8,11 @@ import { GitOps, worktreePath, branchName } from "../../src/bugfix/git.js";
 const sh = (cwd: string, args: string[]) => new Promise<string>((res, rej) =>
   execFile("git", args, { cwd }, (err, out) => (err ? rej(err) : res(String(out)))));
 
+const run = (cmd: string, args: string[], opts?: { cwd?: string }): Promise<{ stdout: string; stderr: string; code: number }> =>
+  new Promise((res) =>
+    execFile(cmd, args, { cwd: opts?.cwd }, (err, stdout, stderr) =>
+      res({ stdout: String(stdout), stderr: String(stderr), code: err?.code || 0 })));
+
 let repo: string; const git = new GitOps();
 
 beforeEach(async () => {
@@ -127,5 +132,39 @@ describe("GitOps", () => {
       return "";
     });
     await expect(failing.removeWorktree(repo, "/nope", "bugfix/PAY-99")).rejects.toThrow(/cleanup incomplete/);
+  });
+
+  describe("push", () => {
+    it("pushes the branch to a real remote, and force-with-lease after a rewrite", async () => {
+      // A bare repo on disk is a real remote: no network, but a genuine push.
+      const remote = await mkdtemp(path.join(tmpdir(), "ag-remote-"));
+      await run("git", ["init", "--bare", "-b", "main", remote]);
+      const repo2 = await mkdtemp(path.join(tmpdir(), "ag-repo-"));
+      await run("git", ["init", "-b", "main"], { cwd: repo2 });
+      await run("git", ["config", "user.email", "t@t"], { cwd: repo2 });
+      await run("git", ["config", "user.name", "t"], { cwd: repo2 });
+      await writeFile(path.join(repo2, "a.txt"), "one\n");
+      await run("git", ["add", "-A"], { cwd: repo2 });
+      await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "one"], { cwd: repo2 });
+      await run("git", ["remote", "add", "origin", remote], { cwd: repo2 });
+      await run("git", ["push", "-u", "origin", "main"], { cwd: repo2 });
+
+      const git2 = new GitOps();
+      await run("git", ["checkout", "-b", "bugfix/X-1"], { cwd: repo2 });
+      await writeFile(path.join(repo2, "a.txt"), "one\n");
+      await run("git", ["add", "-A"], { cwd: repo2 });
+      await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "one"], { cwd: repo2 });
+
+      await git2.push(repo2, "bugfix/X-1");
+      const onRemote = await run("git", ["ls-remote", remote, "refs/heads/bugfix/X-1"]);
+      expect(onRemote.stdout).toMatch(/bugfix\/X-1/);
+
+      // Rewrite history; a plain push must be refused and a lease push must succeed.
+      await run("git", ["commit", "--amend", "-m", "one (amended)", "--no-edit"], { cwd: repo2 });
+      await expect(git2.push(repo2, "bugfix/X-1")).rejects.toThrow(/rejected|non-fast-forward/i);
+      await git2.push(repo2, "bugfix/X-1", { force: true });
+      const after = await run("git", ["log", "-1", "--format=%s", "bugfix/X-1"], { cwd: remote });
+      expect(after.stdout.trim()).toBe("one (amended)");
+    });
   });
 });
