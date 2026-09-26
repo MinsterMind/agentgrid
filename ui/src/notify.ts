@@ -20,3 +20,17 @@ async function push(title: string, body: string) {
 
 export function notifyWaiting(agentName: string, text: string) { if (!settings.notifyWaiting) return; beep(); void push(`${agentName} needs you`, text); }
 export function notifyFinished(agentName: string, ok: boolean) { if (!settings.notifyFinished) return; void push(`${agentName} ${ok ? "finished" : "failed"}`, ""); }
+
+/**
+ * A bug-fix task moved somewhere the user might not be watching: a reviewer asked for
+ * changes, the merge gate opened, or the task reached its end. `kind` picks which toggle
+ * governs it — "attention" (the merge gate opening, a feedback round starting) is the same
+ * "needs you" class `notifyWaiting` covers; "finished" (done, or a pr-closed ending) is the
+ * same class `notifyFinished` covers. Kept as one function rather than two so a stage-change
+ * effect has a single call to make, not a kind-to-function dispatch of its own.
+ */
+export function notifyBugTask(text: string, kind: "attention" | "finished" = "attention") {
+  if (!(kind === "finished" ? settings.notifyFinished : settings.notifyWaiting)) return;
+  beep();
+  void push("AgentGrid", text);
+}

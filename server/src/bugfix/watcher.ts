@@ -33,8 +33,10 @@ function statesDiffer(pr: PrInfo, prev: PrInfo): boolean {
     || pr.checks !== prev.checks || pr.mergeable !== prev.mergeable || pr.headSha !== prev.headSha;
 }
 
-/** How a human describes what reviewers said, for the agent's prompt. */
-function describeComments(events: ReviewEvent[]): string {
+/** How a human describes what reviewers said, for the agent's prompt. Exported so a manual
+ *  "address comments" click (engine.ts's `recentComments`) renders the same way the watcher
+ *  itself would, rather than inventing a second rendering. */
+export function describeComments(events: ReviewEvent[]): string {
   return events.filter(e => !e.isBot && e.body.trim())
     .map(e => `${e.author}${e.state ? ` (${e.state.toLowerCase().replace(/_/g, " ")})` : ""}: ${e.body.trim()}`)
     .join("\n\n");

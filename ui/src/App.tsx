@@ -10,7 +10,7 @@ import { BugLauncher } from "./components/BugLauncher";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { TranscriptView } from "./components/TranscriptView";
 import { useKeyboard } from "./hooks/useKeyboard";
-import { notifyFinished, notifyWaiting, setTitleCount, settings } from "./notify";
+import { notifyBugTask, notifyFinished, notifyWaiting, setTitleCount, settings } from "./notify";
 import type { Decision } from "./types";
 
 export function App() {
@@ -56,6 +56,30 @@ export function App() {
     for (const id of Object.keys(prevStates.current)) if (!liveIds.has(id)) delete prevStates.current[id];
     setTitleCount(new Set([...waitingIds(s), ...s.agents.filter(a => activityFor(s, a)?.phase === "waiting" && a.state === "free").map(a => a.id)]).size);
   }, [s]);
+
+  // Bug-task stage transitions → notifications, for the moments a user isn't looking at the
+  // grid: reviewers asked for changes, the merge gate opened, or the task reached its end
+  // (merged, or closed without merging). The engine already emits a "bugtask" event on every
+  // stage change (bugfix/store.ts, forwarded onto the same event bus agent/assignment events
+  // use — see start.ts), which is what keeps `s.bugTasks` current here; this just watches the
+  // stage each one carries for the transitions worth surfacing.
+  const prevBugStage = useRef<Record<string, string>>({});
+  useEffect(() => {
+    for (const t of Object.values(s.bugTasks)) {
+      const prev = prevBugStage.current[t.id];
+      if (prev && prev !== t.stage) {
+        const key = t.issue.key;
+        if (t.stage === "review-feedback") notifyBugTask(`${key}: reviewers asked for changes`, "attention");
+        else if (t.stage === "approved") notifyBugTask(`${key}: PR approved — ready to merge`, "attention");
+        else if (t.stage === "done") {
+          notifyBugTask(t.error?.includes("closed without merging") ? `${key}: PR closed without merging` : `${key}: merged`, "finished");
+        }
+      }
+      prevBugStage.current[t.id] = t.stage;
+    }
+    const liveBugIds = new Set(Object.keys(s.bugTasks));
+    for (const id of Object.keys(prevBugStage.current)) if (!liveBugIds.has(id)) delete prevBugStage.current[id];
+  }, [s.bugTasks]);
 
   const selected = s.agents.find(a => a.id === s.selectedId) ?? null;
   const selectedAsg = selected ? assignmentFor(s, selected) : null;

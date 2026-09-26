@@ -135,6 +135,8 @@ describe("bug task routes", () => {
       ["post", "/api/bugtasks/bt1/cancel"],
       ["post", "/api/bugtasks/bt1/retry"],
       ["post", "/api/bugtasks/bt1/request-changes"],
+      ["post", "/api/bugtasks/bt1/address-comments"],
+      ["delete", "/api/bugtasks/bt1"],
       ["get", "/api/bugfix/issues"],
       ["get", "/api/bugfix/preflight?repo=/r"],
       ["get", "/api/integrations"],
@@ -175,5 +177,95 @@ describe("gate races surface as 409, never 500", () => {
     const id = created.body.id as string;
     // Task is still "analyzing" (an agent stage), which does not accept "approve".
     await request(realApp).post(`/api/bugtasks/${id}/approve`).expect(409);
+  });
+});
+
+/**
+ * Drives a real-engine app (`createBugFixTestApp`) through HTTP up to "monitoring", the same
+ * shape `onMonitoringTask` in engine.test.ts drives the engine directly — but through the
+ * routes under test here, not by calling the engine's own methods.
+ */
+async function httpToMonitoring() {
+  const repo = await mkdtemp(path.join(tmpdir(), "api-real-repo-"));
+  const built = await createBugFixTestApp();
+  const { app: realApp, bugs: realBugs, finishStage } = built;
+  const created = await request(realApp).post("/api/bugtasks").send({ issueRef: "PAY-42", repo }).expect(201);
+  const id = created.body.id as string;
+  await realBugs.writeArtifact(id, "plan.md", "# Plan");
+  await finishStage();
+  await until(() => realBugs.get(id).stage === "plan-review");
+  await request(realApp).post(`/api/bugtasks/${id}/approve`).expect(200);
+  await finishStage();
+  await until(() => realBugs.get(id).stage === "diff-review");
+  await request(realApp).post(`/api/bugtasks/${id}/approve`).expect(200);
+  await finishStage();
+  await until(() => realBugs.get(id).stage === "monitoring");
+  return { ...built, id };
+}
+
+/** A task resting in "monitoring" — the state `address-comments` and dismiss's 409 both need. */
+async function appMonitoring(opts: { feedbackRounds?: number } = {}) {
+  const m = await httpToMonitoring();
+  if (opts.feedbackRounds !== undefined) await m.bugs.patch(m.id, { feedbackRounds: opts.feedbackRounds });
+  return m;
+}
+
+/** A task sitting at the merge gate (`approved`), with a merge-tracking forge swapped in so a
+ *  test can see what `mergeMethod` actually reached `forge.merge`. */
+async function appAtMergeGate() {
+  const m = await httpToMonitoring();
+  const forge = {
+    name: "github",
+    merges: [] as Array<{ number: number; method: string }>,
+    state: "OPEN" as "OPEN" | "MERGED" | "CLOSED",
+    authStatus: async () => ({ ok: true, message: "ok" }),
+    createPrCommand: () => "gh pr create --base 'main' --head 'bugfix/PAY-42' --title 't' --body-file '/b'",
+    findPr: async () => ({ number: 7, url: "https://x/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: "abc1234abc1234abc1234abc1234abc1234abc1", lastSeenEventAt: "t" }),
+    getPr: async () => ({ found: { number: 7, url: "https://x/pr/7", state: forge.state, reviewDecision: null, checks: null, mergeable: "MERGEABLE" as string | null, headSha: "abc1234abc1234abc1234abc1234abc1234abc1", lastSeenEventAt: "t" } }),
+    listReviewEvents: async () => [],
+    merge: async (_repo: string, number: number, method: string) => { forge.merges.push({ number, method }); forge.state = "MERGED"; return { ok: true, message: "merged (fake)" }; },
+  };
+  (m.engine as any).deps.forge = forge;
+  const task = m.bugs.get(m.id);
+  await m.engine.onPrFinding({ taskId: m.id, pr: { ...task.pr!, state: "OPEN" }, event: { type: "review-approved" } });
+  await until(() => m.bugs.get(m.id).stage === "approved");
+  return { ...m, forge };
+}
+
+/** A finished task, all the way to "done" via a real merge. */
+async function appDone() {
+  const m = await appAtMergeGate();
+  await request(m.app).post(`/api/bugtasks/${m.id}/approve`).expect(200);
+  await until(() => m.bugs.get(m.id).stage !== "merging", 2000);
+  return m;
+}
+
+describe("approve honours a merge method, address-comments, and dismiss", () => {
+  it("approve at the merge gate honours a method, and validates it", async () => {
+    const { app: realApp, id, forge } = await appAtMergeGate();
+    await request(realApp).post(`/api/bugtasks/${id}/approve`).send({ mergeMethod: "merge" }).expect(200);
+    await until(() => forge.merges.length > 0);
+    expect(forge.merges[0]).toMatchObject({ method: "merge" });
+    await request(realApp).post(`/api/bugtasks/${id}/approve`).send({ mergeMethod: "yolo" }).expect(400);
+  });
+
+  it("address-comments starts a feedback round even past the cap", async () => {
+    const { app: realApp, id } = await appMonitoring({ feedbackRounds: 99 });
+    const res = await request(realApp).post(`/api/bugtasks/${id}/address-comments`).send({ text: "please fix the naming" }).expect(200);
+    expect(res.body.stage).toBe("review-feedback");
+  });
+
+  it("DELETE removes a finished task and 409s on a live one", async () => {
+    const done = await appDone();
+    await request(done.app).delete(`/api/bugtasks/${done.id}`).expect(204);
+    const live = await appMonitoring();
+    await request(live.app).delete(`/api/bugtasks/${live.id}`).expect(409);
+  });
+
+  it("every new route answers 501 when the workflow is not wired", async () => {
+    const store2 = new Store(home, path.resolve("roles")); await store2.init();
+    const bare = createApp({ store: store2, manager: new Manager(store2, { queryFn: makeFakeQuery().queryFn }) });
+    await request(bare).post("/api/bugtasks/bt1/address-comments").expect(501);
+    await request(bare).delete("/api/bugtasks/bt1").expect(501);
   });
 });

@@ -799,6 +799,12 @@ describe("the approved commit is pinned", () => {
  * already what the task approved, not a coincidence of some unrelated default.
  */
 async function onMonitoringTask() {
+  // Collects every "bugtask" event the store emits from here on — used by the notification
+  // tests to pin that a stage transition actually reaches the stream the UI listens on, not
+  // just that `bugs.get()` reflects the new stage.
+  const seen: Array<{ type: string; task: BugTask }> = [];
+  bugs.on("event", (e: any) => { if (e?.type === "bugtask") seen.push(e); });
+
   gitState.head = "aaa";
   const t = await engine.intake({ issueRef: "PAY-42", repo });
   await bugs.writeArtifact(t.id, "plan.md", "# Plan");
@@ -820,7 +826,7 @@ async function onMonitoringTask() {
     configurable: true,
     get(): PrInfo { return { ...task.pr!, headSha: gs.prHead }; },
   });
-  return { engine, bugs, fake, gitState: gs };
+  return { engine, bugs, fake, gitState: gs, seen };
 }
 
 describe("a feedback round", () => {
@@ -1064,7 +1070,7 @@ describe("a rebase round", () => {
  * can be toggled per test, mirroring `atFeedbackDiffGate`'s shape.
  */
 async function atMergeGate() {
-  const { engine, bugs, gitState } = await onMonitoringTask();
+  const { engine, bugs, gitState, seen } = await onMonitoringTask();
   const deps = (engine as any).deps;
 
   const mergeForge: any = {
@@ -1112,7 +1118,7 @@ async function atMergeGate() {
   await engine.onPrFinding({ taskId, pr: { ...gitState.pr, state: "OPEN" }, event: { type: "review-approved" } });
   await until(() => bugs.get(taskId).stage === "approved");
 
-  return { engine, bugs, forge: mergeForge, gitState, store, tracker: mergeTracker, taskId };
+  return { engine, bugs, forge: mergeForge, gitState, store, tracker: mergeTracker, taskId, seen };
 }
 
 describe("merging", () => {
@@ -1374,5 +1380,90 @@ describe("recovering a task stranded mid server-stage by a crash", () => {
     const t = bugs.get(taskId);
     expect(t.stage).toBe("monitoring");
     expect(t.error).toBeNull();
+  });
+});
+
+describe("addressComments (a human-requested feedback round from the card)", () => {
+  it("dispatches a feedback round with the given text, even past the cap", async () => {
+    const { bugs, gitState } = await onMonitoringTask();
+    await bugs.patch("bt1", { feedbackRounds: FEEDBACK_ROUND_CAP });
+    void gitState; // silence unused-var in case of future edits
+    const t = await engine.addressComments("bt1", "please fix the naming");
+    expect(t.stage).toBe("review-feedback");
+    expect(t.history.at(-1)).toMatchObject({ stage: "review-feedback", note: "please fix the naming" });
+    // A round was actually spent, same as any other review-feedback dispatch — the cap is
+    // bypassed for *whether to dispatch*, not for the accounting the cap itself reads.
+    expect(t.feedbackRounds).toBe(FEEDBACK_ROUND_CAP + 1);
+  });
+
+  it("trims the given text", async () => {
+    await onMonitoringTask();
+    const t = await engine.addressComments("bt1", "  fix it please  ");
+    expect(t.history.at(-1)?.note).toBe("fix it please");
+  });
+
+  it("falls back to the forge's recent review comments when no text is given", async () => {
+    const { bugs } = await onMonitoringTask();
+    const deps = (engine as any).deps;
+    deps.forge = {
+      ...deps.forge,
+      listReviewEvents: async () => [
+        { kind: "review" as const, author: "alice", isBot: false, state: "CHANGES_REQUESTED", body: "please rename this", at: "2026-09-26T10:00:00Z" },
+      ],
+    };
+    const t = await engine.addressComments("bt1");
+    expect(t.stage).toBe("review-feedback");
+    expect(t.history.at(-1)?.note).toMatch(/alice.*please rename this/is);
+    void bugs;
+  });
+
+  it("falls back to a short note, not a thrown error, when the forge can't be read", async () => {
+    const { bugs } = await onMonitoringTask();
+    const deps = (engine as any).deps;
+    deps.forge = { ...deps.forge, listReviewEvents: async () => { throw new Error("gh: rate limited"); } };
+    const t = await engine.addressComments("bt1");
+    expect(t.stage).toBe("review-feedback");
+    expect(t.history.at(-1)?.note).toMatch(/pull request/i);
+    void bugs;
+  });
+
+  it("is refused outside monitoring, same as any other watcher-only finding", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await expect(engine.addressComments(t.id, "x")).rejects.toThrow(/only while monitoring|monitoring/i);
+  });
+});
+
+describe("notifications: stage transitions the user might not be watching each emit a bugtask event", () => {
+  // The assertion here is deliberately about the emitted "bugtask" event, not about
+  // notification text: the UI is what renders notifications, and it already listens to this
+  // stream (store.on("event", ...) -> the "bugtask" case in reducer.ts). What this protects is
+  // that the stage change actually reaches the stream — a transition applied without an event
+  // emitted is a notification that silently never fires.
+  it("emits when a watcher finding starts a feedback round", async () => {
+    const { engine, gitState, seen } = await onMonitoringTask();
+    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "review-changes-requested", comments: "fix" } });
+    expect(seen.some(e => e.task.stage === "review-feedback")).toBe(true);
+  });
+
+  it("emits when a watcher finding opens the merge gate", async () => {
+    const { engine, bugs, gitState, seen } = await onMonitoringTask();
+    await engine.onPrFinding({ taskId: "bt1", pr: { ...gitState.pr, state: "OPEN" }, event: { type: "review-approved" } });
+    await until(() => bugs.get("bt1").stage === "approved");
+    expect(seen.some(e => e.task.stage === "approved")).toBe(true);
+  });
+
+  it("emits when the merge gate's approve reaches done", async () => {
+    const { engine, bugs, taskId, seen } = await atMergeGate();
+    await engine.approve(taskId);
+    await until(() => bugs.get(taskId).stage === "done", 2000);
+    expect(seen.some(e => e.task.stage === "done")).toBe(true);
+  });
+
+  it("also emits for a pr-closed ending, which reaches done directly with no merge gate", async () => {
+    const { engine, bugs, gitState, seen } = await onMonitoringTask();
+    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "pr-closed" } });
+    expect(bugs.get("bt1").stage).toBe("done");
+    expect(bugs.get("bt1").error).toMatch(/closed without merging/i);
+    expect(seen.some(e => e.task.stage === "done")).toBe(true);
   });
 });

@@ -12,7 +12,7 @@ import type { TrackerProvider } from "./tracker.js";
 import { renderStagePrompt } from "./prompts.js";
 import { nextStage } from "./stages.js";
 import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask } from "./types.js";
-import type { PrFinding } from "./watcher.js";
+import { describeComments, type PrFinding } from "./watcher.js";
 import type { MergeMethod } from "./forge/types.js";
 
 /** After this many rounds the watcher's findings stop dispatching and only report. A
@@ -218,6 +218,37 @@ export class BugFixEngine {
     await this.deps.store.archiveAgent(task.agentId).catch(err => { if (!(err instanceof NotFound)) throw err; });
     this.currentDispatch.delete(task.id);
     await this.deps.bugs.remove(task.id);
+  }
+
+  /**
+   * A feedback round the user asked for, from the monitoring card. It deliberately ignores
+   * FEEDBACK_ROUND_CAP: the cap exists to stop the *watcher* spending money unattended, and a
+   * human clicking the button is the opposite of unattended. Routes through the same
+   * "review-changes-requested" transition a watcher finding would (`nextStage` only accepts
+   * that event while "monitoring", so this is refused anywhere else, same as a watcher's own
+   * finding would be).
+   */
+  async addressComments(taskId: string, text?: string): Promise<BugTask> {
+    const task = this.deps.bugs.get(taskId);
+    const trimmed = text?.trim();
+    const comments = trimmed || (await this.recentComments(task));
+    return this.advance(taskId, { type: "review-changes-requested", comments });
+  }
+
+  /** Comments the click itself didn't supply: read fresh from the forge since the PR's last
+   *  seen event, and render them the same way the watcher's own `decide()` does (via the
+   *  shared `describeComments`) — so a manual round reads no differently from an automatic
+   *  one. Falls back to a short, generic note rather than failing the click when the forge
+   *  can't be read: a human pressing "address these" is not asking for a network diagnostic. */
+  private async recentComments(task: BugTask): Promise<string> {
+    const { forge } = this.deps;
+    if (!forge || !task.pr) return "see the pull request";
+    try {
+      const events = await forge.listReviewEvents(task.sourceRepo, task.pr.number, task.pr.lastSeenEventAt);
+      return describeComments(events) || "see the pull request";
+    } catch {
+      return "see the pull request";
+    }
   }
 
   async requestChanges(taskId: string, text: string): Promise<BugTask> {
