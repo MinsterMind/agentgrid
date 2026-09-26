@@ -10,10 +10,16 @@ import { attachCommand } from "../terminal.js";
 import { listAllSessions, listHistorySessions, getHistorySession, renameSession, takeOverSession, type LiveSession, type HistorySession } from "../sessions.js";
 import os from "node:os";
 import type { Agent, Assignment, Decision, SessionInfo } from "../types.js";
+import type { BugFixEngine } from "../bugfix/engine.js";
+import type { BugTaskStore } from "../bugfix/store.js";
+import type { IntegrationsStore } from "../bugfix/integrations.js";
+import type { TrackerProvider } from "../bugfix/tracker.js";
 
 export interface AppDeps {
   store: Store;
   manager: Manager;
+  /** Bug-fix workflow; absent when the feature is not configured (routes answer 501). */
+  bugs?: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider };
   transcript?: (assignment: Assignment, agent: Agent) => Promise<unknown[]>;
   /** Full, untruncated transcript of a session in a repo. */
   fullTranscript?: (cwd: string, sessionId: string) => Promise<unknown[]>;
@@ -172,6 +178,85 @@ export function createApp(deps: AppDeps) {
     const asg = store.getAssignment(req.params.id as string);
     const agent = store.getAgent(asg.agentId);
     res.json(deps.transcript ? await deps.transcript(asg, agent) : []);
+  }));
+
+  class NotWired extends Error { status = 501; }
+  const bugs = () => { if (!deps.bugs) throw new NotWired("the bug-fix workflow is not configured"); return deps.bugs; };
+  if (deps.bugs) store.bugTasks = () => deps.bugs!.store.list();
+
+  const MERGE_POLICIES = ["ask", "auto"] as const;
+  const MERGE_METHODS = ["squash", "merge", "rebase"] as const;
+  const FORGE_PRESETS = ["github", "gitlab", "custom"] as const;
+
+  app.get("/api/bugtasks", wrap((_req, res) => res.json(bugs().store.list())));
+  app.get("/api/bugtasks/:id", wrap((req, res) => res.json(bugs().store.get(req.params.id as string))));
+  app.get("/api/bugtasks/:id/plan", wrap(async (req, res) => {
+    const b = bugs(); b.store.get(req.params.id as string);
+    res.json({ markdown: (await b.store.readArtifact(req.params.id as string, "plan.md")) ?? "" });
+  }));
+  app.get("/api/bugtasks/:id/diff", wrap(async (req, res) => {
+    const b = bugs(); b.store.get(req.params.id as string);
+    res.json(await b.engine.diffFor(req.params.id as string));
+  }));
+  app.post("/api/bugtasks", wrap(async (req, res) => {
+    const { issueRef, repo, mergePolicy, mergeMethod } = req.body ?? {};
+    if (typeof issueRef !== "string" || !issueRef.trim()) throw new BadRequest("issueRef is required");
+    if (typeof repo !== "string" || !path.isAbsolute(repo)) throw new BadRequest("an absolute repo path is required");
+    if (mergePolicy !== undefined && !MERGE_POLICIES.includes(mergePolicy)) throw new BadRequest(`mergePolicy must be one of ${MERGE_POLICIES.join(", ")}`);
+    if (mergeMethod !== undefined && !MERGE_METHODS.includes(mergeMethod)) throw new BadRequest(`mergeMethod must be one of ${MERGE_METHODS.join(", ")}`);
+    res.status(201).json(await bugs().engine.intake({ issueRef: issueRef.trim(), repo, mergePolicy, mergeMethod }));
+  }));
+  app.post("/api/bugtasks/:id/approve", wrap(async (req, res) => res.json(await bugs().engine.approve(req.params.id as string))));
+  app.post("/api/bugtasks/:id/cancel", wrap(async (req, res) => res.json(await bugs().engine.cancel(req.params.id as string))));
+  app.post("/api/bugtasks/:id/retry", wrap(async (req, res) => res.json(await bugs().engine.retry(req.params.id as string))));
+  app.post("/api/bugtasks/:id/request-changes", wrap(async (req, res) => {
+    const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+    if (!text) throw new BadRequest("text is required");
+    res.json(await bugs().engine.requestChanges(req.params.id as string, text));
+  }));
+  app.get("/api/bugfix/issues", wrap(async (_req, res) => res.json(await bugs().tracker.listMyIssues())));
+  app.get("/api/bugfix/preflight", wrap(async (req, res) => {
+    const repo = req.query.repo;
+    if (typeof repo !== "string" || !path.isAbsolute(repo)) throw new BadRequest("an absolute repo path is required");
+    res.json(await bugs().engine.preflight(repo));
+  }));
+  app.get("/api/integrations", wrap(async (_req, res) => res.json(await bugs().integrations.read())));
+  app.put("/api/integrations", wrap(async (req, res) => {
+    const body = req.body ?? {};
+    // Only the two known top-level fields are accepted; anything else in the body is
+    // deliberately dropped rather than persisted (same "pick the fields you accept"
+    // convention POST /api/agents already uses), not silently merged onto disk.
+    const patch: { tracker?: unknown; forge?: unknown } = {};
+    if (body.tracker !== undefined) {
+      const tracker = body.tracker;
+      if (!tracker || typeof tracker !== "object" || Array.isArray(tracker)) {
+        throw new BadRequest("tracker must be an object");
+      }
+      // `preset` is deliberately not enum-checked: it's a free-form lookup key into
+      // presets/tracker/<preset>.md, not a fixed set like forge's. Every other field on
+      // TrackerConfig is checked for shape when present; unknown keys are dropped, same
+      // as the rest of this body.
+      if (tracker.preset !== undefined && typeof tracker.preset !== "string") throw new BadRequest("tracker.preset must be a string");
+      if (tracker.toolPrefix !== undefined && typeof tracker.toolPrefix !== "string") throw new BadRequest("tracker.toolPrefix must be a string");
+      if (tracker.mcpServers !== undefined && (typeof tracker.mcpServers !== "object" || tracker.mcpServers === null || Array.isArray(tracker.mcpServers))) {
+        throw new BadRequest("tracker.mcpServers must be an object");
+      }
+      if (tracker.hints !== undefined && typeof tracker.hints !== "string") throw new BadRequest("tracker.hints must be a string");
+      const t: Record<string, unknown> = {};
+      if (tracker.preset !== undefined) t.preset = tracker.preset;
+      if (tracker.toolPrefix !== undefined) t.toolPrefix = tracker.toolPrefix;
+      if (tracker.mcpServers !== undefined) t.mcpServers = tracker.mcpServers;
+      if (tracker.hints !== undefined) t.hints = tracker.hints;
+      patch.tracker = t;
+    }
+    if (body.forge !== undefined) {
+      const forge = body.forge;
+      if (!forge || typeof forge !== "object" || !FORGE_PRESETS.includes(forge.preset)) {
+        throw new BadRequest(`forge.preset must be one of ${FORGE_PRESETS.join(", ")}`);
+      }
+      patch.forge = forge;
+    }
+    res.json(await bugs().integrations.write(patch as never));
   }));
 
   app.use("/api", (_req, res) => res.status(404).json({ error: "not found" }));

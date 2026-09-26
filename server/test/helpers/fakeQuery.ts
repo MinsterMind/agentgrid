@@ -1,20 +1,34 @@
 import type { Options, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { QueryFn } from "../../src/runner/runner.js";
 
+type Item = { msg?: SDKMessage; end?: true; err?: Error };
+interface Stream { queue: Item[]; wake: (() => void) | null }
+
+/**
+ * A real SDK query() call returns a fresh stream every time it's invoked; nothing about
+ * one call's stream is shared with the next. Earlier this helper modeled that with a
+ * single queue shared across every queryFn() invocation, which meant a stray end() left
+ * behind by one stage's stream (Runner.consume() returns as soon as it sees a "result"
+ * message, so it never drains an end() queued after it) became the *first* item the next
+ * stage's stream saw — a stream that then looked like it had ended with no result at
+ * all. Each call now gets its own isolated queue, matching the real SDK; emit()/end()/
+ * fail() always target the most recently started stream, which is what every test's
+ * sequential assign-then-finish usage expects.
+ */
 export function makeFakeQuery() {
   const calls: Array<{ prompt: string; options: Options }> = [];
-  const queue: Array<{ msg?: SDKMessage; end?: true; err?: Error }> = [];
-  let wake: (() => void) | null = null;
-  const push = (item: { msg?: SDKMessage; end?: true; err?: Error }) => { queue.push(item); wake?.(); wake = null; };
+  let current: Stream | null = null;
 
   const queryFn: QueryFn = ({ prompt, options }) => {
     calls.push({ prompt, options });
+    const stream: Stream = { queue: [], wake: null };
+    current = stream;
     const signal = options.abortController?.signal;
     async function* gen(): AsyncGenerator<SDKMessage> {
       while (true) {
         if (signal?.aborted) throw Object.assign(new Error("aborted"), { name: "AbortError" });
-        const item = queue.shift();
-        if (!item) { await new Promise<void>(r => { wake = r; signal?.addEventListener("abort", () => r(), { once: true }); }); continue; }
+        const item = stream.queue.shift();
+        if (!item) { await new Promise<void>(r => { stream.wake = r; signal?.addEventListener("abort", () => r(), { once: true }); }); continue; }
         if (item.err) throw item.err;
         if (item.end) return;
         yield item.msg!;
@@ -22,6 +36,14 @@ export function makeFakeQuery() {
     }
     return gen();
   };
+
+  const push = (item: Item) => {
+    if (!current) throw new Error("makeFakeQuery: emit()/end()/fail() called before any query started");
+    current.queue.push(item);
+    current.wake?.();
+    current.wake = null;
+  };
+
   return {
     queryFn, calls,
     emit: (msg: SDKMessage) => push({ msg }),

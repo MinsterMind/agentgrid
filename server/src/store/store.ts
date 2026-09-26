@@ -35,6 +35,8 @@ export class Store extends EventEmitter {
   private nextAssignment = 1;
   private live: LiveSession[] = [];
   private statuses = new Map<string, SessionActivity>();
+  /** Supplied by the server when the bug-fix workflow is wired. */
+  bugTasks: () => unknown[] = () => [];
 
   constructor(home: string, private defaultsDir: string) {
     super();
@@ -207,6 +209,6 @@ export class Store extends EventEmitter {
   sessionStatus(sessionId: string): SessionActivity | undefined { return this.statuses.get(sessionId); }
 
   getState(): GridState {
-    return { roles: this.listRoles(), agents: this.listAgents(), assignments: this.listAssignments(), liveSessions: this.liveSessions(), sessionStatuses: [...this.statuses.values()] };
+    return { roles: this.listRoles(), agents: this.listAgents(), assignments: this.listAssignments(), liveSessions: this.liveSessions(), sessionStatuses: [...this.statuses.values()], bugTasks: this.bugTasks() as GridState["bugTasks"] };
   }
 }

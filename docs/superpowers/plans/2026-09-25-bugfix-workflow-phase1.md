@@ -757,7 +757,7 @@ git commit -m "feat(bugfix): git worktree, branch and diff operations"
 **Interfaces:**
 - Produces:
   ```ts
-  export interface TrackerConfig { preset: string; mcpServer: string; toolPrefix: string; hints?: string }
+  export interface TrackerConfig { preset: string; toolPrefix: string; mcpServers: Record<string, unknown>; hints?: string }
   export interface ForgeConfig { preset: "github" | "gitlab" | "custom"; getPr?: string; merge?: string; map?: Record<string, string> }
   export interface Integrations { tracker?: TrackerConfig; forge?: ForgeConfig; projectRepos: Record<string, string> }
   export class IntegrationsStore {
@@ -798,12 +798,12 @@ describe("detectForge", () => {
 describe("IntegrationsStore", () => {
   it("starts empty, merges patches, and round-trips through disk", async () => {
     expect(await store.read()).toEqual({ projectRepos: {} });
-    await store.write({ tracker: { preset: "jira", mcpServer: "atlassian", toolPrefix: "mcp__atlassian" } });
+    await store.write({ tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: { atlassian: { type: "sse", url: "https://mcp.atlassian.com/v1/sse" } } } });
     await store.write({ forge: { preset: "github" } });
     const again = new IntegrationsStore(home);
     expect(await again.read()).toEqual({
       projectRepos: {},
-      tracker: { preset: "jira", mcpServer: "atlassian", toolPrefix: "mcp__atlassian" },
+      tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: { atlassian: { type: "sse", url: "https://mcp.atlassian.com/v1/sse" } } },
       forge: { preset: "github" },
     });
   });
@@ -838,7 +838,7 @@ Expected: FAIL — module not found.
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 
-export interface TrackerConfig { preset: string; mcpServer: string; toolPrefix: string; hints?: string }
+export interface TrackerConfig { preset: string; toolPrefix: string; mcpServers: Record<string, unknown>; hints?: string }
 export interface ForgeConfig { preset: "github" | "gitlab" | "custom"; getPr?: string; merge?: string; map?: Record<string, string> }
 export interface Integrations { tracker?: TrackerConfig; forge?: ForgeConfig; projectRepos: Record<string, string> }
 
@@ -1106,7 +1106,7 @@ git commit -m "feat(bugfix): forge adapter interface and GitHub implementation"
 - Consumes: `TrackerConfig` (Task 5); `TrackerIssue`, `IssueSummary` (Task 2).
 - Produces:
   ```ts
-  export type JsonRunner = (args: { prompt: string; allowedTools: string[]; cwd: string }) => Promise<string>;
+  export type JsonRunner = (args: { prompt: string; allowedTools: string[]; mcpServers: Record<string, unknown>; cwd: string }) => Promise<string>;
   export interface TrackerProvider {
     listMyIssues(): Promise<IssueSummary[]>;
     fetchIssue(ref: string): Promise<TrackerIssue>;
@@ -1130,12 +1130,12 @@ import path from "node:path";
 import { mcpTracker, parseIssue, parseIssueList } from "../../src/bugfix/tracker.js";
 import type { TrackerConfig } from "../../src/bugfix/integrations.js";
 
-const cfg: TrackerConfig = { preset: "jira", mcpServer: "atlassian", toolPrefix: "mcp__atlassian", hints: "Bugs live in PAY" };
+const cfg: TrackerConfig = { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: { atlassian: { type: "sse", url: "https://x" } }, hints: "Bugs live in PAY" };
 const presets = path.resolve("presets");
 
 const runner = (reply: string) => {
-  const seen: Array<{ prompt: string; allowedTools: string[] }> = [];
-  return { seen, run: async (a: { prompt: string; allowedTools: string[]; cwd: string }) => { seen.push(a); return reply; } };
+  const seen: Array<{ prompt: string; allowedTools: string[]; mcpServers: Record<string, unknown> }> = [];
+  return { seen, run: async (a: { prompt: string; allowedTools: string[]; mcpServers: Record<string, unknown>; cwd: string }) => { seen.push(a); return reply; } };
 };
 
 describe("parsers", () => {
@@ -1164,6 +1164,7 @@ describe("mcpTracker", () => {
     const t = mcpTracker(cfg, presets, r.run);
     expect(await t.listMyIssues()).toEqual([{ key: "PAY-42", title: "Boom", url: "https://x/PAY-42", status: "Open", priority: "High" }]);
     expect(r.seen[0].allowedTools).toEqual(["mcp__atlassian"]);
+    expect(r.seen[0].mcpServers).toEqual({ atlassian: { type: "sse", url: "https://x" } });   // passed explicitly — inheritance is not enough
     expect(r.seen[0].prompt).toContain("assigned to me");
     expect(r.seen[0].prompt).toContain("Bugs live in PAY");   // hints are injected
   });
@@ -1228,7 +1229,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { TrackerConfig } from "./integrations.js";
 import type { IssueSummary, TrackerIssue } from "./types.js";
 
-export type JsonRunner = (args: { prompt: string; allowedTools: string[]; cwd: string }) => Promise<string>;
+export type JsonRunner = (args: { prompt: string; allowedTools: string[]; mcpServers: Record<string, unknown>; cwd: string }) => Promise<string>;
 
 export interface TrackerProvider {
   listMyIssues(): Promise<IssueSummary[]>;
@@ -1280,10 +1281,12 @@ async function section(presetsDir: string, preset: string, name: string, vars: R
 }
 
 /** One-shot headless SDK query returning the model's final text. */
-export const defaultJsonRunner: JsonRunner = async ({ prompt, allowedTools, cwd }) => {
+export const defaultJsonRunner: JsonRunner = async ({ prompt, allowedTools, mcpServers, cwd }) => {
   let last = "";
+  // mcpServers must be passed explicitly: a 2026-09-25 spike showed settingSources alone surfaces no MCP tools.
   for await (const m of query({ prompt, options: { cwd, settingSources: ["user"], model: "claude-opus-5",
-      effort: "low", maxTurns: 12, allowedTools, permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true } })) {
+      effort: "low", maxTurns: 12, allowedTools, mcpServers: mcpServers as never,
+      permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true } })) {
     if (m.type === "assistant") for (const b of (m as any).message.content) if (b.type === "text" && b.text.trim()) last = b.text;
     if (m.type === "result" && (m as any).subtype !== "success") throw new Error(`tracker query failed: ${(m as any).subtype}`);
   }
@@ -1294,7 +1297,7 @@ export const defaultJsonRunner: JsonRunner = async ({ prompt, allowedTools, cwd 
 export function mcpTracker(cfg: TrackerConfig, presetsDir: string, run: JsonRunner = defaultJsonRunner): TrackerProvider {
   const ask = async (name: string, vars: Record<string, string>) =>
     run({ prompt: await section(presetsDir, cfg.preset, name, { hints: cfg.hints ?? "", ...vars }),
-          allowedTools: [cfg.toolPrefix], cwd: process.cwd() });
+          allowedTools: [cfg.toolPrefix], mcpServers: cfg.mcpServers, cwd: process.cwd() });
   return {
     async listMyIssues() { return parseIssueList(await ask("listMyIssues", {})); },
     async fetchIssue(ref: string) { return parseIssue(await ask("fetchIssue", { ref })); },

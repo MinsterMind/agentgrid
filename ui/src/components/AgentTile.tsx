@@ -7,9 +7,10 @@ export interface AgentTileProps {
   onSelect: (id: string) => void; onAssign: (id: string, prompt: string) => void;
   /** Set when the adopted session's process is currently running outside the grid. */ live?: SessionInfo | null;
   /** Transcript-derived activity (embedded terminal work shows up here). */ activity?: SessionActivity | null;
+  /** Stage of this agent's in-flight bug-fix task, if any. */ bugStage?: string;
 }
 
-export function AgentTile({ agent, role, assignment, selected, index, recent, onSelect, onAssign, live, activity }: AgentTileProps) {
+export function AgentTile({ agent, role, assignment, selected, index, recent, onSelect, onAssign, live, activity, bugStage }: AgentTileProps) {
   const a = assignment;
   const line = agent.state === "free" ? null
     : agent.state === "done" ? `✅ ${a?.outcome?.split("\n").filter(Boolean).at(-1) ?? "done"}`
@@ -22,6 +23,7 @@ export function AgentTile({ agent, role, assignment, selected, index, recent, on
       <div className="hd">
         <div className="av">{role?.avatar ?? "🤖"}</div>
         <div><div className="name">{agent.displayName} — {agent.role}{agent.resumeSessionId && <span title="Continues an adopted Claude Code session"> 🔗</span>}</div><div className="repo">{basename(agent.repo)}</div></div>
+        {bugStage && <span className="chip" data-testid="tile-bug-stage">{bugStage}</span>}
       </div>
       {a && <div className="tasktitle" title={a.prompt}>{a.prompt.split("\n")[0].slice(0, 90)}</div>}
       {!a && activity?.lastPrompt && <div className="tasktitle" title={activity.lastPrompt}>{activity.lastPrompt.split("\n")[0].slice(0, 90)}</div>}

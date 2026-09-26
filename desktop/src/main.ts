@@ -24,6 +24,7 @@ async function boot(): Promise<RunningServer> {
     port: process.env.AGENTGRID_PORT ? Number(process.env.AGENTGRID_PORT) : 0,
     staticDir: packaged ? resource("ui") : resource("ui", "dist"),
     defaultsDir: packaged ? resource("roles") : resource("server", "roles"),
+    presetsDir: packaged ? resource("presets") : resource("server", "presets"),
     log: m => console.log(m),
   });
 }
