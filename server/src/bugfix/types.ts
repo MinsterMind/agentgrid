@@ -64,7 +64,8 @@ export type BugEvent =
   | { type: "checks-failed"; checks: string }
   | { type: "review-approved" }
   | { type: "conflicting" }
-  | { type: "pr-closed" };
+  | { type: "pr-closed" }
+  | { type: "pr-merged" };
 
 export interface Transition {
   stage: BugStage;

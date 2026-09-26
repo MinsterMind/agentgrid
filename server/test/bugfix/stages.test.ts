@@ -165,3 +165,8 @@ describe("Phase 2: the merge gate", () => {
     expect(nextStage(failed, { type: "retry" })).toMatchObject({ stage: "pushing", run: null });
   });
 });
+
+it("an externally merged PR routes to the same merging stage", () => {
+  expect(nextStage(at("monitoring"), { type: "pr-merged" })).toMatchObject({ stage: "merging", run: null });
+  expect(() => nextStage(at("implementing"), { type: "pr-merged" })).toThrow(/only while monitoring/i);
+});

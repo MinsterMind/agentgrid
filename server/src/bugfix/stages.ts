@@ -8,7 +8,7 @@ const wait = (stage: BugStage, kind: GateKind, reason?: "feedback" | "rebase"): 
 /** A server stage: the engine runs it, so `run` stays null — `run` means "dispatch an agent". */
 const serverRun = (stage: BugStage, note = ""): Transition => ({ stage, run: null, gate: null, note, error: null });
 
-const MONITORING_ONLY: BugEvent["type"][] = ["review-changes-requested", "checks-failed", "review-approved", "conflicting", "pr-closed"];
+const MONITORING_ONLY: BugEvent["type"][] = ["review-changes-requested", "checks-failed", "review-approved", "conflicting", "pr-closed", "pr-merged"];
 
 /**
  * The whole Phase 1 workflow in one pure function: given where a task is and what
@@ -33,6 +33,7 @@ export function nextStage(task: BugTask, event: BugEvent): Transition {
     case "pr-closed":
       return { stage: "done", run: null, gate: null, note: "",
                error: "the pull request was closed without merging" };
+    case "pr-merged": return serverRun("merging");
 
     case "stage-failed":
       // A gate stage isn't running anything — nothing dispatched for it, so nothing can
