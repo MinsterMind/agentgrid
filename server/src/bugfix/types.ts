@@ -19,6 +19,8 @@ export interface PrInfo {
   reviewDecision: string | null;
   checks: string | null;
   mergeable: string | null;
+  /** `gh`'s `headRefOid` — the server's only proof that a push actually landed on the PR. */
+  headSha: string | null;
   lastSeenEventAt: string;
 }
 

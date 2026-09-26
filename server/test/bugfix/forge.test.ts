@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { makeForge, type Runner } from "../../src/bugfix/forge/index.js";
+import { githubAdapter } from "../../src/bugfix/forge/github.js";
+
+const fixture = (name: string) => readFile(path.resolve("test/bugfix/fixtures/gh", name), "utf8");
 
 /** One recorded `gh pr list` payload — the shape the adapter must survive. */
 const GH_PR_LIST = JSON.stringify([{
@@ -39,7 +44,7 @@ describe("github adapter", () => {
     const r = runner({ "gh pr list": { stdout: GH_PR_LIST, code: 0 } });
     const pr = await makeForge({ preset: "github" }, r.run)!.findPr("/repo", "bugfix/PAY-42");
     expect(pr).toEqual({ number: 482, url: "https://github.com/acme/pay/pull/482", state: "OPEN",
-      reviewDecision: "REVIEW_REQUIRED", checks: "SUCCESS", mergeable: "MERGEABLE", lastSeenEventAt: "2026-09-25T10:00:00Z" });
+      reviewDecision: "REVIEW_REQUIRED", checks: "SUCCESS", mergeable: "MERGEABLE", headSha: null, lastSeenEventAt: "2026-09-25T10:00:00Z" });
     expect(r.calls[0]).toContain("--head bugfix/PAY-42");
   });
 
@@ -126,5 +131,69 @@ describe("github adapter", () => {
       expect(await makeForge({ preset: "github" }, r.run)!.findPr("/r", "b")).toBeNull();
       expect(r.calls).toHaveLength(1);
     });
+  });
+});
+
+describe("getPr", () => {
+  it("returns the PR when gh succeeds", async () => {
+    const stdout = await fixture("pr-changes-requested.json");
+    const f = githubAdapter(async () => ({ stdout, code: 0 }));
+    const r = await f.getPr("/r", 7);
+    expect(r).toEqual({ found: { number: 7, url: "https://github.com/acme/app/pull/7", state: "OPEN",
+      reviewDecision: "CHANGES_REQUESTED", checks: "SUCCESS", mergeable: "MERGEABLE", headSha: "abc123",
+      lastSeenEventAt: "2026-09-26T09:00:00Z" } });
+  });
+
+  it("distinguishes a missing PR from a gh failure", async () => {
+    const missing = githubAdapter(async () => ({ stdout: "", code: 1, stderr: "no pull requests found" } as any));
+    expect(await missing.getPr("/r", 7)).toEqual({ found: null });
+
+    const broken = githubAdapter(async () => ({ stdout: "", code: 1, stderr: "could not connect to api.github.com" } as any));
+    const r = await broken.getPr("/r", 7);
+    expect(r).toMatchObject({ unavailable: expect.stringMatching(/could not connect/i) });
+
+    const garbage = githubAdapter(async () => ({ stdout: "not json", code: 0 }));
+    expect(await garbage.getPr("/r", 7)).toMatchObject({ unavailable: expect.stringMatching(/could not read/i) });
+  });
+
+  it("reports a conflicting PR as such", async () => {
+    const f = githubAdapter(async () => ({ stdout: await fixture("pr-conflicting.json"), code: 0 }));
+    const r = await f.getPr("/r", 7);
+    expect(r).toMatchObject({ found: { mergeable: "CONFLICTING" } });
+  });
+});
+
+describe("listReviewEvents", () => {
+  it("normalises reviews, comments and checks, and marks bots", async () => {
+    const f = githubAdapter(async () => ({ stdout: await fixture("events-with-bot.json"), code: 0 }));
+    const events = await f.listReviewEvents("/r", 7, "2026-09-26T08:00:00Z");
+    expect(events).toEqual([
+      { kind: "review", state: "CHANGES_REQUESTED", author: "alice", isBot: false, body: "This leaks a handle.", at: "2026-09-26T09:00:00Z" },
+      { kind: "comment", state: "", author: "ci-bot", isBot: true, body: "Build failed.", at: "2026-09-26T09:05:00Z" },
+    ]);
+  });
+
+  it("drops events at or before `since`, and never throws on a gh failure", async () => {
+    const f = githubAdapter(async () => ({ stdout: await fixture("events-with-bot.json"), code: 0 }));
+    expect(await f.listReviewEvents("/r", 7, "2026-09-26T09:05:00Z")).toEqual([]);
+
+    const broken = githubAdapter(async () => ({ stdout: "", code: 1 }));
+    expect(await broken.listReviewEvents("/r", 7, "2026-09-26T08:00:00Z")).toEqual([]);
+  });
+});
+
+describe("merge", () => {
+  it("merges with the requested method and asks for the branch to be deleted", async () => {
+    const calls: string[][] = [];
+    const f = githubAdapter(async (_c, args) => { calls.push(args); return { stdout: "merged", code: 0 }; });
+    expect(await f.merge("/r", 7, "squash")).toEqual({ ok: true, message: "merged" });
+    expect(calls[0]).toEqual(["pr", "merge", "7", "--squash", "--delete-branch"]);
+    await f.merge("/r", 7, "rebase");
+    expect(calls[1]).toContain("--rebase");
+  });
+
+  it("reports why a merge was refused instead of throwing", async () => {
+    const f = githubAdapter(async () => ({ stdout: "", code: 1, stderr: "Pull request is not mergeable" } as any));
+    expect(await f.merge("/r", 7, "squash")).toEqual({ ok: false, message: expect.stringMatching(/not mergeable/i) as unknown as string });
   });
 });

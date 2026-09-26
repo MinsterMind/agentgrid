@@ -38,7 +38,10 @@ const forge = {
   name: "github",
   authStatus: async () => ({ ok: true, message: "ok" }),
   createPrCommand: () => "gh pr create --base 'main' --head 'bugfix/PAY-42' --title 't' --body-file '/b'",
-  findPr: async () => ({ number: 7, url: "https://gh/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", lastSeenEventAt: "t" }),
+  findPr: async () => ({ number: 7, url: "https://gh/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: "abc1234", lastSeenEventAt: "t" }),
+  getPr: async () => ({ found: null }),
+  listReviewEvents: async () => [],
+  merge: async () => ({ ok: true, message: "merged (fake)" }),
 };
 
 let home: string; let repo: string; let store: Store; let bugs: BugTaskStore; let fake: ReturnType<typeof makeFakeQuery>;
@@ -301,7 +304,7 @@ describe("opening-pr requires an OPEN pull request", () => {
   }
 
   it("fails the stage instead of advancing when findPr returns a MERGED pull request", async () => {
-    const e2 = new BugFixEngine({ ...(engine as any).deps, forge: { ...forge, findPr: async () => ({ number: 7, url: "https://gh/pr/7", state: "MERGED" as const, reviewDecision: null, checks: null, mergeable: null, lastSeenEventAt: "t" }) } });
+    const e2 = new BugFixEngine({ ...(engine as any).deps, forge: { ...forge, findPr: async () => ({ number: 7, url: "https://gh/pr/7", state: "MERGED" as const, reviewDecision: null, checks: null, mergeable: null, headSha: "abc1234", lastSeenEventAt: "t" }) } });
     e2.attach();
     const t = await toDiffReview(e2);
     await e2.approve(t.id);
@@ -311,7 +314,7 @@ describe("opening-pr requires an OPEN pull request", () => {
   });
 
   it("fails the stage instead of advancing when findPr returns a CLOSED pull request", async () => {
-    const e2 = new BugFixEngine({ ...(engine as any).deps, forge: { ...forge, findPr: async () => ({ number: 7, url: "https://gh/pr/7", state: "CLOSED" as const, reviewDecision: null, checks: null, mergeable: null, lastSeenEventAt: "t" }) } });
+    const e2 = new BugFixEngine({ ...(engine as any).deps, forge: { ...forge, findPr: async () => ({ number: 7, url: "https://gh/pr/7", state: "CLOSED" as const, reviewDecision: null, checks: null, mergeable: null, headSha: "abc1234", lastSeenEventAt: "t" }) } });
     e2.attach();
     const t = await toDiffReview(e2);
     await e2.approve(t.id);

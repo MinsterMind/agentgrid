@@ -199,7 +199,7 @@ describe("BugPanel", () => {
   });
 
   it("monitoring shows the PR link and no gate buttons", () => {
-    render(<BugPanel task={task("monitoring", { pr: { number: 7, url: "https://gh/pr/7", state: "OPEN", reviewDecision: null, checks: "SUCCESS", mergeable: "MERGEABLE", lastSeenEventAt: "" } })} onChanged={vi.fn()} />);
+    render(<BugPanel task={task("monitoring", { pr: { number: 7, url: "https://gh/pr/7", state: "OPEN", reviewDecision: null, checks: "SUCCESS", mergeable: "MERGEABLE", headSha: "abc1234", lastSeenEventAt: "" } })} onChanged={vi.fn()} />);
     expect(screen.getByRole("link", { name: /#7/ })).toHaveAttribute("href", "https://gh/pr/7");
     expect(screen.queryByRole("button", { name: "Create PR" })).toBeNull();
   });

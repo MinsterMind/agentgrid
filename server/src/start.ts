@@ -116,7 +116,10 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const fakeForge = {
     name: "fake", authStatus: async () => ({ ok: true, message: "fake forge" }),
     createPrCommand: () => "echo 'fake pr created'",
-    findPr: async () => ({ number: 1, url: "https://example.invalid/pr/1", state: "OPEN" as const, reviewDecision: null, checks: "SUCCESS", mergeable: "MERGEABLE", lastSeenEventAt: new Date().toISOString() }),
+    findPr: async () => ({ number: 1, url: "https://example.invalid/pr/1", state: "OPEN" as const, reviewDecision: null, checks: "SUCCESS", mergeable: "MERGEABLE", headSha: "fake0000", lastSeenEventAt: new Date().toISOString() }),
+    getPr: async () => ({ found: null }),
+    listReviewEvents: async () => [],
+    merge: async () => ({ ok: true, message: "merged (fake)" }),
   };
 
   const tracker = fake ? fakeTracker : (cfg.tracker ? mcpTracker(cfg.tracker, presetsDir) : null);

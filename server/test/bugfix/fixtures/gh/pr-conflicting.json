@@ -1,0 +1,3 @@
+{"number":7,"url":"https://github.com/acme/app/pull/7","state":"OPEN","isDraft":false,
+ "reviewDecision":null,"mergeable":"CONFLICTING","updatedAt":"2026-09-26T09:10:00Z","headRefOid":"def456",
+ "statusCheckRollup":[{"status":"IN_PROGRESS","conclusion":null}]}

@@ -1,7 +1,10 @@
 import { shellQuote } from "../../shell.js";
-import type { CreatePrContext, ForgeAdapter, PrInfo, Runner } from "./types.js";
+import type { CreatePrContext, ForgeAdapter, MergeMethod, PrInfo, ReviewEvent, Runner } from "./types.js";
 
 const FIELDS = "number,url,state,isDraft,reviewDecision,mergeable,updatedAt,statusCheckRollup";
+const PR_FIELDS = "number,url,state,isDraft,reviewDecision,mergeable,updatedAt,statusCheckRollup,headRefOid";
+/** gh says "no pull requests found" for a genuinely absent PR; anything else is a broken call. */
+const NOT_FOUND = /no pull requests? found|could not resolve to a pullrequest/i;
 
 const FAILURE_STATES = ["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED"];
 const SUCCESS_STATES = ["SUCCESS", "NEUTRAL", "SKIPPED"];
@@ -32,6 +35,15 @@ function rollup(checks: Array<{ status?: string; state?: string; conclusion?: st
   if (outcomes.includes("FAILURE")) return "FAILURE";
   if (outcomes.includes("PENDING")) return "PENDING";
   return "SUCCESS";
+}
+
+function toPrInfo(pr: any): PrInfo {
+  return {
+    number: pr.number, url: pr.url, state: (pr.state ?? "OPEN").toUpperCase() as PrInfo["state"],
+    reviewDecision: pr.reviewDecision ?? null, checks: rollup(pr.statusCheckRollup),
+    mergeable: pr.mergeable ?? null, headSha: pr.headRefOid ?? null,
+    lastSeenEventAt: pr.updatedAt ?? new Date().toISOString(),
+  };
 }
 
 export function githubAdapter(run: Runner): ForgeAdapter {
@@ -66,14 +78,39 @@ export function githubAdapter(run: Runner): ForgeAdapter {
         pr = allResult.pr;
       }
       if (!pr) return null;
-      return {
-        number: pr.number, url: pr.url,
-        state: (pr.state ?? "OPEN").toUpperCase() as PrInfo["state"],
-        reviewDecision: pr.reviewDecision ?? null,
-        checks: rollup(pr.statusCheckRollup),
-        mergeable: pr.mergeable ?? null,
-        lastSeenEventAt: pr.updatedAt ?? new Date().toISOString(),
-      };
+      return toPrInfo(pr);
+    },
+
+    async getPr(repoDir: string, number: number) {
+      const r = await run("gh", ["pr", "view", String(number), "--json", PR_FIELDS], repoDir);
+      if (r.code !== 0) {
+        const msg = (r.stderr ?? r.stdout ?? "").trim() || `gh exited ${r.code}`;
+        return NOT_FOUND.test(msg) ? { found: null } : { unavailable: msg };
+      }
+      try { return { found: toPrInfo(JSON.parse(r.stdout)) }; }
+      catch { return { unavailable: `could not read gh output for PR #${number}` }; }
+    },
+
+    async listReviewEvents(repoDir: string, number: number, since: string): Promise<ReviewEvent[]> {
+      const r = await run("gh", ["pr", "view", String(number), "--json", "reviews,comments"], repoDir);
+      if (r.code !== 0) return [];
+      let raw: any;
+      try { raw = JSON.parse(r.stdout || "{}"); } catch { return []; }
+      const isBot = (a: any) => Boolean(a?.is_bot ?? a?.isBot ?? /\[bot\]$/i.test(a?.login ?? ""));
+      const out: ReviewEvent[] = [
+        ...(raw.reviews ?? []).map((v: any) => ({ kind: "review" as const, state: (v.state ?? "").toUpperCase(),
+          author: v.author?.login ?? "", isBot: isBot(v.author), body: v.body ?? "", at: v.submittedAt ?? "" })),
+        ...(raw.comments ?? []).map((c: any) => ({ kind: "comment" as const, state: "",
+          author: c.author?.login ?? "", isBot: isBot(c.author), body: c.body ?? "", at: c.createdAt ?? "" })),
+      ];
+      return out.filter(e => e.at > since).sort((a, b) => a.at.localeCompare(b.at));
+    },
+
+    async merge(repoDir: string, number: number, method: MergeMethod) {
+      const flag = method === "squash" ? "--squash" : method === "rebase" ? "--rebase" : "--merge";
+      const r = await run("gh", ["pr", "merge", String(number), flag, "--delete-branch"], repoDir);
+      const message = ((r.code === 0 ? r.stdout : (r.stderr ?? r.stdout)) ?? "").trim();
+      return { ok: r.code === 0, message: message || (r.code === 0 ? "merged" : `gh exited ${r.code}`) };
     },
   };
 }

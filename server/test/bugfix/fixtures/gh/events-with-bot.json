@@ -1,0 +1,2 @@
+{"reviews":[{"author":{"login":"alice","is_bot":false},"state":"CHANGES_REQUESTED","body":"This leaks a handle.","submittedAt":"2026-09-26T09:00:00Z"}],
+ "comments":[{"author":{"login":"ci-bot","is_bot":true},"body":"Build failed.","createdAt":"2026-09-26T09:05:00Z"}]}
