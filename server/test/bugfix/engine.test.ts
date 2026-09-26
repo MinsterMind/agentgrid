@@ -6,6 +6,7 @@ import { Store } from "../../src/store/store.js";
 import { Manager } from "../../src/runner/manager.js";
 import { BugTaskStore } from "../../src/bugfix/store.js";
 import { BugFixEngine, recoverStuckBugTasks, FEEDBACK_ROUND_CAP } from "../../src/bugfix/engine.js";
+import { nextStage } from "../../src/bugfix/stages.js";
 import { GitOps } from "../../src/bugfix/git.js";
 import { IntegrationsStore } from "../../src/bugfix/integrations.js";
 import { makeFakeQuery, success } from "../helpers/fakeQuery.js";
@@ -1316,5 +1317,62 @@ describe("dismiss", () => {
     const live = await onMonitoringTask();
     const liveId = live.bugs.list().at(-1)!.id;
     await expect(live.engine.dismiss(liveId)).rejects.toThrow(/still running|not finished/i);
+  });
+});
+
+// Round 3: RECOVERABLE_STAGES previously excluded SERVER_STAGES ("pushing"/"merging")
+// entirely, so a crash mid-stage left a task stranded there forever — retry() requires
+// "failed", and no other event is legal from a server stage. That was the worst place in
+// the whole workflow to have no exit: a crash mid-"merging" means nobody, not the user or
+// the server, knows whether the merge actually landed. These tests seed a task in each
+// server stage the way a crash would — via BugTaskStore directly, never through the
+// engine's own dispatch, so nothing has actually run doMerge/doPush yet — then recover it
+// and retry.
+describe("recovering a task stranded mid server-stage by a crash", () => {
+  it("recovers a task stuck mid-merging to failed with the restart reason, and retry reaches done without merging twice when the PR already reads MERGED", async () => {
+    const { bugs, forge, taskId } = await atMergeGate();
+    // Simulate the crash: drive exactly the transition `approve()` would (via the same
+    // `nextStage`), but stop right there — no `doMerge` ever runs. This is what a process
+    // death right after this stage-transition write, and before the engine's own detached
+    // dispatch, leaves on disk.
+    await bugs.apply(taskId, nextStage(bugs.get(taskId), { type: "approve" }));
+    expect(bugs.get(taskId).stage).toBe("merging");
+
+    await recoverStuckBugTasks(bugs);
+    expect(bugs.get(taskId).stage).toBe("failed");
+    expect(bugs.get(taskId).error).toMatch(/restart/i);
+
+    // The merge actually landed before (or during) the crash — retry must confirm that
+    // and tear down, never call forge.merge a second time.
+    forge.state = "MERGED";
+    const fresh = new BugFixEngine((engine as any).deps);
+    fresh.attach();
+    await fresh.retry(taskId);
+    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    const t = bugs.get(taskId);
+    expect(forge.merges).toEqual([]);   // never called — the PR already read MERGED
+    expect(t.stage).toBe("done");
+  });
+
+  it("recovers a task stuck mid-pushing to failed with the restart reason, and retry pushes again as a no-op", async () => {
+    const { bugs, gitState, forge } = await atFeedbackDiffGate();
+    const taskId = "bt1";
+    await bugs.apply(taskId, nextStage(bugs.get(taskId), { type: "approve" }));
+    expect(bugs.get(taskId).stage).toBe("pushing");
+
+    await recoverStuckBugTasks(bugs);
+    expect(bugs.get(taskId).stage).toBe("failed");
+    expect(bugs.get(taskId).error).toMatch(/restart/i);
+
+    // The branch may already be pushed — a retried push is a no-op that still succeeds:
+    // the PR already reports the head the pin check expects.
+    forge.prHead = gitState.head;
+    const fresh = new BugFixEngine((engine as any).deps);
+    fresh.attach();
+    await fresh.retry(taskId);
+    await until(() => bugs.get(taskId).stage !== "pushing", 2000);
+    const t = bugs.get(taskId);
+    expect(t.stage).toBe("monitoring");
+    expect(t.error).toBeNull();
   });
 });
