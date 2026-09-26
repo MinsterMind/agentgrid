@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Store } from "../../src/store/store.js";
@@ -21,13 +21,23 @@ const ISSUE: TrackerIssue = { key: "PAY-42", title: "Boom", url: "https://x/PAY-
  *  overrides `commits` — the feedback-round harness (`onMonitoringTask`, below) sets it after
  *  reaching monitoring, and it has to actually drive this mock's `commitsAhead()` rather than
  *  just look like it does. */
-function fakeGit(state: { commits: number; head?: string; commitsAhead?: number; rebaseState?: { inProgress: boolean; conflicted: string[] } }) {
+function fakeGit(state: { commits: number; head?: string; commitsAhead?: number; rebaseState?: { inProgress: boolean; conflicted: string[] }; removed?: Array<{ repo: string; worktree: string; branch: string }>; removeError?: string }) {
   const calls: string[] = [];
+  state.removed ??= [];
   const g = new GitOps(async () => "");
   g.defaultBranch = async () => "main";
   g.hasRemote = async () => "git@github.com:acme/pay.git";
   g.createWorktree = async (repo, branch) => { calls.push(`create ${branch}`); const d = path.join(repo, ".worktrees", branch.replace("/", "-")); await mkdir(d, { recursive: true }); return d; };
-  g.removeWorktree = async () => { calls.push("remove"); };
+  g.removeWorktree = async (repo, worktree, branch) => {
+    calls.push("remove");
+    if (state.removeError) throw new Error(state.removeError);
+    state.removed!.push({ repo, worktree, branch });
+    // The real GitOps.removeWorktree deletes the directory; a fake that only records the
+    // call would leave it on disk, and a later `intake()` reusing the same issue key (e.g. a
+    // second `atMergeGate()`/`onMonitoringTask()` call in the same test) would then trip the
+    // "leftover worktree" guard against a worktree this fake claims it already tore down.
+    await rm(worktree, { recursive: true, force: true });
+  };
   g.currentBranch = async () => "bugfix/PAY-42";
   g.revParse = async () => state.head ?? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   g.commitsAhead = async () => state.commitsAhead ?? state.commits;
@@ -40,17 +50,28 @@ function fakeGit(state: { commits: number; head?: string; commitsAhead?: number;
 
 const forge = {
   name: "github",
+  // Mutable merge-tracking state, reset in `beforeEach` below — shared by every test that
+  // uses the default `forge` (rather than `atMergeGate`'s own override), including the
+  // "externally merged" path which drives this same object directly.
+  merges: [] as Array<{ number: number; method: string }>,
+  mergeResult: { ok: true, message: "merged (fake)" } as { ok: boolean; message: string },
+  state: "OPEN" as "OPEN" | "MERGED" | "CLOSED",
+  stateAfterMerge: "MERGED" as "OPEN" | "MERGED" | "CLOSED",
   authStatus: async () => ({ ok: true, message: "ok" }),
   createPrCommand: () => "gh pr create --base 'main' --head 'bugfix/PAY-42' --title 't' --body-file '/b'",
   findPr: async () => ({ number: 7, url: "https://gh/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: "abc1234", lastSeenEventAt: "t" }),
-  getPr: async () => ({ found: null }),
+  getPr: async () => ({ found: { number: 7, url: "https://x/pr/7", state: forge.state, reviewDecision: null, checks: null, mergeable: "MERGEABLE" as string | null, headSha: "abc1234", lastSeenEventAt: "t" } }),
   listReviewEvents: async () => [],
-  merge: async () => ({ ok: true, message: "merged (fake)" }),
+  merge: async (_repo: string, number: number, method: string) => {
+    forge.merges.push({ number, method });
+    if (forge.mergeResult.ok) forge.state = forge.stateAfterMerge;
+    return forge.mergeResult;
+  },
 };
 
 let home: string; let repo: string; let store: Store; let bugs: BugTaskStore; let fake: ReturnType<typeof makeFakeQuery>;
 let engine: BugFixEngine; let comments: Array<[string, string]>;
-let gitState: { commits: number; head?: string; commitsAhead?: number; rebaseState?: { inProgress: boolean; conflicted: string[] } };
+let gitState: { commits: number; head?: string; commitsAhead?: number; rebaseState?: { inProgress: boolean; conflicted: string[] }; removed?: Array<{ repo: string; worktree: string; branch: string }>; removeError?: string };
 
 beforeEach(async () => {
   home = await mkdtemp(path.join(tmpdir(), "eng-home-"));
@@ -62,6 +83,11 @@ beforeEach(async () => {
   fake = makeFakeQuery();
   gitState = { commits: 0 };
   comments = [];
+  // Reset the shared default forge's mutable merge-tracking state between tests.
+  forge.merges = [];
+  forge.mergeResult = { ok: true, message: "merged (fake)" };
+  forge.state = "OPEN";
+  forge.stateAfterMerge = "MERGED";
   engine = new BugFixEngine({
     store, bugs, manager: new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, a, e) => ({ cwd: a.repo, abortController: e.abortController, canUseTool: e.canUseTool } as Options) }),
     git: fakeGit(gitState).git, integrations: new IntegrationsStore(home),
@@ -1029,3 +1055,143 @@ describe("a rebase round", () => {
   });
 });
 
+
+/**
+ * Lands a fresh task at the merge gate (`approved`, `gate.kind === "merge"`) via the same
+ * "review-approved" finding a real watcher would report from `monitoring`. Overrides the
+ * engine's forge with a mutable merge-tracking fake and the tracker with one whose failure
+ * can be toggled per test, mirroring `atFeedbackDiffGate`'s shape.
+ */
+async function atMergeGate() {
+  const { engine, bugs, gitState } = await onMonitoringTask();
+  const deps = (engine as any).deps;
+
+  const mergeForge: any = {
+    name: "github",
+    merges: [] as Array<{ number: number; method: string }>,
+    mergeResult: { ok: true, message: "merged (fake)" },
+    state: "OPEN" as "OPEN" | "MERGED" | "CLOSED",
+    stateAfterMerge: "MERGED" as "OPEN" | "MERGED" | "CLOSED",
+    authStatus: async () => ({ ok: true, message: "ok" }),
+    createPrCommand: () => "gh pr create --base 'main' --head 'bugfix/PAY-42' --title 't' --body-file '/b'",
+    findPr: async () => ({ number: 7, url: "https://x/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: gitState.head, lastSeenEventAt: "t" }),
+    getPr: async () => ({ found: { number: 7, url: "https://x/pr/7", state: mergeForge.state, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: gitState.head, lastSeenEventAt: "t" } }),
+    listReviewEvents: async () => [],
+    merge: async (_repo: string, number: number, method: string) => {
+      mergeForge.merges.push({ number, method });
+      if (mergeForge.mergeResult.ok) mergeForge.state = mergeForge.stateAfterMerge;
+      return mergeForge.mergeResult;
+    },
+  };
+  deps.forge = mergeForge;
+
+  const mergeTracker: any = {
+    fail: false,
+    comments: [] as Array<{ key: string; text: string }>,
+    listMyIssues: async () => [],
+    fetchIssue: async () => ISSUE,
+    comment: async (key: string, text: string) => {
+      if (mergeTracker.fail) throw new Error("tracker unavailable");
+      mergeTracker.comments.push({ key, text });
+    },
+  };
+  deps.tracker = mergeTracker;
+
+  const taskId = bugs.list().at(-1)!.id;
+  await engine.onPrFinding({ taskId, pr: { ...gitState.pr, state: "OPEN" }, event: { type: "review-approved" } });
+  await until(() => bugs.get(taskId).stage === "approved");
+
+  return { engine, bugs, forge: mergeForge, gitState, store, tracker: mergeTracker, taskId };
+}
+
+describe("merging", () => {
+  it("merges with the recorded method, confirms MERGED, tears down, and lands on done", async () => {
+    const { engine, bugs, forge, gitState, store, taskId } = await atMergeGate();
+    await engine.approve(taskId);
+    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    const t = bugs.get(taskId);
+    expect(forge.merges).toEqual([{ number: 7, method: "squash" }]);
+    expect(t.stage).toBe("done");
+    expect(t.pr).toMatchObject({ state: "MERGED" });
+    expect(gitState.removed).toEqual([{ repo: t.sourceRepo, worktree: t.worktree, branch: t.branch }]);
+    expect(store.getAgent(t.agentId)?.state).toBe("free");
+    expect(t.error).toBeNull();
+  });
+
+  it("honours a method chosen at the gate", async () => {
+    const { engine, bugs, forge, taskId } = await atMergeGate();
+    await engine.mergeTask(taskId, "merge");
+    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    expect(forge.merges[0]).toMatchObject({ method: "merge" });
+  });
+
+  it("fails the stage with the forge's reason and does not tear anything down", async () => {
+    const { engine, bugs, forge, gitState, taskId } = await atMergeGate();
+    forge.mergeResult = { ok: false, message: "Pull request is not mergeable" };
+    await engine.approve(taskId);
+    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    expect(bugs.get(taskId).stage).toBe("failed");
+    expect(bugs.get(taskId).error).toMatch(/not mergeable/i);
+    expect(gitState.removed).toEqual([]);
+  });
+
+  it("refuses to tear down when the PR does not actually read as MERGED afterwards", async () => {
+    const { engine, bugs, forge, gitState, taskId } = await atMergeGate();
+    forge.stateAfterMerge = "OPEN";                       // the merge call lied, or raced
+    await engine.approve(taskId);
+    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    expect(bugs.get(taskId).stage).toBe("failed");
+    expect(gitState.removed).toEqual([]);
+  });
+
+  it("still reaches done when cleanup fails, and says what is left behind", async () => {
+    const { engine, bugs, gitState, taskId } = await atMergeGate();
+    gitState.removeError = "worktree cleanup incomplete: branch -D failed";
+    await engine.approve(taskId);
+    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    const t = bugs.get(taskId);
+    expect(t.stage).toBe("done");                         // the merge is a fact; do not hide it
+    expect(t.error).toMatch(/cleanup incomplete/i);
+    expect(t.error).toContain(t.worktree);
+  });
+
+  it("comments the PR link on the ticket, and a tracker failure does not undo the merge", async () => {
+    const { engine, bugs, tracker, taskId } = await atMergeGate();
+    await engine.approve(taskId);
+    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    expect(tracker.comments[0]).toMatchObject({ key: "PAY-42" });
+    expect(tracker.comments[0].text).toContain("https://x/pr/7");
+
+    const second = await atMergeGate();
+    second.tracker.fail = true;
+    await second.engine.approve(second.taskId);
+    await until(() => second.bugs.get(second.taskId).stage !== "merging", 2000);
+    expect(second.bugs.get(second.taskId).stage).toBe("done");
+  });
+
+  it("an externally merged PR reaches done through the same path, without calling merge", async () => {
+    const { engine, bugs, gitState } = await onMonitoringTask();
+    forge.state = "MERGED";
+    await engine.onPrFinding({ taskId: "bt1", pr: { ...gitState.pr, state: "MERGED" }, event: { type: "pr-merged" } });
+    await until(() => bugs.get("bt1").stage !== "merging", 2000);
+    expect(forge.merges).toEqual([]);                     // nothing to merge — it already is
+    expect(bugs.get("bt1").stage).toBe("done");
+    expect(gitState.removed).toHaveLength(1);
+  });
+});
+
+describe("dismiss", () => {
+  it("removes a finished task and its agent, and is refused while the task is live", async () => {
+    const { engine, bugs, store, taskId } = await atMergeGate();
+    await engine.approve(taskId);
+    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    const agentId = bugs.get(taskId).agentId;
+    await engine.dismiss(taskId);
+    expect(() => bugs.get(taskId)).toThrow();              // NotFound
+    expect(() => store.getAgent(agentId)).toThrow();       // archived, not merely free
+
+    const live = await onMonitoringTask();
+    const liveId = live.bugs.list().at(-1)!.id;
+    await expect(live.engine.dismiss(liveId)).rejects.toThrow(/still running|not finished/i);
+  });
+});

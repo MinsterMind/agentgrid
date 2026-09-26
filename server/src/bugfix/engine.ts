@@ -13,6 +13,7 @@ import { renderStagePrompt } from "./prompts.js";
 import { nextStage } from "./stages.js";
 import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask } from "./types.js";
 import type { PrFinding } from "./watcher.js";
+import type { MergeMethod } from "./forge/types.js";
 
 /** After this many rounds the watcher's findings stop dispatching and only report. A
  *  pathological review thread should not quietly spend the user's budget. */
@@ -192,6 +193,25 @@ export class BugFixEngine {
   approve(taskId: string): Promise<BugTask> { return this.advance(taskId, { type: "approve" }); }
   cancel(taskId: string): Promise<BugTask> { return this.advance(taskId, { type: "cancel" }); }
   retry(taskId: string): Promise<BugTask> { return this.advance(taskId, { type: "retry" }); }
+
+  /** The merge gate's approve. When a method is chosen at the gate, it's recorded before the
+   *  transition runs, so `doMerge` reads the one the human actually picked, not the task's
+   *  default from intake. */
+  async mergeTask(taskId: string, method?: MergeMethod): Promise<BugTask> {
+    if (method) await this.deps.bugs.patch(taskId, { mergeMethod: method });
+    return this.approve(taskId);
+  }
+
+  /** Removes a finished task and its agent. Refused while the task is still live — dismissing
+   *  a running task would strand its agent mid-assignment with nothing left to ack it. */
+  async dismiss(taskId: string): Promise<void> {
+    const task = this.deps.bugs.get(taskId);
+    if (!TERMINAL_STAGES.includes(task.stage)) throw new Conflict(`task ${taskId} is still running (${task.stage})`);
+    await this.deps.store.archiveAgent(task.agentId).catch(() => {});  // already archived is fine
+    this.currentDispatch.delete(task.id);
+    await this.deps.bugs.remove(task.id);
+  }
+
   async requestChanges(taskId: string, text: string): Promise<BugTask> {
     if (!text.trim()) throw new Conflict("say what should change");
     // The note is stored inside `advanceLocked`, only once the transition itself has
@@ -364,10 +384,15 @@ export class BugFixEngine {
    *  stage, so retry and failure handling behave identically either way. */
   private async runServerStage(task: BugTask): Promise<void> {
     try {
+      // "merging"'s cleanup message (if any) has to land *after* the stage-done transition
+      // below, not before it: `nextStage`'s "merging" case advances to "done" via `go(...)`,
+      // which always writes `error: null` — a patch made before that transition would just be
+      // clobbered by it. `doMerge` reports the message back instead of writing it itself.
+      let cleanupError: string | null = null;
       if (task.stage === "pushing") await this.doPush(task);
-      // "merging" joins this dispatch in Task 8 (`else if (task.stage === "merging") await
-      // this.doMerge(task);`) — `doMerge` does not exist yet.
+      else if (task.stage === "merging") cleanupError = await this.doMerge(task);
       await this.advance(task.id, { type: "stage-done" });
+      if (cleanupError) await this.deps.bugs.patch(task.id, { error: cleanupError });
     } catch (err) {
       await this.advance(task.id, { type: "stage-failed", reason: (err as Error).message }).catch(() => {});
     }
@@ -403,6 +428,50 @@ export class BugFixEngine {
         throw new Error(`the pull request is still on ${lookup.found.headSha} after the push`);
       }
     }
+  }
+
+  /** The merge gate's approve, executed server-side. The only irreversible step in the whole
+   *  workflow — a merge cannot be undone, and teardown destroys a worktree and a branch — so
+   *  everything here is ordered to fail safe: verify before merging, verify again before
+   *  tearing anything down, and never let a cleanup problem hide a merge that already happened. */
+  /** Returns the cleanup message when teardown left something behind, or null when it's
+   *  clean — the caller (`runServerStage`) applies it as the task's `error` *after* the
+   *  stage-done transition lands, since that transition unconditionally clears `error`. */
+  private async doMerge(task: BugTask): Promise<string | null> {
+    const { forge, bugs, git, tracker } = this.deps;
+    if (!forge) throw new Error("no forge adapter: cannot merge");
+    if (!task.pr) throw new Error("no pull request recorded for this task");
+
+    // An externally merged PR arrives here too (pr-merged). Re-read before doing anything:
+    // merging something already merged is at best noise and at worst an error we would
+    // report as a failure.
+    const before = await forge.getPr(task.sourceRepo, task.pr.number);
+    const alreadyMerged = "found" in before && before.found?.state === "MERGED";
+    if (!alreadyMerged) {
+      const res = await forge.merge(task.sourceRepo, task.pr.number, task.mergeMethod);
+      if (!res.ok) throw new Error(res.message);
+    }
+
+    // Verify rather than trust: the merge call succeeding is not the same as the PR being merged.
+    const after = await forge.getPr(task.sourceRepo, task.pr.number);
+    if (!("found" in after) || after.found?.state !== "MERGED") {
+      throw new Error(`the pull request did not come back merged${"unavailable" in after ? ` (${after.unavailable})` : ""}`);
+    }
+    await bugs.patch(task.id, { pr: after.found });
+
+    // Only now, with the merge confirmed, is it safe to destroy anything.
+    let cleanup: string | null = null;
+    try {
+      await git.removeWorktree(task.sourceRepo, task.worktree, task.branch);
+    } catch (err) {
+      // A merge is a fact. A cleanup problem must not hide it, so record it and carry on.
+      cleanup = `${(err as Error).message}. Left behind: ${task.worktree} and branch ${task.branch} — clear them with: git -C ${task.sourceRepo} worktree remove --force ${task.worktree} && git -C ${task.sourceRepo} branch -D ${task.branch}`;
+    }
+    await this.stopAgent(task);
+    try {
+      await tracker.comment(task.issue.key, `Fixed by ${after.found.url} (merged).`);
+    } catch { /* the ticket is a courtesy; never fail a merged task over it */ }
+    return cleanup;
   }
 
   /** An assignment finished: verify the stage's real-world effect, then advance or fail. */

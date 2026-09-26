@@ -128,3 +128,26 @@ describe("BugTaskStore concurrent mutations", () => {
     expect(after.history.map(h => h.stage)).toEqual(["intake", "analyzing", "cancelled"]);
   });
 });
+
+describe("remove", () => {
+  it("deletes the task file and its artifacts, and emits bugtask-removed", async () => {
+    const t = await mk();
+    await store.writeArtifact(t.id, "plan.md", "# Plan");
+    await store.remove(t.id);
+    expect(() => store.get(t.id)).toThrow(NotFound);
+    await expect(readFile(path.join(home, "bugtasks", `${t.id}.json`), "utf8")).rejects.toThrow();
+    await expect(store.readArtifact(t.id, "plan.md")).rejects.toThrow(NotFound);
+    expect(events.at(-1)).toEqual({ type: "bugtask-removed", id: t.id });
+
+    // gone from a reload too
+    const reloaded = new BugTaskStore(home);
+    await reloaded.init();
+    expect(reloaded.list()).toEqual([]);
+  });
+
+  it("unknown ids throw NotFound without emitting", async () => {
+    const before = events.length;
+    await expect(store.remove("bt999")).rejects.toThrow(NotFound);
+    expect(events.length).toBe(before);
+  });
+});

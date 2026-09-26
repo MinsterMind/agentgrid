@@ -26,6 +26,7 @@ export function reducer(s: UiState, a: Action): UiState {
       if (e.type === "assignment") return { ...s, assignments: { ...s.assignments, [e.assignment.id]: e.assignment } };
       if (e.type === "agent-removed") return { ...s, agents: s.agents.filter(x => x.id !== e.id), selectedId: s.selectedId === e.id ? null : s.selectedId };
       if (e.type === "bugtask") return { ...s, bugTasks: { ...s.bugTasks, [e.task.id]: e.task } };
+      if (e.type === "bugtask-removed") { const { [e.id]: _drop, ...bugTasks } = s.bugTasks; return { ...s, bugTasks }; }
       const i = s.agents.findIndex(x => x.id === e.agent.id);
       const agents = i === -1 ? [...s.agents, e.agent] : s.agents.map((x, j) => (j === i ? e.agent : x));
       return { ...s, agents };

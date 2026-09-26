@@ -68,7 +68,8 @@ export type GridEvent =
   | { type: "roles"; roles: RoleDef[] }
   | { type: "sessions"; sessions: SessionInfo[] }
   | { type: "session-status"; status: SessionActivity }
-  | { type: "bugtask"; task: BugTask };
+  | { type: "bugtask"; task: BugTask }
+  | { type: "bugtask-removed"; id: string };
 
 export interface GridState { roles: RoleDef[]; agents: Agent[]; assignments: Assignment[]; liveSessions: SessionInfo[]; sessionStatuses: SessionActivity[]; bugTasks: BugTask[] }
 

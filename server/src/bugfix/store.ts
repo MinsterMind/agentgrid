@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdir, readdir, readFile, writeFile, rename } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { NotFound } from "../store/store.js";
 import { TERMINAL_STAGES, type BugTask, type TrackerIssue, type Transition } from "./types.js";
@@ -127,6 +127,18 @@ export class BugTaskStore extends EventEmitter {
     this.tasks.set(task.id, task);
     this.emit("event", { type: "bugtask", task });
     return task;
+  }
+
+  /** Deletes the task file and its artifacts directory — used by `dismiss()` on a terminal
+   *  task. Same safeId guard and write chain as every other mutation here. */
+  async remove(id: string): Promise<void> {
+    this.get(id);   // throws NotFound for an unknown or malformed id, before queueing behind the chain
+    return withWriteChain(this.file(id), async () => {
+      await rm(this.dir(id), { recursive: true, force: true });
+      await rm(this.file(id), { force: true });
+      this.tasks.delete(id);
+      this.emit("event", { type: "bugtask-removed", id });
+    });
   }
 
   async writeArtifact(id: string, name: string, data: string): Promise<void> {
