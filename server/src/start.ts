@@ -13,13 +13,13 @@ import * as nodePty from "node-pty";
 import { attachPtyWebSocket } from "./api/ws.js";
 import { listAllSessions, listLiveSessions, LiveSessionWatcher } from "./sessions.js";
 import { SessionStatusWatcher } from "./sessionStatus.js";
-import type { QueryFn } from "./runner/runner.js";
 import { BugTaskStore } from "./bugfix/store.js";
 import { IntegrationsStore } from "./bugfix/integrations.js";
 import { GitOps } from "./bugfix/git.js";
 import { makeForge } from "./bugfix/forge/index.js";
 import { mcpTracker, type TrackerProvider } from "./bugfix/tracker.js";
 import { BugFixEngine, recoverStuckBugTasks } from "./bugfix/engine.js";
+import { fakeAgentQuery } from "./fake/agent.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -44,13 +44,6 @@ export interface StartOptions {
 export interface RunningServer { port: number; url: string; home: string; close(): Promise<void> }
 
 // Scripted runner for UI e2e: every assignment asks one permission, then succeeds.
-const fakeQuery: QueryFn = ({ options }) => (async function* () {
-  yield { type: "system", subtype: "init", session_id: `fake-${Date.now()}` } as any;
-  yield { type: "assistant", message: { content: [{ type: "text", text: "Thinking about it…" }] } } as any;
-  const r = await options.canUseTool!("Bash", { command: "echo hi" }, { signal: options.abortController!.signal, toolUseID: `tu-${Date.now()}` } as any);
-  if (r!.behavior === "deny") { yield { type: "result", subtype: "error_during_execution", num_turns: 1, total_cost_usd: 0.01, duration_ms: 1, is_error: true } as any; return; }
-  yield { type: "result", subtype: "success", result: "All done (fake).", num_turns: 2, total_cost_usd: 0.02, duration_ms: 1, is_error: false } as any;
-})();
 
 /** Boot the whole AgentGrid server (store, runners, API, PTY bridge, live-session watcher) and listen on loopback. */
 export async function startServer(opts: StartOptions = {}): Promise<RunningServer> {
@@ -62,7 +55,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
 
   const store = new Store(home, defaultsDir);
   await store.init();
-  const manager = new Manager(store, fake ? { queryFn: fakeQuery, buildOptions: (_r, a, e) => ({ cwd: a.repo, canUseTool: e.canUseTool, abortController: e.abortController }) } : {});
+  const manager = new Manager(store, fake ? { queryFn: fakeAgentQuery, buildOptions: (_r, a, e) => ({ cwd: a.repo, canUseTool: e.canUseTool, abortController: e.abortController }) } : {});
   await manager.recoverOnStart();
 
   let rolesReloadTimer: NodeJS.Timeout | null = null;
