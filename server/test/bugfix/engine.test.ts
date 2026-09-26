@@ -1230,6 +1230,77 @@ describe("merging", () => {
     expect(t.error).toMatch(/did not come back merged/i);
     expect(gitState.removed).toEqual([]);
   });
+
+  // Item 1, round 2: `retry` re-enters "merging" directly (a SERVER_STAGES stage, per
+  // stages.ts's `retry` case), stacking a "failed" on top of whatever originally gated the
+  // attempt. The entry-route discriminator must see past that "failed" (and the "merging" it
+  // sits on) to the "approved" underneath, or a gated merge that failed for a fixable reason
+  // (e.g. "not mergeable" because of an unrelated conflicting PR that has since been dealt
+  // with) could never be retried — the only ways out would be merging in the browser or
+  // dismissing the task outright.
+  it("a gated merge that failed can be retried, and the retry actually merges", async () => {
+    const { engine, bugs, forge, taskId } = await atMergeGate();
+    forge.mergeResult = { ok: false, message: "Pull request is not mergeable" };
+    await engine.approve(taskId);
+    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    expect(bugs.get(taskId).stage).toBe("failed");
+
+    forge.mergeResult = { ok: true, message: "merged (fake)" };   // whatever blocked it is now fixed
+    await engine.retry(taskId);
+    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    const t = bugs.get(taskId);
+    expect(forge.merges).toEqual([{ number: 7, method: "squash" }, { number: 7, method: "squash" }]);
+    expect(t.stage).toBe("done");
+    expect(t.error).toBeNull();
+  });
+
+  // The other half: the same "skip failed too" fix must not let the *ungated* route start
+  // merging just because it now has a "failed" of its own sitting where "merging" used to be
+  // — its nearest non-"merging"/"failed" history entry is still "monitoring", never
+  // "approved", however many retries pile on.
+  it("the external path still cannot merge after a retry", async () => {
+    const { engine, bugs, gitState } = await onMonitoringTask();
+    forge.state = "OPEN";   // still not actually merged
+    await engine.onPrFinding({ taskId: "bt1", pr: { ...gitState.pr, state: "MERGED" }, event: { type: "pr-merged" } });
+    await until(() => bugs.get("bt1").stage !== "merging", 2000);
+    expect(bugs.get("bt1").stage).toBe("failed");
+
+    await engine.retry("bt1");
+    await until(() => bugs.get("bt1").stage !== "merging", 2000);
+    expect(forge.merges).toEqual([]);                      // still never merges on the ungated path
+    expect(bugs.get("bt1").stage).toBe("failed");
+  });
+
+  // Item 2, round 2: a PERSISTENT (not one-shot) `stopAgent` failure used to discard the
+  // whole cleanup message. `doMerge`'s own guard around `stopAgent` folds the failure into
+  // the message it returns — but `runServerStage` only patches that message onto the task
+  // *after* `advance(stage-done)` resolves, and that `advance()` call runs `settleTerminal`,
+  // which called the *same* persistently-failing `stopAgent` again, unguarded, rejecting the
+  // whole `advance()` before the message was ever patched on. Guarding `settleTerminal`'s
+  // call too (rather than, say, applying the message before the transition) keeps the fix at
+  // the one place that generically owns "release resources for a task that just went
+  // terminal" — every terminal transition benefits, not just this one.
+  it("a persistent agent-freeing failure after a successful teardown still reaches done with the message", async () => {
+    const { engine, bugs, store, taskId } = await atMergeGate();
+    (store as any).getAgent = () => { throw new Error("agent already gone"); };
+    await engine.approve(taskId);
+    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    const t = bugs.get(taskId);
+    expect(t.stage).toBe("done");
+    expect(t.error).toMatch(/could not free the agent.*agent already gone/i);
+  });
+
+  it("a persistent agent-freeing failure alongside a worktree cleanup failure preserves both messages", async () => {
+    const { engine, bugs, store, gitState, taskId } = await atMergeGate();
+    gitState.removeError = "worktree cleanup incomplete: branch -D failed";
+    (store as any).getAgent = () => { throw new Error("agent already gone"); };
+    await engine.approve(taskId);
+    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    const t = bugs.get(taskId);
+    expect(t.stage).toBe("done");
+    expect(t.error).toMatch(/cleanup incomplete/i);
+    expect(t.error).toMatch(/could not free the agent/i);
+  });
 });
 
 describe("dismiss", () => {

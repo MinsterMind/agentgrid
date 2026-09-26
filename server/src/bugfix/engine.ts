@@ -463,7 +463,18 @@ export class BugFixEngine {
     // same shape `doPush` uses for its force flag) and let only the gated route call merge;
     // the ungated route may only confirm, and must fail the stage — never merge — when the PR
     // doesn't already read MERGED.
-    const enteredFromGate = [...task.history].reverse().find(h => h.stage !== "merging")?.stage === "approved";
+    //
+    // Skip "failed" as well as "merging": `retry` re-enters "merging" directly (stages.ts's
+    // `retry` case resumes a failed SERVER_STAGES stage with `serverRun(last.stage)`), so a
+    // gated merge that failed and got retried has "failed" sitting on top of the "approved"
+    // that actually gated it — without skipping it too, a retry of a failed *gated* merge
+    // would misread as the ungated route and refuse forever, with no way out but merging in
+    // the browser or dismissing the task. Skipping both still leaves the ungated route
+    // correctly ungated: its nearest non-"merging"/"failed" entry is "monitoring", never
+    // "approved", however many retries pile "merging"/"failed" pairs on top of it — and an
+    // *older* "approved" from an earlier, since-rejected merge-gate visit stays shadowed by
+    // whatever more recent stage (e.g. another "monitoring") sits between it and here.
+    const enteredFromGate = [...task.history].reverse().find(h => h.stage !== "merging" && h.stage !== "failed")?.stage === "approved";
 
     // An externally merged PR arrives here too (pr-merged). Re-read before doing anything:
     // merging something already merged is at best noise and at worst an error we would
@@ -494,25 +505,28 @@ export class BugFixEngine {
     if (!("found" in after) || after.found?.state !== "MERGED") {
       throw new Error(`the pull request did not come back merged${"unavailable" in after ? ` (${after.unavailable})` : ""}`);
     }
-    await bugs.patch(task.id, { pr: after.found });
+    // From here on, the merge is a fact. Every remaining step is best-effort: a failure in
+    // any one of them must be folded into the cleanup message, never propagate and present a
+    // merged task as a failed one. `noteProblem` accumulates them all the same way.
+    let cleanup: string | null = null;
+    const noteProblem = (msg: string) => { cleanup = cleanup ? `${cleanup} Also: ${msg}` : msg; };
+
+    try {
+      await bugs.patch(task.id, { pr: after.found });
+    } catch (err) {
+      noteProblem(`could not record the merged pull request: ${(err as Error).message}`);
+    }
 
     // Only now, with the merge confirmed, is it safe to destroy anything.
-    let cleanup: string | null = null;
     try {
       await git.removeWorktree(task.sourceRepo, task.worktree, task.branch);
     } catch (err) {
-      // A merge is a fact. A cleanup problem must not hide it, so record it and carry on.
-      cleanup = `${(err as Error).message}. Left behind: ${task.worktree} and branch ${task.branch} — clear them with: git -C ${task.sourceRepo} worktree remove --force ${task.worktree} && git -C ${task.sourceRepo} branch -D ${task.branch}`;
+      noteProblem(`${(err as Error).message}. Left behind: ${task.worktree} and branch ${task.branch} — clear them with: git -C ${task.sourceRepo} worktree remove --force ${task.worktree} && git -C ${task.sourceRepo} branch -D ${task.branch}`);
     }
-    // A merge that already happened must not present as a failure just because something
-    // downstream of it stumbled (the same reasoning as the cleanup catch just above, and the
-    // tracker-comment one below): fold an agent-freeing problem into the cleanup message
-    // rather than letting it propagate and fail a task that, in truth, already merged.
     try {
       await this.stopAgent(task);
     } catch (err) {
-      const msg = `could not free the agent after merging: ${(err as Error).message}`;
-      cleanup = cleanup ? `${cleanup} Also: ${msg}` : msg;
+      noteProblem(`could not free the agent after merging: ${(err as Error).message}`);
     }
     try {
       await tracker.comment(task.issue.key, `Fixed by ${after.found.url} (merged).`);
@@ -659,7 +673,17 @@ export class BugFixEngine {
   private async settleTerminal(task: BugTask): Promise<void> {
     if (!TERMINAL_STAGES.includes(task.stage)) return;
     this.currentDispatch.delete(task.id);
-    await this.stopAgent(task);
+    // Best-effort, deliberately guarded: the task's transition into a terminal stage has
+    // already landed and persisted by the time this runs, so a failure here (`stopAgent`'s
+    // own `store.getAgent` throwing when the agent was archived out from under the task) must
+    // never make this call's caller believe the transition itself failed. This matters
+    // beyond hygiene for "merging" -> "done": `doMerge` already folds a `stopAgent` failure
+    // of its own into the cleanup message it returns, but `runServerStage` only applies that
+    // message *after* `advance(stage-done)` resolves — and that `advance()` call is exactly
+    // what runs this method. An unguarded throw here would reject that `advance()` before the
+    // message is ever patched onto the task, silently discarding it even though the merge
+    // (and the message) both already happened.
+    await this.stopAgent(task).catch(() => {});
   }
 
   private async stopAgent(task: BugTask): Promise<void> {
