@@ -12,6 +12,11 @@ import type { TrackerProvider } from "./tracker.js";
 import { renderStagePrompt } from "./prompts.js";
 import { nextStage } from "./stages.js";
 import { AGENT_STAGES, RECOVERABLE_STAGES, TERMINAL_STAGES, type BugStage, type BugTask } from "./types.js";
+import type { PrFinding } from "./watcher.js";
+
+/** After this many rounds the watcher's findings stop dispatching and only report. A
+ *  pathological review thread should not quietly spend the user's budget. */
+export const FEEDBACK_ROUND_CAP = 5;
 
 /**
  * Startup recovery. Needs only the bug store — no tracker, forge, manager or
@@ -188,6 +193,22 @@ export class BugFixEngine {
     return this.advance(taskId, { type: "request-changes", text: text.trim() });
   }
 
+  /**
+   * Apply a watcher finding. The watcher never writes task state; this is where its findings
+   * become transitions, under the same per-task lock as every other mutation.
+   */
+  async onPrFinding(f: PrFinding): Promise<void> {
+    const task = this.deps.bugs.get(f.taskId);
+    if (f.pr) await this.deps.bugs.patch(task.id, { pr: f.pr });
+    if (f.unavailable) { await this.deps.bugs.patch(task.id, { error: `could not check the pull request: ${f.unavailable}` }); return; }
+    if (!f.event) return;
+    if (f.event.type === "review-changes-requested" && task.feedbackRounds >= FEEDBACK_ROUND_CAP) {
+      await this.deps.bugs.patch(task.id, { error: `reviewers have asked for changes ${task.feedbackRounds} times; AgentGrid has stopped dispatching after ${FEEDBACK_ROUND_CAP} feedback rounds — use "Ask the agent to address these" to continue` });
+      return;
+    }
+    await this.advance(task.id, f.event);
+  }
+
   async diffFor(taskId: string): Promise<DiffResult> {
     const t = this.deps.bugs.get(taskId);
     return this.deps.git.diff(t.worktree, t.baseBranch);
@@ -209,7 +230,12 @@ export class BugFixEngine {
   private async advanceLocked(taskId: string, event: Parameters<typeof nextStage>[1]): Promise<BugTask> {
     const current = this.deps.bugs.get(taskId);
     const t = nextStage(current, event); // throws for an invalid transition — nothing below runs, including storing a note
+    // These three event types all carry the text a review-feedback (or rebase) dispatch must
+    // see as its `note` — a human's own request-changes text, a reviewer's forge comments, or
+    // a checks failure — the same way `request-changes` already did before Phase 2.
     if (event.type === "request-changes") this.pendingNote.set(taskId, event.text);
+    if (event.type === "review-changes-requested") this.pendingNote.set(taskId, event.comments);
+    if (event.type === "checks-failed") this.pendingNote.set(taskId, event.checks);
     let task = await this.deps.bugs.apply(taskId, t);
     await this.settleTerminal(task);
     if (!t.run) return task;
@@ -260,6 +286,10 @@ export class BugFixEngine {
         throw new Error(`the branch moved since the diff was approved: approved ${task.approvedHead}, HEAD is now ${head}. Review the new diff (request changes, then approve again) before opening a pull request.`);
       }
     }
+    // A restart cannot reset a task's feedback-round budget against the cap (`feedbackRounds`
+    // is durable), so this has to land before dispatch, not after — a stage that failed after
+    // dispatching still counts as one round spent, not a free retry of the cap itself.
+    if (stage === "review-feedback") await this.deps.bugs.patch(task.id, { feedbackRounds: task.feedbackRounds + 1 });
     const prompt = await renderStagePrompt(stage, task, ctx, this.deps.presetsDir);
     this.pendingNote.delete(task.id);
 
@@ -367,6 +397,23 @@ export class BugFixEngine {
       // Pin what the human is about to approve. The diff card renders a LIVE `git diff`, so
       // without this there is nothing tying the reviewed change to the commit that gets pushed.
       await bugs.patch(task.id, { approvedHead: await git.revParse(task.worktree) });
+      await bugs.writeArtifact(task.id, "diff.patch", diff.patch);
+      await bugs.writeArtifact(task.id, "diffstat.json", JSON.stringify({ files: diff.files, additions: diff.additions, deletions: diff.deletions }, null, 2));
+      return;
+    }
+    if (task.stage === "review-feedback") {
+      // Same branch check as "implementing" — the agent may have switched branches or
+      // detached HEAD inside the worktree.
+      const branch = await git.currentBranch(task.worktree);
+      if (branch !== task.branch) throw new Error(`worktree is on ${branch}, not the task branch ${task.branch}`);
+      // "New" means new relative to what the PR already has — commits from the previous round
+      // are not evidence this round did anything. `approvedHead` is exactly that reference
+      // point: the commit the human last approved, whether at the original diff gate or at the
+      // end of an earlier feedback round.
+      const head = await git.revParse(task.worktree);
+      if (head === task.approvedHead) throw new Error("no new commits addressing the review feedback");
+      const diff = await git.diff(task.worktree, task.baseBranch);
+      await bugs.patch(task.id, { approvedHead: head });
       await bugs.writeArtifact(task.id, "diff.patch", diff.patch);
       await bugs.writeArtifact(task.id, "diffstat.json", JSON.stringify({ files: diff.files, additions: diff.additions, deletions: diff.deletions }, null, 2));
       return;

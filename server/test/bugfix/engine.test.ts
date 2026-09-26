@@ -5,13 +5,13 @@ import path from "node:path";
 import { Store } from "../../src/store/store.js";
 import { Manager } from "../../src/runner/manager.js";
 import { BugTaskStore } from "../../src/bugfix/store.js";
-import { BugFixEngine, recoverStuckBugTasks } from "../../src/bugfix/engine.js";
+import { BugFixEngine, recoverStuckBugTasks, FEEDBACK_ROUND_CAP } from "../../src/bugfix/engine.js";
 import { GitOps } from "../../src/bugfix/git.js";
 import { IntegrationsStore } from "../../src/bugfix/integrations.js";
 import { makeFakeQuery, success } from "../helpers/fakeQuery.js";
 import { until } from "../helpers/until.js";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
-import type { BugTask, TrackerIssue } from "../../src/bugfix/types.js";
+import type { BugTask, PrInfo, TrackerIssue } from "../../src/bugfix/types.js";
 import type { Assignment } from "../../src/types.js";
 import type { QueryFn } from "../../src/runner/runner.js";
 
@@ -66,7 +66,19 @@ beforeEach(async () => {
   engine.attach();
 });
 
-const finishStage = async () => { fake.emit(success("done")); fake.end(); };
+const finishStage = async (f: ReturnType<typeof makeFakeQuery> = fake) => {
+  // The most recently created task is the one whose stage this dispatch is progressing.
+  // Waiting for its stage to actually move (rather than just pushing the fake stream's
+  // messages) is what lets callers inspect task state immediately afterwards without an
+  // explicit `until()` of their own — the assignment-finished pipeline (store writes,
+  // agent-state catch-up, `verify()`, the resulting transition) runs across several real
+  // timers and microtasks that a fixed delay would not reliably outlast.
+  const t = bugs.list().at(-1);
+  const before = t?.stage;
+  f.emit(success("done"));
+  f.end();
+  if (t) await until(() => bugs.get(t.id).stage !== before, 2000);
+};
 
 describe("intake", () => {
   it("creates the agent, worktree and task, remembers the repo, and starts analyzing", async () => {
@@ -741,6 +753,77 @@ describe("the approved commit is pinned", () => {
     expect(err).toContain("3333333333333333333333333333333333333333");
     expect(err).toMatch(/approved/i);
     expect(bugs.get(t.id).pr).toBeNull();   // never recorded as verified
+  });
+});
+
+/**
+ * Drives a fresh task all the way to `monitoring` with a PR recorded, for the feedback-round
+ * tests below. Follows the existing harness's shape — it reuses the outer `engine`/`bugs`/
+ * `fake`/`gitState` that `beforeEach` already built, rather than standing up a second engine.
+ *
+ * `gitState.head` is pinned to a fixed sentinel ("aaa") for the whole run up to monitoring, so
+ * `approvedHead` — pinned by `implementing`'s own verify step — ends up equal to it. That's what
+ * lets a test simply assert `gitState.head = "aaa"` afterwards to mean "nothing changed": it's
+ * already what the task approved, not a coincidence of some unrelated default.
+ */
+async function onMonitoringTask() {
+  gitState.head = "aaa";
+  const t = await engine.intake({ issueRef: "PAY-42", repo });
+  await bugs.writeArtifact(t.id, "plan.md", "# Plan");
+  await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+  await engine.approve(t.id);
+  gitState.commits = 1;
+  await finishStage(); await until(() => bugs.get(t.id).stage === "diff-review");
+  await engine.approve(t.id);
+  await finishStage(); await until(() => bugs.get(t.id).stage === "monitoring");
+
+  const task = bugs.get(t.id);
+  const gs = gitState as typeof gitState & { commitsAhead: number; prHead: string; pr: PrInfo };
+  gs.commitsAhead = gs.commits;
+  gs.prHead = gs.head!;
+  gs.pr = task.pr!;
+  return { engine, bugs, fake, gitState: gs };
+}
+
+describe("a feedback round", () => {
+  it("dispatches review-feedback, verifies new commits, and opens a labelled diff gate", async () => {
+    const { engine, bugs, fake, gitState } = await onMonitoringTask();
+    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "review-changes-requested", comments: "fix the leak" } });
+    expect(bugs.get("bt1").stage).toBe("review-feedback");
+    expect(bugs.get("bt1").feedbackRounds).toBe(1);
+    gitState.commitsAhead = 2; gitState.head = "bbb";
+    await finishStage(fake);
+    const t = bugs.get("bt1");
+    expect(t.stage).toBe("diff-review");
+    expect(t.gate).toMatchObject({ kind: "diff", reason: "feedback" });
+    expect(t.approvedHead).toBe("bbb");                                  // re-pinned for this round
+  });
+
+  it("fails the round when the agent produced no new commits", async () => {
+    const { engine, bugs, fake, gitState } = await onMonitoringTask();
+    gitState.prHead = "aaa"; gitState.head = "aaa";                      // nothing new
+    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "review-changes-requested", comments: "fix it" } });
+    await finishStage(fake);
+    const t = bugs.get("bt1");
+    expect(t.stage).toBe("failed");
+    expect(t.error).toMatch(/no new commits/i);
+  });
+
+  it("stops dispatching after the cap and reports it instead", async () => {
+    const { engine, bugs, gitState } = await onMonitoringTask();
+    await bugs.patch("bt1", { feedbackRounds: FEEDBACK_ROUND_CAP });
+    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "review-changes-requested", comments: "again" } });
+    const t = bugs.get("bt1");
+    expect(t.stage).toBe("monitoring");                                  // no agent dispatched
+    expect(t.error).toMatch(/feedback rounds/i);
+  });
+
+  it("records the latest PR view even when there is nothing to do", async () => {
+    const { engine, bugs, gitState } = await onMonitoringTask();
+    const pr = { ...gitState.pr, lastSeenEventAt: "2026-09-26T10:00:00Z", checks: "PENDING" };
+    await engine.onPrFinding({ taskId: "bt1", pr, event: null });
+    expect(bugs.get("bt1").pr).toMatchObject({ checks: "PENDING", lastSeenEventAt: "2026-09-26T10:00:00Z" });
+    expect(bugs.get("bt1").stage).toBe("monitoring");
   });
 });
 
