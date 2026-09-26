@@ -135,7 +135,7 @@ describe("GitOps", () => {
   });
 
   describe("push", () => {
-    it("pushes the branch to a real remote, and force-with-lease after a rewrite", async () => {
+    it("pushes the branch to a real remote, and handles local rewrites", async () => {
       // A bare repo on disk is a real remote: no network, but a genuine push.
       const remote = await mkdtemp(path.join(tmpdir(), "ag-remote-"));
       await run("git", ["init", "--bare", "-b", "main", remote]);
@@ -159,12 +159,68 @@ describe("GitOps", () => {
       const onRemote = await run("git", ["ls-remote", remote, "refs/heads/bugfix/X-1"]);
       expect(onRemote.stdout).toMatch(/bugfix\/X-1/);
 
-      // Rewrite history; a plain push must be refused and a lease push must succeed.
+      // Rewrite local history; a plain push must be refused and a lease push must succeed.
       await run("git", ["commit", "--amend", "-m", "one (amended)", "--no-edit"], { cwd: repo2 });
       await expect(git2.push(repo2, "bugfix/X-1")).rejects.toThrow(/rejected|non-fast-forward/i);
       await git2.push(repo2, "bugfix/X-1", { force: true });
       const after = await run("git", ["log", "-1", "--format=%s", "bugfix/X-1"], { cwd: remote });
       expect(after.stdout.trim()).toBe("one (amended)");
+    });
+
+    it("force-with-lease refuses when the remote has moved, but bare --force succeeds (lease protection)", async () => {
+      // Create a bare remote and clone it twice to simulate concurrent work.
+      const bare = await mkdtemp(path.join(tmpdir(), "ag-bare-"));
+      await run("git", ["init", "--bare", "-b", "main", bare]);
+
+      // Set up the bare repo with an initial commit so we can clone it.
+      const setup = await mkdtemp(path.join(tmpdir(), "ag-setup-"));
+      await run("git", ["clone", bare, setup]);
+      await run("git", ["config", "user.email", "t@t"], { cwd: setup });
+      await run("git", ["config", "user.name", "t"], { cwd: setup });
+      await writeFile(path.join(setup, "init.txt"), "init\n");
+      await run("git", ["add", "."], { cwd: setup });
+      await run("git", ["commit", "-m", "init"], { cwd: setup });
+      await run("git", ["push"], { cwd: setup });
+
+      // Clone twice: `a` will move the remote, `b` will have stale tracking info.
+      const a = await mkdtemp(path.join(tmpdir(), "ag-a-"));
+      const b = await mkdtemp(path.join(tmpdir(), "ag-b-"));
+      await run("git", ["clone", bare, a]);
+      await run("git", ["clone", bare, b]);
+      await run("git", ["config", "user.email", "t@t"], { cwd: a });
+      await run("git", ["config", "user.name", "t"], { cwd: a });
+      await run("git", ["config", "user.email", "t@t"], { cwd: b });
+      await run("git", ["config", "user.name", "t"], { cwd: b });
+
+      // In `a`: create and push bugfix/X-1.
+      await run("git", ["checkout", "-b", "bugfix/X-1"], { cwd: a });
+      await writeFile(path.join(a, "a.txt"), "a\n");
+      await run("git", ["add", "."], { cwd: a });
+      await run("git", ["commit", "-m", "first"], { cwd: a });
+      await run("git", ["push", "-u", "origin", "bugfix/X-1"], { cwd: a });
+
+      // In `b`: fetch and check out bugfix/X-1, so `b` has the tracking info.
+      await run("git", ["fetch"], { cwd: b });
+      await run("git", ["checkout", "bugfix/X-1"], { cwd: b });
+
+      // In `a`: move the branch forward (simulate other work).
+      await writeFile(path.join(a, "a.txt"), "a2\n");
+      await run("git", ["add", "."], { cwd: a });
+      await run("git", ["commit", "-m", "second"], { cwd: a });
+      await run("git", ["push"], { cwd: a });
+      // Now the remote's bugfix/X-1 points to "second", but `b` still thinks it points to "first".
+
+      // In `b`: diverge from the tracked state and try to force-push. Lease should refuse.
+      await writeFile(path.join(b, "b.txt"), "b\n");
+      await run("git", ["add", "."], { cwd: b });
+      await run("git", ["commit", "-m", "b-diverge"], { cwd: b });
+
+      const git = new GitOps();
+      await expect(git.push(b, "bugfix/X-1", { force: true })).rejects.toThrow(/stale info|rejected/i);
+
+      // Verify the discriminator: plain --force should succeed in the same state.
+      const forceResult = await run("git", ["push", "--force", "origin", "bugfix/X-1"], { cwd: b });
+      expect(forceResult.code).toBe(0);
     });
   });
 });
