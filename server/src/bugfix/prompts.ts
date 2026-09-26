@@ -53,6 +53,7 @@ const FILES: Partial<Record<BugStage, string>> = {
   implementing: "implement.md",
   "opening-pr": "open-pr.md",
   "review-feedback": "review-feedback.md",
+  rebase: "rebase.md",
 };
 
 /** Fill a stage prompt from `presets/stages/*.md`. Unknown placeholders render empty, never as "undefined". */

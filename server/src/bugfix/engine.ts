@@ -480,6 +480,27 @@ export class BugFixEngine {
       await bugs.writeArtifact(task.id, "diffstat.json", JSON.stringify({ files: diff.files, additions: diff.additions, deletions: diff.deletions }, null, 2));
       return;
     }
+    if (task.stage === "rebase") {
+      // Same branch check as "implementing"/"review-feedback" — the agent may have switched
+      // branches or detached HEAD inside the worktree.
+      const branch = await git.currentBranch(task.worktree);
+      if (branch !== task.branch) throw new Error(`worktree is on ${branch}, not the task branch ${task.branch}`);
+      // The server verifies rather than trusts: a rebase left half-finished, or with
+      // conflict markers still standing, must fail the stage rather than reach a human as
+      // "ready" — the preset tells the agent to finish and leave `git status` clean, but
+      // this is what actually enforces it.
+      const state = await git.rebaseState(task.worktree);
+      if (state.inProgress) throw new Error(`the rebase is not finished — still conflicted: ${state.conflicted.join(", ") || "unknown files"}`);
+      if (state.conflicted.length) throw new Error(`conflicts are unresolved in: ${state.conflicted.join(", ")}`);
+      if ((await git.commitsAhead(task.worktree, task.baseBranch)) === 0) throw new Error("nothing left on the branch after the rebase");
+      const diff = await git.diff(task.worktree, task.baseBranch);
+      // A rebase legitimately moves HEAD — re-pin `approvedHead` to the post-rebase head, or
+      // the eventual push's own pin check would fail every real rebase (Task 6's dependency).
+      await bugs.patch(task.id, { approvedHead: await git.revParse(task.worktree) });
+      await bugs.writeArtifact(task.id, "diff.patch", diff.patch);
+      await bugs.writeArtifact(task.id, "diffstat.json", JSON.stringify({ files: diff.files, additions: diff.additions, deletions: diff.deletions }, null, 2));
+      return;
+    }
     if (task.stage === "opening-pr") {
       // `runStage`'s pin check only runs BEFORE dispatch: it proves HEAD hadn't moved at
       // the moment this stage was launched, not that it stayed put for the run's whole

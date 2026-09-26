@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 
@@ -107,6 +108,22 @@ export class GitOps {
     const realRepo = await realpath(repo).catch(() => repo);
     const target = path.resolve(realRepo, path.relative(repo, dir));
     return out.split("\n").some(l => l.startsWith("worktree ") && path.resolve(l.slice("worktree ".length).trim()) === target);
+  }
+
+  /**
+   * Is a rebase half-finished in this worktree, and which paths are still conflicted?
+   * `git status --porcelain` marks conflicts with U on either side (UU, AU, UD, …); the
+   * rebase directories are how git itself knows a rebase is in flight.
+   */
+  async rebaseState(dir: string): Promise<{ inProgress: boolean; conflicted: string[] }> {
+    const gitDir = (await this.run(dir, ["rev-parse", "--git-path", "rebase-merge"])).trim();
+    const applyDir = (await this.run(dir, ["rev-parse", "--git-path", "rebase-apply"])).trim();
+    const inProgress = [gitDir, applyDir].some(p => p && existsSync(path.resolve(dir, p)));
+    const status = await this.run(dir, ["status", "--porcelain"]);
+    const conflicted = status.split("\n")
+      .filter(l => /^(DD|AU|UD|UA|DU|AA|UU)\s/.test(l))
+      .map(l => l.slice(3).trim());
+    return { inProgress, conflicted };
   }
 
   /**

@@ -225,3 +225,13 @@ describe("the review-feedback prompt", () => {
   });
 });
 
+describe("the rebase prompt", () => {
+  it("does not instruct the agent to push or merge", async () => {
+    const t = { ...task, stage: "rebase" as const };
+    const p = await renderStagePrompt("rebase", t, ctx, presets);
+    expect(p).toContain("PAY-42");
+    expect(affirmativeLines(p, GIT_PUSH)).toEqual([]);
+    expect(affirmativeLines(p, MERGE)).toEqual([]);
+  });
+});
+

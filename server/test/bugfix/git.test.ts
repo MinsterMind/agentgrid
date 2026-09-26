@@ -15,6 +15,17 @@ const run = (cmd: string, args: string[], opts?: { cwd?: string }): Promise<{ st
 
 let repo: string; const git = new GitOps();
 
+/** A fresh, throwaway repo with one commit on `main` — for tests that don't need the shared
+ *  `repo`/`beforeEach` fixture, e.g. because they build their own branch topology. */
+async function makeRepo(): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), "repo-"));
+  await sh(dir, ["init", "-b", "main"]);
+  await sh(dir, ["config", "user.email", "t@t"]); await sh(dir, ["config", "user.name", "T"]);
+  await writeFile(path.join(dir, "a.txt"), "one\n");
+  await sh(dir, ["add", "."]); await sh(dir, ["commit", "-m", "init"]);
+  return dir;
+}
+
 beforeEach(async () => {
   repo = await mkdtemp(path.join(tmpdir(), "repo-"));
   await sh(repo, ["init", "-b", "main"]);
@@ -222,5 +233,32 @@ describe("GitOps", () => {
       const forceResult = await run("git", ["push", "--force", "origin", "bugfix/X-1"], { cwd: b });
       expect(forceResult.code).toBe(0);
     });
+  });
+});
+
+describe("rebaseState", () => {
+  it("reports a clean tree and a rebase left half-finished", async () => {
+    const repo = await makeRepo();
+    const git = new GitOps();
+    expect(await git.rebaseState(repo)).toEqual({ inProgress: false, conflicted: [] });
+
+    // Manufacture a real conflict: two branches touching the same line.
+    await writeFile(path.join(repo, "c.txt"), "base\n");
+    await run("git", ["add", "-A"], { cwd: repo });
+    await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "base"], { cwd: repo });
+    await run("git", ["checkout", "-b", "side"], { cwd: repo });
+    await writeFile(path.join(repo, "c.txt"), "side\n");
+    await run("git", ["add", "-A"], { cwd: repo });
+    await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "side"], { cwd: repo });
+    await run("git", ["checkout", "main"], { cwd: repo });
+    await writeFile(path.join(repo, "c.txt"), "main\n");
+    await run("git", ["add", "-A"], { cwd: repo });
+    await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "main"], { cwd: repo });
+    await run("git", ["checkout", "side"], { cwd: repo });
+    await run("git", ["rebase", "main"], { cwd: repo }).catch(() => {});   // leaves it conflicted
+
+    const state = await git.rebaseState(repo);
+    expect(state.inProgress).toBe(true);
+    expect(state.conflicted).toContain("c.txt");
   });
 });

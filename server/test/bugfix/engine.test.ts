@@ -21,7 +21,7 @@ const ISSUE: TrackerIssue = { key: "PAY-42", title: "Boom", url: "https://x/PAY-
  *  overrides `commits` — the feedback-round harness (`onMonitoringTask`, below) sets it after
  *  reaching monitoring, and it has to actually drive this mock's `commitsAhead()` rather than
  *  just look like it does. */
-function fakeGit(state: { commits: number; head?: string; commitsAhead?: number }) {
+function fakeGit(state: { commits: number; head?: string; commitsAhead?: number; rebaseState?: { inProgress: boolean; conflicted: string[] } }) {
   const calls: string[] = [];
   const g = new GitOps(async () => "");
   g.defaultBranch = async () => "main";
@@ -34,6 +34,7 @@ function fakeGit(state: { commits: number; head?: string; commitsAhead?: number 
   g.diff = async () => ({ patch: "diff --git a/a b/a\n+x\n", files: [{ path: "a", additions: 1, deletions: 0 }], additions: 1, deletions: 0 });
   g.worktreeRegistered = async () => false;
   g.branchExists = async () => false;
+  g.rebaseState = async () => state.rebaseState ?? { inProgress: false, conflicted: [] };
   return { git: g, calls };
 }
 
@@ -49,7 +50,7 @@ const forge = {
 
 let home: string; let repo: string; let store: Store; let bugs: BugTaskStore; let fake: ReturnType<typeof makeFakeQuery>;
 let engine: BugFixEngine; let comments: Array<[string, string]>;
-let gitState: { commits: number; head?: string; commitsAhead?: number };
+let gitState: { commits: number; head?: string; commitsAhead?: number; rebaseState?: { inProgress: boolean; conflicted: string[] } };
 
 beforeEach(async () => {
   home = await mkdtemp(path.join(tmpdir(), "eng-home-"));
@@ -974,6 +975,57 @@ describe("the server pushes an approved feedback diff", () => {
     await until(() => bugs.get("bt1").stage !== "pushing", 2000);
     expect(bugs.get("bt1").stage).toBe("failed");
     expect(bugs.get("bt1").error).toMatch(/pull request .* still/i);
+  });
+});
+
+describe("a rebase round", () => {
+  it("dispatches rebase on a conflict and opens a diff gate labelled rebase", async () => {
+    const { engine, bugs, fake, gitState } = await onMonitoringTask();
+    await engine.onPrFinding({ taskId: "bt1", pr: { ...gitState.pr, mergeable: "CONFLICTING" }, event: { type: "conflicting" } });
+    expect(bugs.get("bt1").stage).toBe("rebase");
+    gitState.head = "ddd"; gitState.commitsAhead = 1;
+    await finishStage(fake);
+    expect(bugs.get("bt1").gate).toMatchObject({ kind: "diff", reason: "rebase" });
+  });
+
+  it("fails the stage when the rebase was left half-finished or conflicted", async () => {
+    const { engine, bugs, fake, gitState } = await onMonitoringTask();
+    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "conflicting" } });
+    gitState.rebaseState = { inProgress: true, conflicted: ["src/a.ts"] };
+    await finishStage(fake);
+    const t = bugs.get("bt1");
+    expect(t.stage).toBe("failed");
+    expect(t.error).toMatch(/rebase is not finished|conflict/i);
+    expect(t.error).toContain("src/a.ts");
+  });
+
+  // The dependency Task 6 left open: a rebase legitimately moves HEAD, so `verify()`'s
+  // "rebase" branch must re-pin `approvedHead` to the post-rebase head — otherwise the
+  // eventual push's own pin check ("the branch moved since the diff was approved") fails
+  // every real rebase, since HEAD is (correctly) no longer what it was before the rebase.
+  it("re-pins approvedHead to the post-rebase head, so the subsequent push does not trip the pin", async () => {
+    const { engine, bugs, fake, gitState } = await onMonitoringTask();
+    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "conflicting" } });
+    gitState.head = "ddd"; gitState.commitsAhead = 1;
+    await finishStage(fake);
+    let t = bugs.get("bt1");
+    expect(t.stage).toBe("diff-review");
+    expect(t.approvedHead).toBe("ddd");   // re-pinned to the post-rebase head, not the pre-rebase one
+
+    const deps = (engine as any).deps;
+    const pushes: Array<{ dir: string; branch: string; force: boolean }> = [];
+    deps.git.push = async (dir: string, branch: string, o: { force?: boolean } = {}) => { pushes.push({ dir, branch, force: !!o.force }); };
+    deps.forge = {
+      ...forge,
+      getPr: async () => ({ found: { number: 7, url: "https://gh/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: "ddd", lastSeenEventAt: "t" } }),
+    };
+
+    await engine.approve("bt1");   // HEAD is still "ddd" — the pin must NOT reject this
+    await until(() => bugs.get("bt1").stage !== "pushing", 2000);
+    t = bugs.get("bt1");
+    expect(t.error).toBeNull();
+    expect(t.stage).toBe("monitoring");
+    expect(pushes).toEqual([{ dir: t.worktree, branch: t.branch, force: true }]);   // rebase => lease force
   });
 });
 
