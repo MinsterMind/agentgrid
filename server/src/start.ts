@@ -19,7 +19,9 @@ import { GitOps } from "./bugfix/git.js";
 import { makeForge } from "./bugfix/forge/index.js";
 import { mcpTracker, type TrackerProvider } from "./bugfix/tracker.js";
 import { BugFixEngine, recoverStuckBugTasks } from "./bugfix/engine.js";
+import { PrWatcher } from "./bugfix/watcher.js";
 import { fakeAgentQuery } from "./fake/agent.js";
+import { fakeForge, type ScriptedStep } from "./fake/forge.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -38,6 +40,8 @@ export interface StartOptions {
   presetsDir?: string;
   /** Scripted runner/terminal/sessions — no Claude Code needed (used by e2e). Default: AGENTGRID_FAKE. */
   fake?: boolean;
+  /** Fake mode only: scripts the fake forge's PR story for the watcher to discover. */
+  fakePrScript?: ScriptedStep[];
   log?: (msg: string) => void;
 }
 
@@ -113,21 +117,21 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       status: "Open", priority: "High", description: "A fake ticket used in fake mode.", acceptanceCriteria: ["it stops happening"] }),
     comment: async () => {},
   };
-  const fakeForge = {
-    name: "fake", authStatus: async () => ({ ok: true, message: "fake forge" }),
-    createPrCommand: () => "echo 'fake pr created'",
-    findPr: async () => ({ number: 1, url: "https://example.invalid/pr/1", state: "OPEN" as const, reviewDecision: null, checks: "SUCCESS", mergeable: "MERGEABLE", headSha: "fake0000", lastSeenEventAt: new Date().toISOString() }),
-    getPr: async () => ({ found: null }),
-    listReviewEvents: async () => [],
-    merge: async () => ({ ok: true, message: "merged (fake)" }),
-  };
-
   const tracker = fake ? fakeTracker : (cfg.tracker ? mcpTracker(cfg.tracker, presetsDir) : null);
-  const forge = fake ? fakeForge : makeForge(cfg.forge);
+  const forge = fake ? fakeForge(opts.fakePrScript ?? []) : makeForge(cfg.forge);
   const engine = tracker ? new BugFixEngine({ store, bugs: bugStore, manager, git: new GitOps(), integrations, tracker, forge, presetsDir }) : null;
   // Recovery already ran above (`recoverStuckBugTasks`, tracker or no tracker) —
   // `BugFixEngine` has no recovery step of its own to call.
   if (engine) engine.attach();
+
+  // The watcher polls the forge for tasks resting on an open PR and hands findings to the
+  // engine, which stays the only writer of task state. In fake mode it ticks fast so the
+  // offline tests and the e2e advance without waiting real minutes.
+  const prWatcher = engine && forge
+    ? new PrWatcher({ bugs: bugStore, forge, onFinding: f => engine.onPrFinding(f).catch(err => log(`bugfix: watcher finding failed: ${(err as Error).message}`)),
+        ...(fake ? { baseMs: 200, ceilingMs: 1_000 } : {}) })
+    : null;
+  prWatcher?.start(fake ? 100 : 1_000);
 
   const app = createApp({ store, manager, writeToTerminal: (sid, data) => ptys.write(sid, data), transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }),
     openTerminal, runInTerminal, staticDir, browseRoot: opts.browseRoot ?? process.env.AGENTGRID_BROWSE_ROOT, ...(fakeSessions ? { sessions: fakeSessions } : {}),
@@ -145,6 +149,6 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   log(`AgentGrid on ${url}  (data: ${home}${staticDir ? "" : ", UI not built"})`);
   return {
     port: bound, url, home,
-    close: () => new Promise<void>(resolve => { watcher.stop(); statuses.stop(); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }),
+    close: () => new Promise<void>(resolve => { watcher.stop(); statuses.stop(); prWatcher?.stop(); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }),
   };
 }
