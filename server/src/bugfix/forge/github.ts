@@ -103,22 +103,32 @@ export function githubAdapter(run: Runner): ForgeAdapter {
     },
 
     async listReviewEvents(repoDir: string, number: number, since: string): Promise<ReviewEvent[]> {
-      const r = await run("gh", ["pr", "view", String(number), "--json", "reviews,comments"], repoDir);
-      if (r.code !== 0) return [];
-      let raw: any;
-      try { raw = JSON.parse(r.stdout || "{}"); } catch { return []; }
-      // `gh pr view --json reviews,comments` doesn't expose `is_bot`/`isBot` on `author` in
-      // practice — the `[bot]` login suffix (dependabot[bot], github-actions[bot], ...) is
-      // the real signal; the two field lookups are kept only as harmless forward-compat in
-      // case a future `gh` version adds one. Note what this still can't catch: a PAT-driven
-      // service *user* account has no `[bot]` suffix and no distinguishing field either, so
-      // its comments surface on the card exactly like a human's.
-      const isBot = (a: any) => Boolean(a?.is_bot ?? a?.isBot ?? /\[bot\]$/i.test(a?.login ?? ""));
+      // `gh pr view --json reviews,comments` builds its author objects from GraphQL, whose
+      // Bot.login carries no `[bot]` suffix and no bot field at all on a per-review/per-comment
+      // author — that's only true of `--json author` (the PR's own author). REST is the
+      // authoritative source here: `user.type === "Bot"` is real, and `gh api`'s `{owner}`/
+      // `{repo}` placeholders resolve from repoDir (passed as cwd) the same way `gh pr` does.
+      // Two calls instead of one GraphQL query is acceptable — this only runs when a PR
+      // actually changed and changes were requested.
+      const [reviewsR, commentsR] = await Promise.all([
+        run("gh", ["api", `repos/{owner}/{repo}/pulls/${number}/reviews`], repoDir),
+        run("gh", ["api", `repos/{owner}/{repo}/issues/${number}/comments`], repoDir),
+      ]);
+      const parseArray = (r: { stdout: string; code: number }): any[] => {
+        if (r.code !== 0) return [];
+        try { const v = JSON.parse(r.stdout || "[]"); return Array.isArray(v) ? v : []; }
+        catch { return []; }
+      };
+      // REST's `user.type === "Bot"` is the real signal (dependabot, github-actions, ...);
+      // the `[bot]` login suffix is kept only as corroboration/fallback. What neither field
+      // catches: a PAT-driven service *user* account reports `type: "User"` with no suffix
+      // and is indistinguishable from a human by anything either API exposes.
+      const isBot = (u: any) => Boolean(u?.type === "Bot" || /\[bot\]$/i.test(u?.login ?? ""));
       const out: ReviewEvent[] = [
-        ...(raw.reviews ?? []).map((v: any) => ({ kind: "review" as const, state: (v.state ?? "").toUpperCase(),
-          author: v.author?.login ?? "", isBot: isBot(v.author), body: v.body ?? "", at: v.submittedAt ?? "" })),
-        ...(raw.comments ?? []).map((c: any) => ({ kind: "comment" as const, state: "",
-          author: c.author?.login ?? "", isBot: isBot(c.author), body: c.body ?? "", at: c.createdAt ?? "" })),
+        ...parseArray(reviewsR).map((v: any) => ({ kind: "review" as const, state: (v.state ?? "").toUpperCase(),
+          author: v.user?.login ?? "", isBot: isBot(v.user), body: v.body ?? "", at: v.submitted_at ?? "" })),
+        ...parseArray(commentsR).map((c: any) => ({ kind: "comment" as const, state: "",
+          author: c.user?.login ?? "", isBot: isBot(c.user), body: c.body ?? "", at: c.created_at ?? "" })),
       ];
       return out.filter(e => e.at > since).sort((a, b) => a.at.localeCompare(b.at));
     },

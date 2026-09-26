@@ -171,24 +171,42 @@ describe("getPr", () => {
   });
 });
 
+/** `listReviewEvents` makes two separate `gh api` calls (reviews, then issue comments) —
+ *  route each to its half of the fixture by inspecting which REST path was requested. */
+const eventsRunner = async (fixtureName: string) => {
+  const raw = JSON.parse(await fixture(fixtureName));
+  return async (_cmd: string, args: string[]) => {
+    const path = args[args.length - 1] as string;
+    if (path.includes("/reviews")) return { stdout: JSON.stringify(raw.reviews ?? []), code: 0 };
+    if (path.includes("/comments")) return { stdout: JSON.stringify(raw.comments ?? []), code: 0 };
+    return { stdout: "", code: 1 };
+  };
+};
+
 describe("listReviewEvents", () => {
-  it("normalises reviews, comments and checks, marking bots by the `[bot]` login suffix (the real gh shape has no is_bot/isBot field)", async () => {
-    const f = githubAdapter(async () => ({ stdout: await fixture("events-with-bot.json"), code: 0 }));
+  it("normalises reviews and comments, marking bots via REST's `user.type === \"Bot\"` (the [bot] suffix is corroboration, not the primary signal)", async () => {
+    const f = githubAdapter(await eventsRunner("events-with-bot.json"));
     const events = await f.listReviewEvents("/r", 7, "2026-09-26T08:00:00Z");
     expect(events).toEqual([
       { kind: "review", state: "CHANGES_REQUESTED", author: "alice", isBot: false, body: "This leaks a handle.", at: "2026-09-26T09:00:00Z" },
-      { kind: "comment", state: "", author: "ci-bot[bot]", isBot: true, body: "Build failed.", at: "2026-09-26T09:05:00Z" },
+      { kind: "comment", state: "", author: "pytorch-bot[bot]", isBot: true, body: "Build failed.", at: "2026-09-26T09:05:00Z" },
     ]);
   });
 
-  it("does not treat a plain human login as a bot", async () => {
-    const f = githubAdapter(async () => ({ stdout: await fixture("events-with-bot.json"), code: 0 }));
+  it("does not treat a plain human `type: User` login as a bot", async () => {
+    const f = githubAdapter(await eventsRunner("events-with-bot.json"));
     const events = await f.listReviewEvents("/r", 7, "2026-09-26T08:00:00Z");
     expect(events[0]).toMatchObject({ author: "alice", isBot: false });
   });
 
+  it("treats a `type: Bot` comment author as a bot", async () => {
+    const f = githubAdapter(await eventsRunner("events-with-bot.json"));
+    const events = await f.listReviewEvents("/r", 7, "2026-09-26T08:00:00Z");
+    expect(events[1]).toMatchObject({ author: "pytorch-bot[bot]", isBot: true });
+  });
+
   it("drops events at or before `since`, and never throws on a gh failure", async () => {
-    const f = githubAdapter(async () => ({ stdout: await fixture("events-with-bot.json"), code: 0 }));
+    const f = githubAdapter(await eventsRunner("events-with-bot.json"));
     expect(await f.listReviewEvents("/r", 7, "2026-09-26T09:05:00Z")).toEqual([]);
 
     const broken = githubAdapter(async () => ({ stdout: "", code: 1 }));
