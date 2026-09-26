@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { BugTaskStore } from "../../src/bugfix/store.js";
@@ -133,10 +133,15 @@ describe("remove", () => {
   it("deletes the task file and its artifacts, and emits bugtask-removed", async () => {
     const t = await mk();
     await store.writeArtifact(t.id, "plan.md", "# Plan");
+    const dir = store.dir(t.id);   // capture before removal — a pure string join, no I/O
     await store.remove(t.id);
     expect(() => store.get(t.id)).toThrow(NotFound);
     await expect(readFile(path.join(home, "bugtasks", `${t.id}.json`), "utf8")).rejects.toThrow();
     await expect(store.readArtifact(t.id, "plan.md")).rejects.toThrow(NotFound);
+    // `readArtifact` above throws NotFound because the *task* is gone (its own `get(id)`
+    // guard), which would pass even if the artifacts directory were never actually deleted —
+    // assert on the directory itself, not on an already-guarded read of it.
+    await expect(stat(dir)).rejects.toThrow();
     expect(events.at(-1)).toEqual({ type: "bugtask-removed", id: t.id });
 
     // gone from a reload too

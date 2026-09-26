@@ -130,12 +130,15 @@ export class BugTaskStore extends EventEmitter {
   }
 
   /** Deletes the task file and its artifacts directory — used by `dismiss()` on a terminal
-   *  task. Same safeId guard and write chain as every other mutation here. */
+   *  task. Same safeId guard and write chain as every other mutation here. The task's own
+   *  JSON file goes first: if the directory removal below then fails partway, the record is
+   *  already gone and what's left on disk is a harmless orphan directory, rather than a
+   *  live-looking card whose artifacts 404. */
   async remove(id: string): Promise<void> {
     this.get(id);   // throws NotFound for an unknown or malformed id, before queueing behind the chain
     return withWriteChain(this.file(id), async () => {
-      await rm(this.dir(id), { recursive: true, force: true });
       await rm(this.file(id), { force: true });
+      await rm(this.dir(id), { recursive: true, force: true });
       this.tasks.delete(id);
       this.emit("event", { type: "bugtask-removed", id });
     });

@@ -1072,10 +1072,20 @@ async function atMergeGate() {
     mergeResult: { ok: true, message: "merged (fake)" },
     state: "OPEN" as "OPEN" | "MERGED" | "CLOSED",
     stateAfterMerge: "MERGED" as "OPEN" | "MERGED" | "CLOSED",
+    // Overrides the *second* `getPr` call only (the post-merge confirmation) — the first call
+    // is the pre-merge "is this already merged" read, which every test still needs to behave
+    // normally so the merge itself actually happens. Lets a test simulate a flaky/absent
+    // confirmation read without touching the pre-merge read at all.
+    afterResult: null as null | { unavailable: string } | { found: null },
+    getPrCalls: 0,
     authStatus: async () => ({ ok: true, message: "ok" }),
     createPrCommand: () => "gh pr create --base 'main' --head 'bugfix/PAY-42' --title 't' --body-file '/b'",
     findPr: async () => ({ number: 7, url: "https://x/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: gitState.head, lastSeenEventAt: "t" }),
-    getPr: async () => ({ found: { number: 7, url: "https://x/pr/7", state: mergeForge.state, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: gitState.head, lastSeenEventAt: "t" } }),
+    getPr: async () => {
+      mergeForge.getPrCalls++;
+      if (mergeForge.getPrCalls === 2 && mergeForge.afterResult) return mergeForge.afterResult;
+      return { found: { number: 7, url: "https://x/pr/7", state: mergeForge.state, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: gitState.head, lastSeenEventAt: "t" } };
+    },
     listReviewEvents: async () => [],
     merge: async (_repo: string, number: number, method: string) => {
       mergeForge.merges.push({ number, method });
@@ -1177,6 +1187,48 @@ describe("merging", () => {
     expect(forge.merges).toEqual([]);                     // nothing to merge — it already is
     expect(bugs.get("bt1").stage).toBe("done");
     expect(gitState.removed).toHaveLength(1);
+  });
+
+  // The design point item 1 exists for: `pr-merged` enters "merging" with no gate at all
+  // (straight from "monitoring"), so a watcher/adapter that misreports MERGED on a PR that
+  // is actually still open must never cause a real merge — it can only confirm, and must
+  // fail the stage when there is nothing to confirm.
+  it("an externally reported merge that isn't actually merged yet fails the stage without ever calling merge", async () => {
+    const { engine, bugs, gitState } = await onMonitoringTask();
+    forge.state = "OPEN";   // the watcher's pr-merged finding was wrong, or raced
+    await engine.onPrFinding({ taskId: "bt1", pr: { ...gitState.pr, state: "MERGED" }, event: { type: "pr-merged" } });
+    await until(() => bugs.get("bt1").stage !== "merging", 2000);
+    expect(forge.merges).toEqual([]);                      // the ungated path may never merge
+    expect(bugs.get("bt1").stage).toBe("failed");
+    expect(bugs.get("bt1").error).toMatch(/has not merged yet|refusing to merge/i);
+    expect(gitState.removed).toEqual([]);
+  });
+
+  // Items 4: the confirmation reads that matter most on this irreversible path are the ones
+  // that don't come back with a clean "found and MERGED" — both fakes previously always
+  // returned `{ found: ... }`, so neither PrLookup shape below was ever actually exercised.
+  it("fails the stage and tears down nothing when the post-merge confirmation is unavailable", async () => {
+    const { engine, bugs, forge, gitState, taskId } = await atMergeGate();
+    forge.afterResult = { unavailable: "gh: rate limited" };
+    await engine.approve(taskId);
+    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    const t = bugs.get(taskId);
+    expect(forge.merges).toEqual([{ number: 7, method: "squash" }]);   // the merge call itself did happen
+    expect(t.stage).toBe("failed");
+    expect(t.error).toMatch(/did not come back merged.*rate limited/i);
+    expect(gitState.removed).toEqual([]);
+  });
+
+  it("fails the stage and tears down nothing when the post-merge confirmation finds no PR", async () => {
+    const { engine, bugs, forge, gitState, taskId } = await atMergeGate();
+    forge.afterResult = { found: null };
+    await engine.approve(taskId);
+    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    const t = bugs.get(taskId);
+    expect(forge.merges).toEqual([{ number: 7, method: "squash" }]);
+    expect(t.stage).toBe("failed");
+    expect(t.error).toMatch(/did not come back merged/i);
+    expect(gitState.removed).toEqual([]);
   });
 });
 

@@ -1,6 +1,6 @@
 import path from "node:path";
 import { stat } from "node:fs/promises";
-import { Conflict } from "../store/store.js";
+import { Conflict, NotFound } from "../store/store.js";
 import type { Store } from "../store/store.js";
 import type { Manager } from "../runner/manager.js";
 import type { Assignment } from "../types.js";
@@ -196,9 +196,14 @@ export class BugFixEngine {
 
   /** The merge gate's approve. When a method is chosen at the gate, it's recorded before the
    *  transition runs, so `doMerge` reads the one the human actually picked, not the task's
-   *  default from intake. */
+   *  default from intake — but only once the task is actually sitting at the merge gate. The
+   *  same principle as `requestChanges`'s own note (see its comment): a call that turns out
+   *  not to be valid here (`approve` below will throw for it) must not leave a method choice
+   *  behind for whatever the next successful transition happens to be. */
   async mergeTask(taskId: string, method?: MergeMethod): Promise<BugTask> {
-    if (method) await this.deps.bugs.patch(taskId, { mergeMethod: method });
+    if (method && this.deps.bugs.get(taskId).stage === "approved") {
+      await this.deps.bugs.patch(taskId, { mergeMethod: method });
+    }
     return this.approve(taskId);
   }
 
@@ -207,7 +212,10 @@ export class BugFixEngine {
   async dismiss(taskId: string): Promise<void> {
     const task = this.deps.bugs.get(taskId);
     if (!TERMINAL_STAGES.includes(task.stage)) throw new Conflict(`task ${taskId} is still running (${task.stage})`);
-    await this.deps.store.archiveAgent(task.agentId).catch(() => {});  // already archived is fine
+    // Only "already archived" (NotFound, from archiveAgent's own `getAgent` guard) is fine to
+    // swallow here — a genuine failure (e.g. EPERM renaming the agent directory) must not be
+    // silently eaten, or it orphans the agent directory with nothing left to report it.
+    await this.deps.store.archiveAgent(task.agentId).catch(err => { if (!(err instanceof NotFound)) throw err; });
     this.currentDispatch.delete(task.id);
     await this.deps.bugs.remove(task.id);
   }
@@ -433,8 +441,9 @@ export class BugFixEngine {
   /** The merge gate's approve, executed server-side. The only irreversible step in the whole
    *  workflow — a merge cannot be undone, and teardown destroys a worktree and a branch — so
    *  everything here is ordered to fail safe: verify before merging, verify again before
-   *  tearing anything down, and never let a cleanup problem hide a merge that already happened. */
-  /** Returns the cleanup message when teardown left something behind, or null when it's
+   *  tearing anything down, and never let a cleanup problem hide a merge that already happened.
+   *
+   *  Returns the cleanup message when teardown left something behind, or null when it's
    *  clean — the caller (`runServerStage`) applies it as the task's `error` *after* the
    *  stage-done transition lands, since that transition unconditionally clears `error`. */
   private async doMerge(task: BugTask): Promise<string | null> {
@@ -442,11 +451,36 @@ export class BugFixEngine {
     if (!forge) throw new Error("no forge adapter: cannot merge");
     if (!task.pr) throw new Error("no pull request recorded for this task");
 
+    // This stage is reached two ways, and only one of them may actually call `forge.merge`.
+    // The merge gate's own `approve` passes through "approved" first (`wait("approved",
+    // "merge")`, then `serverRun("merging")` on the next approve) — a human explicitly gated
+    // it. The watcher's `pr-merged` finding (see stages.ts) jumps straight from "monitoring"
+    // to "merging", with no gate at all: it exists to *confirm* a merge that already happened
+    // in the browser, not to request one. Without this distinction, a watcher or adapter that
+    // ever misreports a still-open PR as MERGED would cause this server to perform a real
+    // merge with no human in the loop and no gate ever opened — the one place this task must
+    // not fail open on an irreversible action. So: derive the entry route from history (the
+    // same shape `doPush` uses for its force flag) and let only the gated route call merge;
+    // the ungated route may only confirm, and must fail the stage — never merge — when the PR
+    // doesn't already read MERGED.
+    const enteredFromGate = [...task.history].reverse().find(h => h.stage !== "merging")?.stage === "approved";
+
     // An externally merged PR arrives here too (pr-merged). Re-read before doing anything:
     // merging something already merged is at best noise and at worst an error we would
     // report as a failure.
     const before = await forge.getPr(task.sourceRepo, task.pr.number);
+    // Defence in depth: a forge that ever returned a lookup for the wrong PR and happened to
+    // read MERGED would otherwise satisfy `alreadyMerged` and tear down a branch that was
+    // never actually merged. Cheap to check, and this is the one path where "cheap" still
+    // matters more than "the only adapter here can't currently do this".
+    if ("found" in before && before.found && before.found.number !== task.pr.number) {
+      throw new Error(`the forge returned pull request #${before.found.number} instead of the expected #${task.pr.number}`);
+    }
     const alreadyMerged = "found" in before && before.found?.state === "MERGED";
+    if (!alreadyMerged && !enteredFromGate) {
+      const seen = "unavailable" in before ? `unavailable: ${before.unavailable}` : "found" in before && before.found ? `still ${before.found.state}` : "not found";
+      throw new Error(`the pull request has not merged yet (${seen}) — refusing to merge without a gate approval`);
+    }
     if (!alreadyMerged) {
       const res = await forge.merge(task.sourceRepo, task.pr.number, task.mergeMethod);
       if (!res.ok) throw new Error(res.message);
@@ -454,6 +488,9 @@ export class BugFixEngine {
 
     // Verify rather than trust: the merge call succeeding is not the same as the PR being merged.
     const after = await forge.getPr(task.sourceRepo, task.pr.number);
+    if ("found" in after && after.found && after.found.number !== task.pr.number) {
+      throw new Error(`the forge returned pull request #${after.found.number} instead of the expected #${task.pr.number}`);
+    }
     if (!("found" in after) || after.found?.state !== "MERGED") {
       throw new Error(`the pull request did not come back merged${"unavailable" in after ? ` (${after.unavailable})` : ""}`);
     }
@@ -467,7 +504,16 @@ export class BugFixEngine {
       // A merge is a fact. A cleanup problem must not hide it, so record it and carry on.
       cleanup = `${(err as Error).message}. Left behind: ${task.worktree} and branch ${task.branch} — clear them with: git -C ${task.sourceRepo} worktree remove --force ${task.worktree} && git -C ${task.sourceRepo} branch -D ${task.branch}`;
     }
-    await this.stopAgent(task);
+    // A merge that already happened must not present as a failure just because something
+    // downstream of it stumbled (the same reasoning as the cleanup catch just above, and the
+    // tracker-comment one below): fold an agent-freeing problem into the cleanup message
+    // rather than letting it propagate and fail a task that, in truth, already merged.
+    try {
+      await this.stopAgent(task);
+    } catch (err) {
+      const msg = `could not free the agent after merging: ${(err as Error).message}`;
+      cleanup = cleanup ? `${cleanup} Also: ${msg}` : msg;
+    }
     try {
       await tracker.comment(task.issue.key, `Fixed by ${after.found.url} (merged).`);
     } catch { /* the ticket is a courtesy; never fail a merged task over it */ }
