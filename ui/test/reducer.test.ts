@@ -96,9 +96,17 @@ describe("bug tasks", () => {
     expect(bugTaskFor(s, agent("a"))?.stage).toBe("plan-review");
     expect(bugTaskFor(s, agent("other"))).toBeNull();
   });
-  it("ignores tasks that have finished, so a reused agent looks clean", () => {
-    const s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [], liveSessions: [], sessionStatuses: [], bugTasks: [bt("bt1", "a", "done"), bt("bt2", "a", "cancelled")] } });
+  it("ignores a cancelled task, which has no card of its own", () => {
+    const s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [], liveSessions: [], sessionStatuses: [], bugTasks: [bt("bt2", "a", "cancelled")] } });
     expect(bugTaskFor(s, agent("a"))).toBeNull();
+  });
+  it("still surfaces a done task, so its card and Dismiss button stay reachable", () => {
+    const s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [], liveSessions: [], sessionStatuses: [], bugTasks: [bt("bt1", "a", "done")] } });
+    expect(bugTaskFor(s, agent("a"))?.id).toBe("bt1");
+  });
+  it("prefers a fresh, active task over a stale done one lingering on a reused agent", () => {
+    const s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [], liveSessions: [], sessionStatuses: [], bugTasks: [bt("bt1", "a", "done"), bt("bt2", "a", "analyzing")] } });
+    expect(bugTaskFor(s, agent("a"))?.id).toBe("bt2");
   });
   it("a bugtask-removed change event drops that task from state.bugTasks", () => {
     let s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [], liveSessions: [], sessionStatuses: [], bugTasks: [bt("bt1", "a", "done"), bt("bt2", "a", "cancelled")] } });

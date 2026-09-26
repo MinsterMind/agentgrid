@@ -32,4 +32,18 @@ test("bug fix: launch, approve the plan, approve the diff, land on an open PR", 
   // The PR stage ran and the server confirmed an open pull request on the forge.
   await expect(page.getByTestId("bug-stage")).toContainText("monitoring", { timeout: 30_000 });
   await expect(panel.getByRole("link", { name: /#1|pull|PR/i }).first()).toBeVisible();
+
+  // The watcher finds a review on its own and a feedback round opens.
+  await expect(page.getByTestId("bug-stage")).toContainText("diff-review", { timeout: 30_000 });
+  await expect(panel.getByText(/reviewers asked for changes/i)).toBeVisible();
+  await panel.getByRole("button", { name: /Approve/ }).click();
+
+  // The server pushes and the task goes back to monitoring, then the approval arrives.
+  await expect(page.getByTestId("bug-stage")).toContainText("approved", { timeout: 30_000 });
+  await panel.getByRole("button", { name: /^Merge/ }).click();
+
+  await expect(page.getByTestId("bug-stage")).toContainText("done", { timeout: 30_000 });
+  await expect(panel.getByText(/merged/i)).toBeVisible();
+  await panel.getByRole("button", { name: /Dismiss/i }).click();
+  await expect(panel).toBeHidden();
 });

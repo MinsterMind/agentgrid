@@ -192,7 +192,7 @@ export function BugPanel({ task, onChanged, onTranscript }: { task: BugTask; onC
             ))}
           </ul>
           <div className="row">
-            <button className="btn p" disabled={busy || !diffReady} onClick={() => act(() => api.approveBug(task.id))}>Create PR</button>
+            <button className="btn p" disabled={busy || !diffReady} onClick={() => act(() => api.approveBug(task.id))}>{task.gate?.reason ? "Approve" : "Create PR"}</button>
             <button className="btn" disabled={busy} onClick={() => setAsking(true)}>Request changes…</button>
             <button className="btn d" disabled={busy} onClick={() => act(() => api.cancelBug(task.id))}>Cancel task</button>
           </div>

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { mkdtemp, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { startServer } from "../../src/start.js";
+import { startServer, parseFakePrScript } from "../../src/start.js";
 import { BugTaskStore } from "../../src/bugfix/store.js";
 import { nextStage } from "../../src/bugfix/stages.js";
 import type { BugTask, TrackerIssue } from "../../src/bugfix/types.js";
@@ -142,5 +142,24 @@ describe("startServer with the bug-fix workflow", () => {
     } finally {
       await chmod(bugtasksDir, 0o700);   // restore, so cleanup of the tmp dir doesn't itself fail
     }
+  });
+});
+
+describe("parseFakePrScript (AGENTGRID_FAKE_PR_SCRIPT)", () => {
+  it("returns undefined when the env var is unset", () => {
+    expect(parseFakePrScript(undefined)).toBeUndefined();
+  });
+
+  it("parses a valid JSON script into ScriptedStep[]", () => {
+    const raw = JSON.stringify([{ after: 2, pr: { reviewDecision: "APPROVED" } }]);
+    expect(parseFakePrScript(raw)).toEqual([{ after: 2, pr: { reviewDecision: "APPROVED" } }]);
+  });
+
+  it("fails loudly rather than silently running scriptless when the JSON is malformed", () => {
+    expect(() => parseFakePrScript("{not json")).toThrow(/AGENTGRID_FAKE_PR_SCRIPT/);
+  });
+
+  it("fails loudly when the JSON parses but isn't an array", () => {
+    expect(() => parseFakePrScript(JSON.stringify({ after: 2 }))).toThrow(/AGENTGRID_FAKE_PR_SCRIPT/);
   });
 });

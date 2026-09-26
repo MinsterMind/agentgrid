@@ -47,6 +47,21 @@ export interface StartOptions {
 
 export interface RunningServer { port: number; url: string; home: string; close(): Promise<void> }
 
+/** Parses `AGENTGRID_FAKE_PR_SCRIPT` (a JSON array of `ScriptedStep`) into `fakePrScript`.
+ *  Undefined input (the env var unset) is fine — fake mode without a script is a normal,
+ *  supported thing. But if the var IS set and isn't valid JSON, or isn't an array, that's a
+ *  typo the caller needs to know about immediately: failing loudly at startup beats booting a
+ *  server that silently runs with no script, which just makes whatever depends on that script
+ *  (an e2e's Playwright web server, say) hang waiting for a story that never arrives. */
+export function parseFakePrScript(raw: string | undefined): ScriptedStep[] | undefined {
+  if (raw === undefined) return undefined;
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); }
+  catch (err) { throw new Error(`AGENTGRID_FAKE_PR_SCRIPT is not valid JSON: ${(err as Error).message}`); }
+  if (!Array.isArray(parsed)) throw new Error("AGENTGRID_FAKE_PR_SCRIPT must be a JSON array of ScriptedStep");
+  return parsed as ScriptedStep[];
+}
+
 // Scripted runner for UI e2e: every assignment asks one permission, then succeeds.
 
 /** Boot the whole AgentGrid server (store, runners, API, PTY bridge, live-session watcher) and listen on loopback. */
@@ -118,7 +133,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     comment: async () => {},
   };
   const tracker = fake ? fakeTracker : (cfg.tracker ? mcpTracker(cfg.tracker, presetsDir) : null);
-  const forge = fake ? fakeForge(opts.fakePrScript ?? []) : makeForge(cfg.forge);
+  const fakePrScript = opts.fakePrScript ?? parseFakePrScript(process.env.AGENTGRID_FAKE_PR_SCRIPT);
+  const forge = fake ? fakeForge(fakePrScript ?? []) : makeForge(cfg.forge);
   const engine = tracker ? new BugFixEngine({ store, bugs: bugStore, manager, git: new GitOps(), integrations, tracker, forge, presetsDir }) : null;
   // Recovery already ran above (`recoverStuckBugTasks`, tracker or no tracker) —
   // `BugFixEngine` has no recovery step of its own to call.
