@@ -18,18 +18,22 @@ const { ApiError } = vi.hoisted(() => {
 const bugPlan = vi.fn(async () => ({ markdown: "# Root cause\nThe token is rotated twice." }));
 const bugDiff = vi.fn(async () => ({ patch: "diff --git a/x b/x\n+added line\n", additions: 3, deletions: 1,
   files: [{ path: "src/auth/session.ts", additions: 2, deletions: 1 }, { path: "test/session.test.ts", additions: 1, deletions: 0 }] }));
-const approveBug = vi.fn(async (_id: string) => task("implementing"));
+const approveBug = vi.fn(async (_id: string, _mergeMethod?: string) => task("implementing"));
 const requestBugChanges = vi.fn(async (_id: string, _text: string) => task("analyzing"));
 const cancelBug = vi.fn(async (_id: string) => task("cancelled"));
 const retryBug = vi.fn(async (_id: string) => task("implementing"));
 const listBugTasks = vi.fn(async (): Promise<BugTask[]> => []);
+const addressComments = vi.fn(async (_id: string, _text?: string) => task("review-feedback"));
+const dismissBug = vi.fn(async (_id: string) => undefined);
 vi.mock("../src/api", () => ({
   ApiError,
   api: {
     bugPlan: () => bugPlan(), bugDiff: () => bugDiff(),
-    approveBug: (id: string) => approveBug(id), requestBugChanges: (id: string, t: string) => requestBugChanges(id, t),
+    approveBug: (id: string, mergeMethod?: string) => (mergeMethod ? approveBug(id, mergeMethod) : approveBug(id)), requestBugChanges: (id: string, t: string) => requestBugChanges(id, t),
     cancelBug: (id: string) => cancelBug(id), retryBug: (id: string) => retryBug(id),
     listBugTasks: () => listBugTasks(),
+    addressComments: (id: string, text?: string) => addressComments(id, text),
+    dismissBug: (id: string) => dismissBug(id),
   },
 }));
 
@@ -38,6 +42,18 @@ function task(stage: string, extra: Partial<BugTask> = {}): BugTask {
     trackerProject: "PAY", sourceRepo: "/r", worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", agentId: "bugfix@r",
     stage: stage as BugTask["stage"], gate: stage === "plan-review" ? { kind: "plan", openedAt: "" } : stage === "diff-review" ? { kind: "diff", openedAt: "" } : null,
     mergePolicy: "ask", mergeMethod: "squash", pr: null, costUsd: 0.4, history: [], error: null, createdAt: "", updatedAt: "", ...extra } as BugTask;
+}
+
+function monitoring(extra: Partial<BugTask> = {}): BugTask {
+  return task("monitoring", extra);
+}
+
+function atGate(stage: string, gate: { kind: string; openedAt: string; reason?: "feedback" | "rebase" }, extra: Partial<BugTask> = {}): BugTask {
+  return task(stage, { gate: gate as BugTask["gate"], ...extra });
+}
+
+function done(extra: Partial<BugTask> = {}): BugTask {
+  return task("done", { pr: { number: 9, url: "https://x/pr/9", state: "MERGED", reviewDecision: "APPROVED", checks: "SUCCESS", mergeable: "MERGEABLE", headSha: "deadbee", lastSeenEventAt: "2026-09-26T10:00:00Z" }, ...extra });
 }
 
 // A patch whose headers genuinely name both files in `files[]`, so hunksFor can isolate either.
@@ -257,6 +273,67 @@ describe("BugPanel", () => {
     render(<BugPanel task={task("diff-review")} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId("diff-summary")).toBeInTheDocument());
     expect(screen.queryByTestId("diff-commit")).not.toBeInTheDocument();
+  });
+});
+
+describe("the monitoring card", () => {
+  it("shows the PR, its state chips and when it was last checked", () => {
+    render(<BugPanel task={monitoring({ pr: { number: 7, url: "https://x/pr/7", state: "OPEN",
+      reviewDecision: "CHANGES_REQUESTED", checks: "FAILURE", mergeable: "MERGEABLE",
+      headSha: "abc", lastSeenEventAt: "2026-09-26T09:00:00Z" } })} onChanged={() => {}} />);
+    expect(screen.getByRole("link", { name: /#7/ })).toHaveAttribute("href", "https://x/pr/7");
+    expect(screen.getByText(/changes requested/i)).toBeInTheDocument();
+    expect(screen.getByText(/checks failing/i)).toBeInTheDocument();
+  });
+
+  it("offers a manual feedback round and says when the forge could not be read", async () => {
+    const task = monitoring({ error: "could not check the pull request: gh: could not connect" });
+    render(<BugPanel task={task} onChanged={() => {}} />);
+    expect(screen.getByText(/could not check the pull request/i)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Ask the agent to address these/i }));
+    expect(addressComments).toHaveBeenCalledWith("bt1", undefined);
+  });
+});
+
+describe("the labelled diff gate", () => {
+  it("says what it is approving for a feedback round and for a rebase", () => {
+    const fb = atGate("diff-review", { kind: "diff", openedAt: "t", reason: "feedback" });
+    const { rerender } = render(<BugPanel task={fb} onChanged={() => {}} />);
+    expect(screen.getByText(/reviewers asked for changes/i)).toBeInTheDocument();
+    rerender(<BugPanel task={atGate("diff-review", { kind: "diff", openedAt: "t", reason: "rebase" })} onChanged={() => {}} />);
+    expect(screen.getByText(/conflicts with/i)).toBeInTheDocument();
+  });
+});
+
+describe("the merge gate", () => {
+  it("merges with the shown method and refuses while the diff has not loaded", async () => {
+    render(<BugPanel task={atGate("approved", { kind: "merge", openedAt: "t" })} onChanged={() => {}} />);
+    const select = screen.getByLabelText(/merge method/i);
+    await userEvent.selectOptions(select, "merge");
+    await userEvent.click(screen.getByRole("button", { name: /^Merge/ }));
+    expect(approveBug).toHaveBeenCalledWith("bt1", "merge");
+  });
+});
+
+describe("the done card", () => {
+  it("shows the merged PR and dismisses", async () => {
+    const onChanged = vi.fn();
+    render(<BugPanel task={done()} onChanged={onChanged} />);
+    expect(screen.getByText(/merged/i)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Dismiss/i }));
+    expect(dismissBug).toHaveBeenCalledWith("bt1");
+  });
+
+  it("shows what cleanup left behind, on its own lines", () => {
+    render(<BugPanel task={done({ error: "worktree cleanup incomplete: …\n  git -C /r worktree remove --force /r/.worktrees/bugfix-W-1" })} onChanged={() => {}} />);
+    const lines = screen.getAllByText(/git -C \/r/);
+    expect(lines).toHaveLength(1);
+  });
+
+  it("shows a PR closed without merging as not-a-success", () => {
+    render(<BugPanel task={done({ pr: null, error: "the pull request was closed without merging" })} onChanged={() => {}} />);
+    expect(screen.getAllByText(/closed without merging/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/^merged$/i)).not.toBeInTheDocument();
   });
 });
 

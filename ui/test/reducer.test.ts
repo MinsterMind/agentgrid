@@ -100,4 +100,10 @@ describe("bug tasks", () => {
     const s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [], liveSessions: [], sessionStatuses: [], bugTasks: [bt("bt1", "a", "done"), bt("bt2", "a", "cancelled")] } });
     expect(bugTaskFor(s, agent("a"))).toBeNull();
   });
+  it("a bugtask-removed change event drops that task from state.bugTasks", () => {
+    let s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [], liveSessions: [], sessionStatuses: [], bugTasks: [bt("bt1", "a", "done"), bt("bt2", "a", "cancelled")] } });
+    expect(Object.keys(s.bugTasks)).toEqual(["bt1", "bt2"]);
+    s = reducer(s, { type: "change", event: { type: "bugtask-removed", id: "bt1" } });
+    expect(Object.keys(s.bugTasks)).toEqual(["bt2"]);
+  });
 });

@@ -23,6 +23,8 @@ async function call<T>(method: string, url: string, body?: unknown): Promise<T> 
   return res.status === 204 ? (undefined as T) : res.json();
 }
 
+export type MergeMethod = "squash" | "merge" | "rebase";
+
 export const api = {
   getState: () => call<GridState>("GET", "/api/state"),
   subscribe(onSnapshot: (s: GridState) => void, onChange: (e: GridEvent) => void, onConnected: (v: boolean) => void): () => void {
@@ -55,10 +57,12 @@ export const api = {
   createBugTask: (input: { issueRef: string; repo: string; mergePolicy?: "ask" | "auto"; mergeMethod?: string }) => call<BugTask>("POST", "/api/bugtasks", input),
   bugPlan: (id: string) => call<{ markdown: string }>("GET", `/api/bugtasks/${encodeURIComponent(id)}/plan`),
   bugDiff: (id: string) => call<{ patch: string; files: Array<{ path: string; additions: number; deletions: number }>; additions: number; deletions: number }>("GET", `/api/bugtasks/${encodeURIComponent(id)}/diff`),
-  approveBug: (id: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/approve`),
+  approveBug: (id: string, mergeMethod?: MergeMethod) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/approve`, mergeMethod ? { mergeMethod } : undefined),
   requestBugChanges: (id: string, text: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/request-changes`, { text }),
   cancelBug: (id: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/cancel`),
   retryBug: (id: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/retry`),
+  addressComments: (id: string, text?: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/address-comments`, text ? { text } : undefined),
+  dismissBug: (id: string) => call<void>("DELETE", `/api/bugtasks/${encodeURIComponent(id)}`),
   myIssues: () => call<IssueSummary[]>("GET", "/api/bugfix/issues"),
   bugPreflight: (repo: string) => call<{ ok: boolean; problems: string[] }>("GET", `/api/bugfix/preflight?repo=${encodeURIComponent(repo)}`),
   getIntegrations: () => call<Integrations>("GET", "/api/integrations"),
