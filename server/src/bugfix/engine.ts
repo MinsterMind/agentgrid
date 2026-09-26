@@ -11,7 +11,7 @@ import type { ForgeAdapter } from "./forge/index.js";
 import type { TrackerProvider } from "./tracker.js";
 import { renderStagePrompt } from "./prompts.js";
 import { nextStage } from "./stages.js";
-import { AGENT_STAGES, RECOVERABLE_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask } from "./types.js";
+import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask } from "./types.js";
 import type { PrFinding } from "./watcher.js";
 
 /** After this many rounds the watcher's findings stop dispatching and only report. A
@@ -248,6 +248,12 @@ export class BugFixEngine {
     if (event.type === "checks-failed") this.pendingNote.set(taskId, event.checks);
     let task = await this.deps.bugs.apply(taskId, t);
     await this.settleTerminal(task);
+    // A server stage is work the engine does itself: no assignment, no agent, no tokens. It
+    // still reports stage-done/stage-failed, so failure and retry behave exactly as for an
+    // agent stage. Fire it detached — it calls back into `advance`, which would deadlock on
+    // this task's own chain link if awaited here (the same reason `onAssignmentFinished` is
+    // detached from the store's event listener rather than awaited there).
+    if (SERVER_STAGES.includes(task.stage)) { void this.runServerStage(task); return task; }
     if (!t.run) return task;
     try {
       task = await this.runStage(task, t.run);
@@ -351,6 +357,52 @@ export class BugFixEngine {
       throw new Error(settled.error ?? "the agent's run failed before the stage could start");
     }
     return bugs.get(task.id);
+  }
+
+  /** Runs a `SERVER_STAGES` stage: no assignment, no agent — the engine does the work itself
+   *  and reports stage-done/stage-failed exactly as `onAssignmentFinished` does for an agent
+   *  stage, so retry and failure handling behave identically either way. */
+  private async runServerStage(task: BugTask): Promise<void> {
+    try {
+      if (task.stage === "pushing") await this.doPush(task);
+      // "merging" joins this dispatch in Task 8 (`else if (task.stage === "merging") await
+      // this.doMerge(task);`) — `doMerge` does not exist yet.
+      await this.advance(task.id, { type: "stage-done" });
+    } catch (err) {
+      await this.advance(task.id, { type: "stage-failed", reason: (err as Error).message }).catch(() => {});
+    }
+  }
+
+  /** Push the task's branch for an approved feedback or rebase diff. The server acts here,
+   *  not an agent: no tokens, no improvisation, just the exact commit the human approved. */
+  private async doPush(task: BugTask): Promise<void> {
+    const { git, forge, bugs } = this.deps;
+    // Re-check the pin against the commit the human approved. The gate could have opened
+    // minutes ago; anything that moved HEAD since is unreviewed.
+    const head = await git.revParse(task.worktree);
+    if (head !== task.approvedHead) {
+      throw new Error(`the branch moved since the diff was approved: approved ${task.approvedHead}, HEAD is now ${head}. Review the new diff (request changes, then approve again) before pushing.`);
+    }
+    // The gate that recorded which round this was is already gone by the time this runs —
+    // the transition into "pushing" clears it (`gate: null`) — so read it from the task's own
+    // history instead: the most recent entry naming an agent stage. "rebase" means force (a
+    // lease, never a bare force — see GitOps.push); "review-feedback" (or nothing found)
+    // means a plain push.
+    const lastRound = [...task.history].reverse().find(h => h.stage === "review-feedback" || h.stage === "rebase");
+    const force = lastRound?.stage === "rebase";
+    await git.push(task.worktree, task.branch, { force });
+    if (!forge || !task.pr) return;
+    // Verify rather than trust: confirm the PR actually carries what was just pushed.
+    const lookup = await forge.getPr(task.sourceRepo, task.pr.number);
+    if ("found" in lookup && lookup.found) {
+      await bugs.patch(task.id, { pr: lookup.found });
+      // `headSha` is the server's only proof a push landed (Task 1). An adapter that doesn't
+      // report it gives null here — skip the comparison rather than failing on an absence of
+      // evidence either way.
+      if (lookup.found.headSha && lookup.found.headSha !== head) {
+        throw new Error(`the pull request is still on ${lookup.found.headSha} after the push`);
+      }
+    }
   }
 
   /** An assignment finished: verify the stage's real-world effect, then advance or fail. */

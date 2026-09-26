@@ -873,3 +873,107 @@ describe("a feedback round", () => {
   });
 });
 
+/**
+ * Lands a fresh task (via `onMonitoringTask`) at a labelled diff-review gate — the state a
+ * feedback round or a rebase round leaves it in once the human's next look is due. `pushing`
+ * is a SERVER_STAGES stage, dispatched by the engine itself rather than an agent, so the
+ * transition that gets it there needs no agent stage actually completing — the "rebase" agent
+ * stage in particular has no preset/prompt of its own yet in this codebase, so its round is
+ * driven directly through the store the same shape `nextStage`'s own `wait(...)` produces:
+ * one history entry naming the round's agent stage ("review-feedback" or "rebase" — what
+ * `doPush` reads to decide `force`, since the gate itself is cleared by the time `doPush`
+ * runs), then the diff-review gate carrying that reason.
+ *
+ * Also wires up push tracking on the fake git (`gitState.pushes`, `gitState.pushError`) and a
+ * forge whose `prHead` is a plain mutable property, so a test can move it after the gate opens
+ * exactly the way a real `gh` poll would report a new head after the push actually lands.
+ */
+async function atFeedbackDiffGate(opts: { reason?: "feedback" | "rebase" } = {}) {
+  const reason = opts.reason ?? "feedback";
+  const { engine, bugs, fake, gitState } = await onMonitoringTask();
+  const gs = gitState as typeof gitState & {
+    pushes: Array<{ dir: string; branch: string; force: boolean }>;
+    pushError?: string;
+  };
+  gs.pushes = [];
+  const deps = (engine as any).deps;
+  deps.git.push = async (dir: string, branch: string, o: { force?: boolean } = {}) => {
+    if (gs.pushError) throw new Error(gs.pushError);
+    gs.pushes.push({ dir, branch, force: !!o.force });
+  };
+
+  const forge: any = {
+    name: "github",
+    prHead: gs.head,
+    authStatus: async () => ({ ok: true, message: "ok" }),
+    createPrCommand: () => "gh pr create --base 'main' --head 'bugfix/PAY-42' --title 't' --body-file '/b'",
+    findPr: async () => ({ number: 7, url: "https://gh/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: forge.prHead, lastSeenEventAt: "t" }),
+    getPr: async () => ({ found: { number: 7, url: "https://gh/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: forge.prHead, lastSeenEventAt: "t" } }),
+    listReviewEvents: async () => [],
+    merge: async () => ({ ok: true, message: "merged (fake)" }),
+  };
+  deps.forge = forge;
+
+  // What the round actually approved — the commit `doPush`'s pin check must see HEAD still at.
+  const head = reason === "rebase" ? "ccc" : "bbb";
+  gs.head = head;
+  forge.prHead = head;
+  await bugs.apply("bt1", { stage: reason, run: reason, gate: null, note: "", error: null });
+  await bugs.patch("bt1", { approvedHead: head });
+  await bugs.apply("bt1", { stage: "diff-review", run: null, gate: { kind: "diff", openedAt: new Date().toISOString(), reason }, note: "", error: null });
+
+  return { engine, bugs, gitState: gs, forge };
+}
+
+describe("the server pushes an approved feedback diff", () => {
+  it("pushes, confirms the PR head moved, and returns to monitoring", async () => {
+    const { engine, bugs, gitState, forge } = await atFeedbackDiffGate();
+    gitState.head = "bbb";
+    forge.prHead = "bbb";                                                    // the PR will report the new head
+    await engine.approve("bt1");
+    await until(() => bugs.get("bt1").stage !== "pushing", 2000);
+    const t = bugs.get("bt1");
+    expect(gitState.pushes).toEqual([{ dir: t.worktree, branch: t.branch, force: false }]);
+    expect(t.stage).toBe("monitoring");
+    expect(t.error).toBeNull();
+  });
+
+  it("force-pushes with a lease after a rebase, and only then", async () => {
+    const { engine, bugs, gitState, forge } = await atFeedbackDiffGate({ reason: "rebase" });
+    gitState.head = "ccc"; forge.prHead = "ccc";
+    await engine.approve("bt1");
+    await until(() => bugs.get("bt1").stage !== "pushing", 2000);
+    expect(gitState.pushes[0]).toMatchObject({ force: true });
+  });
+
+  it("refuses to push when the branch moved after approval", async () => {
+    const { engine, bugs, gitState } = await atFeedbackDiffGate();
+    gitState.head = "zzz";                                                   // moved since the gate opened
+    await engine.approve("bt1");
+    await until(() => bugs.get("bt1").stage !== "pushing", 2000);
+    const t = bugs.get("bt1");
+    expect(gitState.pushes).toEqual([]);
+    expect(t.stage).toBe("failed");
+    expect(t.error).toMatch(/moved since the diff was approved/i);
+  });
+
+  it("fails the stage with git's message when the push is rejected", async () => {
+    const { engine, bugs, gitState } = await atFeedbackDiffGate();
+    gitState.head = "bbb";
+    gitState.pushError = "git push failed: ! [rejected] bugfix/W-1 -> bugfix/W-1 (non-fast-forward)";
+    await engine.approve("bt1");
+    await until(() => bugs.get("bt1").stage !== "pushing", 2000);
+    expect(bugs.get("bt1").stage).toBe("failed");
+    expect(bugs.get("bt1").error).toMatch(/non-fast-forward/);
+  });
+
+  it("fails when the PR head did not move, rather than resting on a push that did nothing", async () => {
+    const { engine, bugs, gitState, forge } = await atFeedbackDiffGate();
+    gitState.head = "bbb"; forge.prHead = "aaa";                             // PR still on the old head
+    await engine.approve("bt1");
+    await until(() => bugs.get("bt1").stage !== "pushing", 2000);
+    expect(bugs.get("bt1").stage).toBe("failed");
+    expect(bugs.get("bt1").error).toMatch(/pull request .* still/i);
+  });
+});
+
