@@ -1,8 +1,8 @@
 import { shellQuote } from "../../shell.js";
 import type { CreatePrContext, ForgeAdapter, MergeMethod, PrInfo, ReviewEvent, Runner } from "./types.js";
 
-const FIELDS = "number,url,state,isDraft,reviewDecision,mergeable,updatedAt,statusCheckRollup";
-const PR_FIELDS = "number,url,state,isDraft,reviewDecision,mergeable,updatedAt,statusCheckRollup,headRefOid";
+const FIELDS = "number,url,state,isDraft,reviewDecision,mergeable,updatedAt,statusCheckRollup,headRefOid";
+const PR_FIELDS = FIELDS;
 /** gh says "no pull requests found" for a genuinely absent PR; anything else is a broken call. */
 const NOT_FOUND = /no pull requests? found|could not resolve to a pullrequest/i;
 
@@ -35,6 +35,14 @@ function rollup(checks: Array<{ status?: string; state?: string; conclusion?: st
   if (outcomes.includes("FAILURE")) return "FAILURE";
   if (outcomes.includes("PENDING")) return "PENDING";
   return "SUCCESS";
+}
+
+/** Valid JSON is not necessarily a PR body — `{}`, `[]`, `null` all parse cleanly. A
+ *  fabricated `found` is the one PrLookup state the watcher cannot recover from, so
+ *  require the two fields that are never optional on a real `gh pr view` payload. */
+function looksLikePr(pr: any): boolean {
+  return typeof pr === "object" && pr !== null && !Array.isArray(pr)
+    && typeof pr.number === "number" && typeof pr.url === "string";
 }
 
 function toPrInfo(pr: any): PrInfo {
@@ -87,8 +95,11 @@ export function githubAdapter(run: Runner): ForgeAdapter {
         const msg = (r.stderr ?? r.stdout ?? "").trim() || `gh exited ${r.code}`;
         return NOT_FOUND.test(msg) ? { found: null } : { unavailable: msg };
       }
-      try { return { found: toPrInfo(JSON.parse(r.stdout)) }; }
+      let parsed: any;
+      try { parsed = JSON.parse(r.stdout); }
       catch { return { unavailable: `could not read gh output for PR #${number}` }; }
+      if (!looksLikePr(parsed)) return { unavailable: `gh output for PR #${number} did not look like a pull request` };
+      return { found: toPrInfo(parsed) };
     },
 
     async listReviewEvents(repoDir: string, number: number, since: string): Promise<ReviewEvent[]> {
@@ -96,6 +107,12 @@ export function githubAdapter(run: Runner): ForgeAdapter {
       if (r.code !== 0) return [];
       let raw: any;
       try { raw = JSON.parse(r.stdout || "{}"); } catch { return []; }
+      // `gh pr view --json reviews,comments` doesn't expose `is_bot`/`isBot` on `author` in
+      // practice — the `[bot]` login suffix (dependabot[bot], github-actions[bot], ...) is
+      // the real signal; the two field lookups are kept only as harmless forward-compat in
+      // case a future `gh` version adds one. Note what this still can't catch: a PAT-driven
+      // service *user* account has no `[bot]` suffix and no distinguishing field either, so
+      // its comments surface on the card exactly like a human's.
       const isBot = (a: any) => Boolean(a?.is_bot ?? a?.isBot ?? /\[bot\]$/i.test(a?.login ?? ""));
       const out: ReviewEvent[] = [
         ...(raw.reviews ?? []).map((v: any) => ({ kind: "review" as const, state: (v.state ?? "").toUpperCase(),

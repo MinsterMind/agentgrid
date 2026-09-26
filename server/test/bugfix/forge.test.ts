@@ -10,7 +10,7 @@ const fixture = (name: string) => readFile(path.resolve("test/bugfix/fixtures/gh
 const GH_PR_LIST = JSON.stringify([{
   number: 482, url: "https://github.com/acme/pay/pull/482", state: "OPEN", isDraft: false,
   reviewDecision: "REVIEW_REQUIRED", mergeable: "MERGEABLE", updatedAt: "2026-09-25T10:00:00Z",
-  statusCheckRollup: [{ state: "SUCCESS" }, { state: "SUCCESS" }],
+  headRefOid: "cafe482", statusCheckRollup: [{ state: "SUCCESS" }, { state: "SUCCESS" }],
 }]);
 
 const runner = (out: Record<string, { stdout: string; code: number }>): { run: Runner; calls: string[] } => {
@@ -44,7 +44,7 @@ describe("github adapter", () => {
     const r = runner({ "gh pr list": { stdout: GH_PR_LIST, code: 0 } });
     const pr = await makeForge({ preset: "github" }, r.run)!.findPr("/repo", "bugfix/PAY-42");
     expect(pr).toEqual({ number: 482, url: "https://github.com/acme/pay/pull/482", state: "OPEN",
-      reviewDecision: "REVIEW_REQUIRED", checks: "SUCCESS", mergeable: "MERGEABLE", headSha: null, lastSeenEventAt: "2026-09-25T10:00:00Z" });
+      reviewDecision: "REVIEW_REQUIRED", checks: "SUCCESS", mergeable: "MERGEABLE", headSha: "cafe482", lastSeenEventAt: "2026-09-25T10:00:00Z" });
     expect(r.calls[0]).toContain("--head bugfix/PAY-42");
   });
 
@@ -161,16 +161,30 @@ describe("getPr", () => {
     const r = await f.getPr("/r", 7);
     expect(r).toMatchObject({ found: { mergeable: "CONFLICTING" } });
   });
+
+  it("never reports `found` for valid JSON that isn't shaped like a PR", async () => {
+    for (const body of ["{}", "[]", "null", '{"number":"seven"}']) {
+      const f = githubAdapter(async () => ({ stdout: body, code: 0 }));
+      const r = await f.getPr("/r", 7);
+      expect(r).toMatchObject({ unavailable: expect.stringMatching(/did not look like a pull request/i) });
+    }
+  });
 });
 
 describe("listReviewEvents", () => {
-  it("normalises reviews, comments and checks, and marks bots", async () => {
+  it("normalises reviews, comments and checks, marking bots by the `[bot]` login suffix (the real gh shape has no is_bot/isBot field)", async () => {
     const f = githubAdapter(async () => ({ stdout: await fixture("events-with-bot.json"), code: 0 }));
     const events = await f.listReviewEvents("/r", 7, "2026-09-26T08:00:00Z");
     expect(events).toEqual([
       { kind: "review", state: "CHANGES_REQUESTED", author: "alice", isBot: false, body: "This leaks a handle.", at: "2026-09-26T09:00:00Z" },
-      { kind: "comment", state: "", author: "ci-bot", isBot: true, body: "Build failed.", at: "2026-09-26T09:05:00Z" },
+      { kind: "comment", state: "", author: "ci-bot[bot]", isBot: true, body: "Build failed.", at: "2026-09-26T09:05:00Z" },
     ]);
+  });
+
+  it("does not treat a plain human login as a bot", async () => {
+    const f = githubAdapter(async () => ({ stdout: await fixture("events-with-bot.json"), code: 0 }));
+    const events = await f.listReviewEvents("/r", 7, "2026-09-26T08:00:00Z");
+    expect(events[0]).toMatchObject({ author: "alice", isBot: false });
   });
 
   it("drops events at or before `since`, and never throws on a gh failure", async () => {
