@@ -203,4 +203,74 @@ describe("PrWatcher", () => {
     await new PrWatcher({ bugs, forge: forgeWith([{ found: pr() }]), onFinding, now: () => 0 }).poll();
     expect(found).toEqual([]);
   });
+  /**
+   * C1: a standing CHANGES_REQUESTED is held by GitHub until a reviewer re-reviews, so the
+   * decision alone is not evidence that THIS review is unanswered. Each of these four cases
+   * pins one half of that: only a new non-bot review/comment since the PR view we already
+   * have may dispatch a round.
+   */
+  describe("a standing CHANGES_REQUESTED", () => {
+    /** Task already sitting on a CHANGES_REQUESTED view — i.e. round 1 has been answered
+     *  (or is being waited on) and the decision has simply not been withdrawn. */
+    async function standingTask() {
+      const { bugs, id } = await monitoringTask();
+      await bugs.patch(id, { pr: pr({ reviewDecision: "CHANGES_REQUESTED" }) });
+      return { bugs, id };
+    }
+
+    it("does not dispatch for a bot comment that only bumps lastSeenEventAt", async () => {
+      const { bugs } = await standingTask();
+      const { found, onFinding } = collect();
+      const forge = forgeWith([{ found: pr({ reviewDecision: "CHANGES_REQUESTED", lastSeenEventAt: "2026-09-26T09:30:00Z" }) }],
+        [{ kind: "comment", state: "", author: "ci-bot", isBot: true, body: "Build failed.", at: "2026-09-26T09:30:00Z" }]);
+      const w = new PrWatcher({ bugs, forge, onFinding, now: () => 0, jitter: ms => ms });
+      await w.poll();
+      expect(found).toHaveLength(1);
+      expect(found[0].event).toBeNull();          // the card updates; no round is dispatched
+    });
+
+    it("does not dispatch when only the checks moved (the server's own push re-ran CI)", async () => {
+      const { bugs } = await standingTask();
+      const { found, onFinding } = collect();
+      const forge = forgeWith([{ found: pr({ reviewDecision: "CHANGES_REQUESTED", checks: "PENDING" }) }], []);
+      const w = new PrWatcher({ bugs, forge, onFinding, now: () => 0, jitter: ms => ms });
+      await w.poll();
+      expect(found[0].event).toBeNull();
+    });
+
+    it("does dispatch when a new human review lands with the decision still standing", async () => {
+      const { bugs } = await standingTask();
+      const { found, onFinding } = collect();
+      const forge = forgeWith([{ found: pr({ reviewDecision: "CHANGES_REQUESTED", lastSeenEventAt: "2026-09-26T10:00:00Z" }) }],
+        [{ kind: "review", state: "CHANGES_REQUESTED", author: "alice", isBot: false, body: "Still leaks.", at: "2026-09-26T10:00:00Z" }]);
+      const w = new PrWatcher({ bugs, forge, onFinding, now: () => 0, jitter: ms => ms });
+      await w.poll();
+      expect(found[0].event).toMatchObject({ type: "review-changes-requested" });
+      expect((found[0].event as { comments: string }).comments).toContain("Still leaks.");
+    });
+
+    it("does not dispatch after our own push moved the head with no new review", async () => {
+      const { bugs } = await standingTask();
+      const { found, onFinding } = collect();
+      // What a real tick sees right after `doPush`: a new head, a bumped updatedAt, the
+      // review decision untouched because nobody has re-reviewed yet.
+      const forge = forgeWith([{ found: pr({ reviewDecision: "CHANGES_REQUESTED", headSha: "def456", lastSeenEventAt: "2026-09-26T09:45:00Z" }) }], []);
+      const w = new PrWatcher({ bugs, forge, onFinding, now: () => 0, jitter: ms => ms });
+      await w.poll();
+      expect(found[0].pr?.headSha).toBe("def456");   // still reported, for the card
+      expect(found[0].event).toBeNull();             // but nothing dispatched
+    });
+
+    it("dispatches for a review with an empty body, falling back to a generic note", async () => {
+      const { bugs } = await standingTask();
+      const { found, onFinding } = collect();
+      // A reviewer can request changes with no text at all. The evidence is the review event
+      // itself, not the rendered text — so this must still dispatch.
+      const forge = forgeWith([{ found: pr({ reviewDecision: "CHANGES_REQUESTED", lastSeenEventAt: "2026-09-26T10:00:00Z" }) }],
+        [{ kind: "review", state: "CHANGES_REQUESTED", author: "alice", isBot: false, body: "   ", at: "2026-09-26T10:00:00Z" }]);
+      await new PrWatcher({ bugs, forge, onFinding, now: () => 0, jitter: ms => ms }).poll();
+      expect(found[0].event).toMatchObject({ type: "review-changes-requested" });
+      expect((found[0].event as { comments: string }).comments).toMatch(/changes were requested/);
+    });
+  });
 });

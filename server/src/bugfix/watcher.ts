@@ -132,9 +132,26 @@ export class PrWatcher {
     if (pr.mergeable === "CONFLICTING") return { type: "conflicting" };
     if (pr.checks === "FAILURE") return { type: "checks-failed", checks: `checks are failing on ${pr.url}` };
     if (pr.reviewDecision === "CHANGES_REQUESTED") {
+      // GitHub holds `reviewDecision === "CHANGES_REQUESTED"` until a reviewer re-reviews, so
+      // the decision by itself says nothing about whether THIS review has been answered. After
+      // the server pushes round 1 the view still reads CHANGES_REQUESTED, and `statesDiffer`
+      // only dedupes on "did a watched field move" — so any later change (a bot comment bumping
+      // `lastSeenEventAt`, or the CI our own push re-triggered moving PENDING -> SUCCESS) would
+      // re-fire a round with no real feedback in it, which `verify()` then fails for having no
+      // new commits. The evidence a round needs is a NEW human voice on the PR since the view we
+      // already have: at least one non-bot review or comment strictly after `lastSeenEventAt`.
+      //
+      // Deliberately NOT also suppressing while `pr.headSha` still equals the head the last
+      // round pushed: a genuine re-review arrives without the head moving at all, so that
+      // condition (alone, or conjoined with this one) would suppress exactly the case that must
+      // still fire. This test is sufficient on its own, needs no new durable state, and is
+      // decided by data the adapter already returns.
       const events = await forge.listReviewEvents(task.sourceRepo, pr.number, task.pr!.lastSeenEventAt);
+      // The evidence is the event, not its rendered text: a reviewer may request changes with
+      // an empty body, and that is still a new round.
+      if (!events.some(e => !e.isBot)) return null;
       const comments = describeComments(events);
-      return { type: "review-changes-requested", comments: comments || `changes were requested on ${pr.url}` };
+      return { type: "review-changes-requested", comments: comments || `changes were requested on ${pr.url}`, source: "forge" };
     }
     if (pr.reviewDecision === "APPROVED") return { type: "review-approved" };
     return null;                       // a comment, a pending check: the card updates, nothing runs

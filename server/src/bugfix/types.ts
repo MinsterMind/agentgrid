@@ -60,7 +60,12 @@ export type BugEvent =
   | { type: "request-changes"; text: string }
   | { type: "cancel" }
   | { type: "retry" }
-  | { type: "review-changes-requested"; comments: string }
+  /** `source` says whose words `comments` are, and therefore whether the agent may obey them:
+   *  "forge" is reviewer/CI text pulled off the pull request (data, fenced in the prompt);
+   *  "operator" is the human at the console typing into this app. The watcher only ever
+   *  produces "forge"; `addressComments` produces either, depending on whether the human
+   *  supplied the text themselves. */
+  | { type: "review-changes-requested"; comments: string; source: "forge" | "operator" }
   | { type: "checks-failed"; checks: string }
   | { type: "review-approved" }
   | { type: "conflicting" }

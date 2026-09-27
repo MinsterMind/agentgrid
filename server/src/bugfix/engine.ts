@@ -231,8 +231,10 @@ export class BugFixEngine {
   async addressComments(taskId: string, text?: string): Promise<BugTask> {
     const task = this.deps.bugs.get(taskId);
     const trimmed = text?.trim();
+    // The human's own words are the operator speaking; anything read back off the pull request
+    // is forge text, whoever asked for it to be fetched.
     const comments = trimmed || (await this.recentComments(task));
-    return this.advance(taskId, { type: "review-changes-requested", comments });
+    return this.advance(taskId, { type: "review-changes-requested", comments, source: trimmed ? "operator" : "forge" });
   }
 
   /** Comments the click itself didn't supply: read fresh from the forge since the PR's last
