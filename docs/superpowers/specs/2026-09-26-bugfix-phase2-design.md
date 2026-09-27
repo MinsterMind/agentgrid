@@ -94,9 +94,9 @@ This is a stronger gate than Phase 1's agent-run push behind a permission prompt
 
 `merging` is server work, not an agent stage:
 
-1. `forge.merge(repoDir, number, mergeMethod)` — the method recorded at intake, changeable at the gate, with remote-branch deletion requested in the same call.
+1. `forge.merge(repoDir, number, mergeMethod)` — the method recorded at intake, changeable at the gate. The call does **not** ask the forge to delete the branch: `gh pr merge --delete-branch` deletes the local branch too, which git refuses while the task branch is checked out in the worktree, so a merge that had already happened came back as a failure. The remote branch is deleted after the merge is confirmed (step 3), as a best-effort teardown step whose failure lands in the cleanup message.
 2. Re-read the PR. `MERGED` or the stage fails with the forge's message.
-3. Only then: remove the worktree and the local branch, free the agent, comment the PR link on the ticket.
+3. Only then: delete the remote branch, remove the worktree and the local branch, free the agent, comment the PR link on the ticket.
 4. `done`. The card shows the merged PR and the transcript until dismissed.
 
 If teardown fails after a confirmed merge, the task still reaches `done` and the card names what is left behind and the commands to clear it. A merge is a fact; a cleanup problem must not hide it.

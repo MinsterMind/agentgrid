@@ -154,8 +154,12 @@ export class PrWatcher {
       //
       // No head on either side means no evidence either way — dispatch, the same fallback
       // `doPush` takes for an adapter that doesn't report `headSha`.
-      if (pr.headSha && task.checksRoundHead && pr.headSha === task.checksRoundHead) return null;
-      return { type: "checks-failed", checks: `checks are failing on ${pr.url}`, headSha: pr.headSha ?? null };
+      const answered = Boolean(pr.headSha && task.checksRoundHead && pr.headSha === task.checksRoundHead);
+      // Suppressed means "this red build is old news", not "this tick is old news": fall through
+      // rather than returning, so a new human review arriving on the same tick is still seen. The
+      // finding advances the `lastSeenEventAt` high-water mark either way, so a review dropped here
+      // would be dropped for good.
+      if (!answered) return { type: "checks-failed", checks: `checks are failing on ${pr.url}`, headSha: pr.headSha ?? null };
     }
     if (pr.reviewDecision === "CHANGES_REQUESTED") {
       // GitHub holds `reviewDecision === "CHANGES_REQUESTED"` until a reviewer re-reviews, so
@@ -175,7 +179,11 @@ export class PrWatcher {
       const events = await forge.listReviewEvents(task.sourceRepo, pr.number, task.pr!.lastSeenEventAt);
       // The evidence is the event, not its rendered text: a reviewer may request changes with
       // an empty body, and that is still a new round.
-      if (!events.some(e => !e.isBot)) return null;
+      // `kind: "check"` is a human voice only by accident of attribution: `ReviewEvent.kind`
+      // declares it (spec §6) and spec §4.4 is explicit that CI must wake the agent through the
+      // status rollup, never through an event. An adapter that ever attributed one to a person
+      // would otherwise fire a round whose feedback reads " (failure): unit tests".
+      if (!events.some(e => e.kind !== "check" && !e.isBot)) return null;
       const comments = describeComments(events);
       return { type: "review-changes-requested", comments: comments || `changes were requested on ${pr.url}`, source: "forge" };
     }

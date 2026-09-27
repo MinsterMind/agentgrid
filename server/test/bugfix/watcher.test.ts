@@ -260,6 +260,21 @@ describe("PrWatcher", () => {
       expect(found[0].event).toMatchObject({ type: "checks-failed", headSha: "def456" });
     });
 
+    // The suppression must not swallow the whole tick: `decide()` checks the rollup before the
+    // review decision, so a tick carrying BOTH an already-answered red build and a brand-new human
+    // review would otherwise emit nothing at all — and the finding still advances the
+    // `lastSeenEventAt` high-water mark past that review, losing it for good.
+    it("falls through to a co-occurring new human review instead of swallowing the tick", async () => {
+      const { bugs } = await failingTask({ checksRoundHead: "abc123" });
+      await bugs.patch("bt1", { pr: pr({ checks: "FAILURE", reviewDecision: "CHANGES_REQUESTED" }), checksRoundHead: "abc123" });
+      const { found, onFinding } = collect();
+      const forge = forgeWith([{ found: pr({ checks: "FAILURE", reviewDecision: "CHANGES_REQUESTED", lastSeenEventAt: "2026-09-26T09:45:00Z" }) }],
+        [{ kind: "review", state: "CHANGES_REQUESTED", author: "alice", isBot: false, body: "Also this.", at: "2026-09-26T09:45:00Z" }]);
+      await new PrWatcher({ bugs, forge, onFinding, now: () => 0, jitter: ms => ms }).poll();
+      expect(found[0].event).toMatchObject({ type: "review-changes-requested" });
+      expect((found[0].event as { comments: string }).comments).toContain("Also this.");
+    });
+
     it("dispatches when the adapter reports no head at all, rather than suppressing on absent evidence", async () => {
       const { bugs } = await failingTask({ checksRoundHead: "abc123" });
       const { found, onFinding } = collect();
@@ -301,6 +316,19 @@ describe("PrWatcher", () => {
       const forge = forgeWith([{ found: pr({ reviewDecision: "CHANGES_REQUESTED", checks: "PENDING" }) }], []);
       const w = new PrWatcher({ bugs, forge, onFinding, now: () => 0, jitter: ms => ms });
       await w.poll();
+      expect(found[0].event).toBeNull();
+    });
+
+    // `ReviewEvent.kind` includes "check" per spec §6, and spec §4.4 is explicit that CI wakes the
+    // agent through the status rollup and never through an event. No adapter emits a non-bot check
+    // today, but `!e.isBot` alone would let one fire a review round whose "comments" read
+    // " (failure): unit tests".
+    it("does not count a check event as a human voice, however it is attributed", async () => {
+      const { bugs } = await standingTask();
+      const { found, onFinding } = collect();
+      const forge = forgeWith([{ found: pr({ reviewDecision: "CHANGES_REQUESTED", lastSeenEventAt: "2026-09-26T10:00:00Z" }) }],
+        [{ kind: "check", state: "FAILURE", author: "unit tests", isBot: false, body: "", at: "2026-09-26T10:00:00Z" }]);
+      await new PrWatcher({ bugs, forge, onFinding, now: () => 0, jitter: ms => ms }).poll();
       expect(found[0].event).toBeNull();
     });
 
