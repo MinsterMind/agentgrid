@@ -9,7 +9,7 @@ import { GitOps, branchName, worktreePath, type DiffResult } from "./git.js";
 import { IntegrationsStore } from "./integrations.js";
 import type { ForgeAdapter } from "./forge/index.js";
 import type { TrackerProvider } from "./tracker.js";
-import { renderStagePrompt } from "./prompts.js";
+import { renderStagePrompt, type StageNote } from "./prompts.js";
 import { nextStage } from "./stages.js";
 import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask } from "./types.js";
 import { describeComments, type PrFinding } from "./watcher.js";
@@ -63,8 +63,9 @@ export interface EngineDeps {
 export class BugFixEngine {
   readonly deps: EngineDeps;
   private role: string;
-  /** Notes from a "request changes" gate, consumed by the next render. */
-  private pendingNote = new Map<string, string>();
+  /** Notes from a gate or a review round, consumed by the next render. The note carries whether
+   *  its words are the operator's (obeyable) or the forge's (data) — see `StageNote`. */
+  private pendingNote = new Map<string, StageNote>();
   /** Guards `attach()` against registering a second listener on a repeat call. */
   private attached = false;
   /**
@@ -338,9 +339,13 @@ export class BugFixEngine {
     // These three event types all carry the text a review-feedback (or rebase) dispatch must
     // see as its `note` — a human's own request-changes text, a reviewer's forge comments, or
     // a checks failure — the same way `request-changes` already did before Phase 2.
-    if (event.type === "request-changes") this.pendingNote.set(taskId, event.text);
-    if (event.type === "review-changes-requested") this.pendingNote.set(taskId, event.comments);
-    if (event.type === "checks-failed") this.pendingNote.set(taskId, event.checks);
+    // `trusted` says whose words these are, which is what decides whether the prompt fences them:
+    // a human at this console typed the request-changes text (and may have typed an
+    // `addressComments` one, hence `source`); reviewer comments and checks messages come off the
+    // pull request and are data.
+    if (event.type === "request-changes") this.pendingNote.set(taskId, { text: event.text, trusted: true });
+    if (event.type === "review-changes-requested") this.pendingNote.set(taskId, { text: event.comments, trusted: event.source === "operator" });
+    if (event.type === "checks-failed") this.pendingNote.set(taskId, { text: event.checks, trusted: false });
     let task = await this.deps.bugs.apply(taskId, t);
     await this.settleTerminal(task);
     // A server stage is work the engine does itself: no assignment, no agent, no tokens. It

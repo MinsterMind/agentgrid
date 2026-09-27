@@ -3,14 +3,30 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { BugStage, BugTask } from "./types.js";
 
+/**
+ * Text handed to a stage from outside it, with whose words they are attached to the note rather
+ * than inferred from the stage that receives it. That distinction is the whole point: a stage is
+ * not a source. `review-feedback` in particular receives BOTH — reviewer comments and CI text
+ * pulled off the pull request, and the operator's own instructions, because the merge gate and the
+ * feedback diff gate both route `request-changes` back to it. Deciding by stage meant telling the
+ * agent to treat the human's own instruction as data and ignore any instruction inside it.
+ */
+export interface StageNote {
+  text: string;
+  /** True only for words typed by the operator at this console — those are meant to be obeyed, and
+   *  render plainly. False for anything sourced from the forge (a reviewer's comment, a checks
+   *  message): as attacker-influenceable as ticket text, so it goes through the untrusted fence. */
+  trusted: boolean;
+}
+
 export interface StageContext {
   artifactsDir: string;
   planPath: string;
   prBodyPath: string;
   /** Verbatim command the agent must run in `opening-pr`. */
   createPrCommand?: string;
-  /** Free text from a "request changes" gate. */
-  note?: string;
+  /** Free text from a gate or a review round — see `StageNote`. */
+  note?: StageNote;
 }
 
 /**
@@ -66,6 +82,7 @@ export async function renderStagePrompt(stage: BugStage, task: BugTask, ctx: Sta
   const template = await readFile(path.join(presetsDir, "stages", file), "utf8");
   const nonce = untrustedNonce();
   const q = (v: string) => quoteUntrusted(v, nonce);
+  const noteText = ctx.note?.text.trim() ?? "";
   const vars: Record<string, string> = {
     // issueKey is the one tracker field that is charset-validated before a task can exist
     // (`assertIssueKey`, via `branchName` in intake), so it is safe to interpolate bare — and it
@@ -77,13 +94,11 @@ export async function renderStagePrompt(stage: BugStage, task: BugTask, ctx: Sta
     worktree: task.worktree, branch: task.branch, baseBranch: task.baseBranch,
     artifactsDir: ctx.artifactsDir, planPath: ctx.planPath, prBodyPath: ctx.prBodyPath,
     createPrCommand: ctx.createPrCommand ?? "",
-    // Two different sources travel through the same `note` placeholder. For a request-changes
-    // round, it's the human operator's own words — meant to be obeyed, so it renders plainly.
-    // For `review-feedback` it's PR review comments pulled from the forge — exactly as
-    // attacker-influenceable as ticket text, so it goes through the same untrusted fence.
-    note: stage === "review-feedback"
-      ? q(ctx.note?.trim() ?? "")
-      : (ctx.note?.trim() ? `## Additional instructions from the reviewer\n${ctx.note.trim()}` : ""),
+    // Two different sources travel through the same `note` placeholder, and the note itself says
+    // which it is (`StageNote.trusted`) — never the stage, which receives both.
+    note: !noteText ? ""
+      : ctx.note!.trusted ? `## Additional instructions from the reviewer\n${noteText}`
+      : q(noteText),
   };
   const body = template.replace(/\{\{(\w+)\}\}/g, (_, k: string) => vars[k] ?? "").replace(/\n{3,}/g, "\n\n").trim();
   // The explanation of the marker has to be trusted text, and has to come first.
