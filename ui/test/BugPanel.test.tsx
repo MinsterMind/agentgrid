@@ -53,7 +53,7 @@ function atGate(stage: string, gate: { kind: string; openedAt: string; reason?: 
 }
 
 function done(extra: Partial<BugTask> = {}): BugTask {
-  return task("done", { pr: { number: 9, url: "https://x/pr/9", state: "MERGED", reviewDecision: "APPROVED", checks: "SUCCESS", mergeable: "MERGEABLE", headSha: "deadbee", lastSeenEventAt: "2026-09-26T10:00:00Z" }, ...extra });
+  return task("done", { outcome: "merged", pr: { number: 9, url: "https://x/pr/9", state: "MERGED", reviewDecision: "APPROVED", checks: "SUCCESS", mergeable: "MERGEABLE", headSha: "deadbee", lastSeenEventAt: "2026-09-26T10:00:00Z" }, ...extra });
 }
 
 // A patch whose headers genuinely name both files in `files[]`, so hunksFor can isolate either.
@@ -354,10 +354,17 @@ describe("the done card", () => {
     expect(lines[2]).toHaveTextContent(/git -C \/r branch -D/);
   });
 
-  it("shows a PR closed without merging as not-a-success, by the PR's own state — not by matching the error's wording", () => {
-    // Same error-shaped string a copy-edit could produce, but `pr.state` never reached
-    // "MERGED" (a pr-closed ending doesn't set it) — this must still read as a failure.
-    render(<BugPanel task={done({ pr: null, error: "closed without a merge, per the forge" })} onChanged={() => {}} />);
+  // The durable outcome is the discriminator (C3). Both proxies it replaced could be wrong in a
+  // way the user would act on: a stale watcher tick can overwrite `pr.state` after a real merge,
+  // and matching the error's wording reclassifies on a copy edit.
+  it("calls a merge a merge even when the PR view was left stale by a racing poll", () => {
+    render(<BugPanel task={done({ outcome: "merged", pr: { number: 9, url: "https://x/pr/9", state: "OPEN", reviewDecision: "APPROVED", checks: "SUCCESS", mergeable: "MERGEABLE", headSha: "deadbee", lastSeenEventAt: "2026-09-26T10:00:00Z" } })} onChanged={() => {}} />);
+    expect(screen.getByText("Merged")).toBeInTheDocument();
+    expect(screen.queryByText("Closed without merging")).not.toBeInTheDocument();
+  });
+
+  it("shows a PR closed without merging as not-a-success by the recorded outcome, whatever the PR view or the error wording says", () => {
+    render(<BugPanel task={done({ outcome: "closed", pr: { number: 9, url: "https://x/pr/9", state: "MERGED", reviewDecision: null, checks: null, mergeable: null, headSha: null, lastSeenEventAt: "2026-09-26T10:00:00Z" }, error: "closed without a merge, per the forge" })} onChanged={() => {}} />);
     expect(screen.getByText("Closed without merging")).toBeInTheDocument();
     expect(screen.getByText(/closed without a merge, per the forge/)).toBeInTheDocument();
     expect(screen.queryByText("Merged")).not.toBeInTheDocument();

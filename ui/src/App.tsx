@@ -11,6 +11,7 @@ import { SessionsPanel } from "./components/SessionsPanel";
 import { TranscriptView } from "./components/TranscriptView";
 import { useKeyboard } from "./hooks/useKeyboard";
 import { notifyBugTask, notifyFinished, notifyWaiting, setTitleCount, settings } from "./notify";
+import { bugMerged } from "./format";
 import type { Decision } from "./types";
 
 export function App() {
@@ -72,7 +73,9 @@ export function App() {
         if (t.stage === "review-feedback") notifyBugTask(`${key}: reviewers asked for changes`, "attention");
         else if (t.stage === "approved") notifyBugTask(`${key}: PR approved — ready to merge`, "attention");
         else if (t.stage === "done") {
-          notifyBugTask(t.error?.includes("closed without merging") ? `${key}: PR closed without merging` : `${key}: merged`, "finished");
+          // The server's own recorded outcome, not the error text: a merged task can carry an
+          // error (cleanup leftovers) and a closed one's message is prose.
+          notifyBugTask(bugMerged(t) ? `${key}: merged` : `${key}: PR closed without merging`, "finished");
         }
       }
       prevBugStage.current[t.id] = t.stage;

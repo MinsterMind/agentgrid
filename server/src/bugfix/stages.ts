@@ -31,7 +31,7 @@ export function nextStage(task: BugTask, event: BugEvent): Transition {
     case "review-approved":          return wait("approved", "merge");
     case "conflicting":              return go("rebase", "rebase");
     case "pr-closed":
-      return { stage: "done", run: null, gate: null, note: "",
+      return { stage: "done", run: null, gate: null, note: "", outcome: "closed",
                error: "the pull request was closed without merging" };
     case "pr-merged": return serverRun("merging");
 
@@ -89,7 +89,9 @@ export function nextStage(task: BugTask, event: BugEvent): Transition {
         case "review-feedback": return wait("diff-review", "diff", "feedback");
         case "rebase": return wait("diff-review", "diff", "rebase");
         case "pushing": return go("monitoring", null);
-        case "merging": return go("done", null);
+        // The one transition that means "this really merged": `doMerge` only reports stage-done
+        // after re-reading the PR and finding MERGED, so this is the moment the server knows.
+        case "merging": return { ...go("done", null), outcome: "merged" };
         default: throw new Error(`no transition from ${task.stage} on stage-done`);
       }
     }

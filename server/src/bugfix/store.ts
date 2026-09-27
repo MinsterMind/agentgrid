@@ -52,6 +52,7 @@ export class BugTaskStore extends EventEmitter {
       // place old records enter the system, same as Phase 1 did for `approvedHead`.
       t.feedbackRounds ??= 0;
       t.prCheckedAt ??= null;
+      t.outcome ??= null;
       this.tasks.set(t.id, t);
       const n = Number(t.id.slice(2));
       if (n >= this.next) this.next = n + 1;
@@ -98,7 +99,7 @@ export class BugTaskStore extends EventEmitter {
   async create(input: CreateBugTask): Promise<BugTask> {
     const now = new Date().toISOString();
     const task: BugTask = {
-      id: `bt${this.next++}`, ...input, stage: "intake", gate: null, approvedHead: null, pr: null, prCheckedAt: null,
+      id: `bt${this.next++}`, ...input, stage: "intake", gate: null, approvedHead: null, outcome: null, pr: null, prCheckedAt: null,
       costUsd: 0, history: [{ stage: "intake", at: now, note: "" }], error: null,
       createdAt: now, updatedAt: now, feedbackRounds: 0,
     };
@@ -113,6 +114,8 @@ export class BugTaskStore extends EventEmitter {
       const cur = this.get(id);   // re-read: anything queued ahead of us has landed by now
       const now = new Date().toISOString();
       return this.save({ ...cur, stage: t.stage, gate: t.gate, error: t.error, updatedAt: now,
+        // Only the ending transitions carry an outcome; every other one leaves it alone.
+        ...(t.outcome !== undefined ? { outcome: t.outcome } : {}),
         history: [...cur.history, { stage: t.stage, at: now, note: t.note }] });
     });
   }

@@ -101,6 +101,14 @@ describe("Phase 2: the monitoring loop", () => {
     const t = nextStage(at("monitoring"), { type: "pr-closed" });
     expect(t).toMatchObject({ stage: "done", run: null });
     expect(t.error).toMatch(/closed without merging/i);
+    // The outcome is recorded explicitly, not left to be inferred from this message's wording
+    // or from a PR view a race can stale.
+    expect(t.outcome).toBe("closed");
+  });
+
+  it("records the merged outcome on the transition out of merging", () => {
+    const t = nextStage(at("merging"), { type: "stage-done" });
+    expect(t).toMatchObject({ stage: "done", run: null, outcome: "merged" });
   });
 
   it("refuses a monitoring event anywhere but monitoring", () => {

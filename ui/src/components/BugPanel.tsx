@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, type MergeMethod } from "../api";
+import { bugMerged } from "../format";
 import type { BugTask, PrInfo } from "../types";
 
 interface DiffData { patch: string; files: Array<{ path: string; additions: number; deletions: number }>; additions: number; deletions: number }
@@ -255,15 +256,12 @@ export function BugPanel({ task, onChanged, onTranscript }: { task: BugTask; onC
       )}
 
       {task.stage === "done" && (() => {
-        // A `done` task with an error isn't automatically a failure: any error on a task
-        // whose PR actually landed as "MERGED" is cleanup left behind by that merge — a
-        // worktree or branch teardown that didn't finish, never the merge itself — and must
-        // render as "merged, with leftovers", not as a failed outcome (Task 9's `doMerge`).
-        // A "pr-closed" ending never sets `pr.state` to "MERGED" (only `doMerge` does, after
-        // asserting the forge itself reports "MERGED"), so this checks that field rather than
-        // matching the human-readable error text: a copy edit to that message must not be
-        // able to flip a real "closed without merging" into a reported success.
-        const merged = task.pr?.state === "MERGED";
+        // A `done` task with an error isn't automatically a failure: any error on a task that
+        // actually merged is cleanup left behind by that merge — a worktree or branch teardown
+        // that didn't finish, never the merge itself — and must render as "merged, with
+        // leftovers", not as a failed outcome. The classification is the server's own durable
+        // `outcome` (see `bugMerged`), not the error's wording and not `pr.state`.
+        const merged = bugMerged(task);
         return (
           <div className="gate" data-testid="gate-done">
             <h4>{merged ? "Merged" : "Closed without merging"}</h4>

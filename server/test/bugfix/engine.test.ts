@@ -1168,6 +1168,7 @@ describe("merging", () => {
     await until(() => bugs.get(taskId).stage !== "merging", 2000);
     const t = bugs.get(taskId);
     expect(t.stage).toBe("done");                         // the merge is a fact; do not hide it
+    expect(t.outcome).toBe("merged");                     // and it stays a merge, leftovers or not
     expect(t.error).toMatch(/cleanup incomplete/i);
     expect(t.error).toContain(t.worktree);
   });
@@ -1215,6 +1216,8 @@ describe("merging", () => {
 
     const t = bugs.get(taskId);
     expect(t.pr).toMatchObject({ state: "MERGED" });
+    // And the durable outcome says so too, independently of the PR view.
+    expect(t.outcome).toBe("merged");
   });
 
   it("an externally merged PR reaches done through the same path, without calling merge", async () => {
@@ -1495,6 +1498,7 @@ describe("notifications: stage transitions the user might not be watching each e
     await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "pr-closed" } });
     expect(bugs.get("bt1").stage).toBe("done");
     expect(bugs.get("bt1").error).toMatch(/closed without merging/i);
+    expect(bugs.get("bt1").outcome).toBe("closed");
     expect(seen.some(e => e.task.stage === "done")).toBe(true);
   });
 });

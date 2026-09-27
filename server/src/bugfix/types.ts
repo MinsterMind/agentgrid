@@ -40,6 +40,19 @@ export interface BugTask {
   /** The commit HEAD pointed at when the diff gate opened — i.e. exactly what the human
    *  approved. `opening-pr` refuses to run unless HEAD is still this commit. */
   approvedHead: string | null;
+  /**
+   * How the task ENDED, set by the server at the moment it knows — "merged" on the transition
+   * out of `merging` (which only runs once the forge itself has been re-read and reports
+   * MERGED), "closed" on a `pr-closed` ending. Null until then.
+   *
+   * It exists because both earlier signals were proxies that disagreed: the card classified on
+   * `pr.state === "MERGED"` (a view a stale watcher tick could overwrite, and whose write is
+   * best-effort) and the notification on matching the error text (which a copy edit would
+   * silently reclassify). A merged task and a closed-without-merging one must be distinguishable
+   * without reading prose or inferring from a PR view. Records written before this field existed
+   * normalise to null in `BugTaskStore.init`.
+   */
+  outcome: "merged" | "closed" | null;
   pr: PrInfo | null;
   /** When `pr` was actually read from the forge (ISO), as opposed to `pr.lastSeenEventAt`,
    *  which is the forge's own `updatedAt` for the pull request. Two things need it: the card's
@@ -81,6 +94,9 @@ export type BugEvent =
 
 export interface Transition {
   stage: BugStage;
+  /** Set only on the transitions that END a task, and then it is the durable answer to "did
+   *  this merge?" — see `BugTask.outcome`. Absent leaves whatever the task already had. */
+  outcome?: "merged" | "closed";
   gate: { kind: GateKind; openedAt: string; reason?: "feedback" | "rebase" } | null;
   error: string | null;
   note: string;
