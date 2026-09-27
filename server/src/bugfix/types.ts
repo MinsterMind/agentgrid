@@ -41,6 +41,13 @@ export interface BugTask {
    *  approved. `opening-pr` refuses to run unless HEAD is still this commit. */
   approvedHead: string | null;
   pr: PrInfo | null;
+  /** When `pr` was actually read from the forge (ISO), as opposed to `pr.lastSeenEventAt`,
+   *  which is the forge's own `updatedAt` for the pull request. Two things need it: the card's
+   *  "Last checked", and `BugTaskStore.patchPr`'s staleness rule — the watcher writes PR views
+   *  outside the engine's per-task lock, so a tick whose `getPr` was already in flight must not
+   *  be able to land its pre-merge view on top of the merge's own bookkeeping. Records written
+   *  before this field existed normalise to null in `BugTaskStore.init`. */
+  prCheckedAt: string | null;
   costUsd: number;
   history: Array<{ stage: BugStage; at: string; note: string }>;
   error: string | null;

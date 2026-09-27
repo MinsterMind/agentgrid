@@ -19,6 +19,10 @@ import type { MergeMethod } from "./forge/types.js";
  *  pathological review thread should not quietly spend the user's budget. */
 export const FEEDBACK_ROUND_CAP = 5;
 
+/** Prefix of the "the forge could not be read" note. One constant because three places have to
+ *  agree on it: the write, the clear once a poll succeeds again, and the card that renders it. */
+export const UNREACHABLE = "could not check the pull request:";
+
 /**
  * Every watcher event type that routes to `review-feedback` (see `nextStage`'s
  * "review-changes-requested"/"checks-failed" cases in stages.ts). The cap in `onPrFinding`
@@ -270,8 +274,15 @@ export class BugFixEngine {
    */
   async onPrFinding(f: PrFinding): Promise<void> {
     const task = this.deps.bugs.get(f.taskId);
-    if (f.pr) await this.deps.bugs.patch(task.id, { pr: f.pr });
-    if (f.unavailable) { await this.deps.bugs.patch(task.id, { error: `could not check the pull request: ${f.unavailable}` }); return; }
+    // Nothing was read, so there is no fresher view to record — `f.pr` on this path is the LAST
+    // KNOWN view echoed back, and writing it would advance `prCheckedAt` to a moment at which
+    // the forge was in fact unreadable, making the card's "Last checked" claim a poll that
+    // failed.
+    if (f.unavailable) { await this.deps.bugs.patch(task.id, { error: `${UNREACHABLE} ${f.unavailable}` }); return; }
+    // `patchPr`, not `patch`: this write happens outside `advance()`'s per-task chain, and
+    // `approved` is a watched stage — see `BugTaskStore.patchPr` for the staleness rule and the
+    // race it exists to lose safely.
+    if (f.pr) await this.deps.bugs.patchPr(task.id, f.pr, f.checkedAt ?? new Date().toISOString());
     if (!f.event) return;
     if (REVIEW_FEEDBACK_EVENTS.has(f.event.type) && task.feedbackRounds >= FEEDBACK_ROUND_CAP) {
       await this.deps.bugs.patch(task.id, { error: `this task has hit ${task.feedbackRounds} feedback rounds; AgentGrid has stopped dispatching after ${FEEDBACK_ROUND_CAP} feedback rounds — use "Ask the agent to address these" to continue` });
@@ -459,9 +470,10 @@ export class BugFixEngine {
     await git.push(task.worktree, task.branch, { force });
     if (!forge || !task.pr) return;
     // Verify rather than trust: confirm the PR actually carries what was just pushed.
+    const readAt = new Date().toISOString();
     const lookup = await forge.getPr(task.sourceRepo, task.pr.number);
     if ("found" in lookup && lookup.found) {
-      await bugs.patch(task.id, { pr: lookup.found });
+      await bugs.patchPr(task.id, lookup.found, readAt);
       // `headSha` is the server's only proof a push landed (Task 1). An adapter that doesn't
       // report it gives null here — skip the comparison rather than failing on an absence of
       // evidence either way.
@@ -531,6 +543,7 @@ export class BugFixEngine {
     }
 
     // Verify rather than trust: the merge call succeeding is not the same as the PR being merged.
+    const afterReadAt = new Date().toISOString();
     const after = await forge.getPr(task.sourceRepo, task.pr.number);
     if ("found" in after && after.found && after.found.number !== task.pr.number) {
       throw new Error(`the forge returned pull request #${after.found.number} instead of the expected #${task.pr.number}`);
@@ -545,7 +558,7 @@ export class BugFixEngine {
     const noteProblem = (msg: string) => { cleanup = cleanup ? `${cleanup} Also: ${msg}` : msg; };
 
     try {
-      await bugs.patch(task.id, { pr: after.found });
+      await bugs.patchPr(task.id, after.found, afterReadAt);
     } catch (err) {
       noteProblem(`could not record the merged pull request: ${(err as Error).message}`);
     }

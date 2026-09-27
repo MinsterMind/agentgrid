@@ -10,6 +10,11 @@ export interface PrFinding {
   pr: PrInfo | null;
   event: BugEvent | null;            // the transition to apply, if any
   unavailable?: string;              // set when the forge could not be read
+  /** When this tick actually read the forge (ISO). The card's "Last checked" is this, not
+   *  `pr.lastSeenEventAt` (the PR's own `updatedAt`, which sits still on a quiet PR); and
+   *  `BugTaskStore.patchPr` uses it to refuse a view that was read before the one already
+   *  stored. Always set by the watcher; an absent stamp is treated by the engine as "now". */
+  checkedAt?: string;
 }
 
 export interface WatcherDeps {
@@ -88,6 +93,10 @@ export class PrWatcher {
   }
 
   private async tick(task: BugTask, b: Backoff, forge: ForgeAdapter): Promise<void> {
+    // Stamped before the call, so the stamp brackets the read rather than trailing it: two ticks
+    // that overlap then order by when each one *started* looking, which is what makes an older
+    // view recognisable as older.
+    const checkedAt = new Date(this.now()).toISOString();
     const lookup = await forge.getPr(task.sourceRepo, task.pr!.number);
 
     if ("unavailable" in lookup) {
@@ -97,14 +106,14 @@ export class PrWatcher {
       const first = !b.warned && b.failures >= this.warnAfter;
       if (first) b.warned = true;
       this.schedule(task.id, b, false);
-      if (first) await this.deps.onFinding({ taskId: task.id, pr: task.pr, event: null, unavailable: lookup.unavailable });
+      if (first) await this.deps.onFinding({ taskId: task.id, pr: task.pr, event: null, unavailable: lookup.unavailable, checkedAt });
       return;
     }
     b.failures = 0; b.warned = false;
 
     if (lookup.found === null) {
       this.schedule(task.id, b, true);
-      await this.deps.onFinding({ taskId: task.id, pr: null, event: { type: "pr-closed" } });
+      await this.deps.onFinding({ taskId: task.id, pr: null, event: { type: "pr-closed" }, checkedAt });
       return;
     }
 
@@ -122,7 +131,7 @@ export class PrWatcher {
     // A bot-driven timestamp bump with no event and no state change still gets reported —
     // the card needs the latest `lastSeenEventAt` — but the backoff keeps growing regardless.
     this.schedule(task.id, b, event !== null || stateChanged);
-    await this.deps.onFinding({ taskId: task.id, pr, event });
+    await this.deps.onFinding({ taskId: task.id, pr, event, checkedAt });
   }
 
   /** Order matters: a conflicting PR cannot be merged, so conflict outranks an approval. */

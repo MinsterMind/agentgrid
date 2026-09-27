@@ -1186,6 +1186,37 @@ describe("merging", () => {
     expect(second.bugs.get(second.taskId).stage).toBe("done");
   });
 
+  /**
+   * C2: the watcher writes the PR view outside `advance()`'s per-task chain, and `approved` is a
+   * watched stage — so a tick whose `getPr` was already in flight when the human clicked Merge
+   * can resolve in the middle of `doMerge`, after its bookkeeping has landed. Held open at
+   * exactly that point here, rather than left to timing.
+   */
+  it("a tick already in flight when the human merged cannot write its pre-merge view over the merged one", async () => {
+    const { engine, bugs, gitState, taskId } = await atMergeGate();
+    const deps = (engine as any).deps;
+    const stale = { ...gitState.pr, state: "OPEN" as const };
+    const staleCheckedAt = new Date(Date.now() - 60_000).toISOString();   // read a minute before the merge
+
+    // Hold teardown open: by the time `removeWorktree` runs, `doMerge` has already recorded the
+    // MERGED view, which is precisely the write the stale tick must not undo.
+    let entered = false;
+    let release: () => void = () => {};
+    const held = new Promise<void>(r => { release = r; });
+    const origRemove = deps.git.removeWorktree.bind(deps.git);
+    deps.git.removeWorktree = async (...args: unknown[]) => { entered = true; await held; return origRemove(...args); };
+
+    const merging = engine.approve(taskId);
+    await until(() => entered, 2000);
+    await engine.onPrFinding({ taskId, pr: stale, checkedAt: staleCheckedAt, event: null });
+    release();
+    await merging;
+    await until(() => bugs.get(taskId).stage === "done", 2000);
+
+    const t = bugs.get(taskId);
+    expect(t.pr).toMatchObject({ state: "MERGED" });
+  });
+
   it("an externally merged PR reaches done through the same path, without calling merge", async () => {
     const { engine, bugs, gitState } = await onMonitoringTask();
     forge.state = "MERGED";

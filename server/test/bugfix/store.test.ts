@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { BugTaskStore } from "../../src/bugfix/store.js";
 import { NotFound } from "../../src/store/store.js";
-import type { TrackerIssue } from "../../src/bugfix/types.js";
+import type { PrInfo, TrackerIssue } from "../../src/bugfix/types.js";
 
 const issue: TrackerIssue = { key: "PAY-42", title: "Boom", url: "https://x/PAY-42", status: "Open", priority: "High", description: "d", acceptanceCriteria: ["a"] };
 let home: string; let store: BugTaskStore; let events: unknown[];
@@ -154,5 +154,44 @@ describe("remove", () => {
     const before = events.length;
     await expect(store.remove("bt999")).rejects.toThrow(NotFound);
     expect(events.length).toBe(before);
+  });
+});
+
+/**
+ * C2: the watcher's PR view is written outside the engine's per-task lock, so a tick whose
+ * `getPr` was already in flight can land after a newer view (the merge's own bookkeeping).
+ * `patchPr` is where that is decided, so the rule is tested here rather than hoped for.
+ */
+describe("patchPr", () => {
+  const view = (over: Partial<PrInfo> = {}): PrInfo => ({ number: 7, url: "https://x/pr/7", state: "OPEN",
+    reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: "abc", lastSeenEventAt: "t", ...over });
+
+  it("records the view and when it was read", async () => {
+    const t = await mk();
+    const after = await store.patchPr(t.id, view(), "2026-09-27T10:00:00Z");
+    expect(after.pr).toMatchObject({ state: "OPEN" });
+    expect(after.prCheckedAt).toBe("2026-09-27T10:00:00Z");
+  });
+
+  it("drops a view that was read before the one already stored", async () => {
+    const t = await mk();
+    await store.patchPr(t.id, view({ state: "MERGED" }), "2026-09-27T10:00:05Z");
+    const after = await store.patchPr(t.id, view({ state: "OPEN" }), "2026-09-27T10:00:00Z");
+    expect(after.pr).toMatchObject({ state: "MERGED" });
+    expect(after.prCheckedAt).toBe("2026-09-27T10:00:05Z");
+  });
+
+  it("never downgrades a confirmed merge, whatever the timestamps say", async () => {
+    const t = await mk();
+    await store.patchPr(t.id, view({ state: "MERGED" }), "2026-09-27T10:00:00Z");
+    const after = await store.patchPr(t.id, view({ state: "OPEN" }), "2026-09-27T10:00:09Z");
+    expect(after.pr).toMatchObject({ state: "MERGED" });
+  });
+
+  it("accepts a newer view, including one that confirms the merge", async () => {
+    const t = await mk();
+    await store.patchPr(t.id, view({ checks: "PENDING" }), "2026-09-27T10:00:00Z");
+    const after = await store.patchPr(t.id, view({ state: "MERGED" }), "2026-09-27T10:00:05Z");
+    expect(after.pr).toMatchObject({ state: "MERGED" });
   });
 });
