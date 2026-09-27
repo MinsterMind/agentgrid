@@ -563,6 +563,16 @@ export class BugFixEngine {
       noteProblem(`could not record the merged pull request: ${(err as Error).message}`);
     }
 
+    // The remote branch, which `forge.merge` deliberately does not ask the forge to delete (see
+    // the adapter's own comment): doing it here means a delete that fails — a protected branch, a
+    // remote that already removed it, no network — becomes a line in the cleanup note instead of
+    // a merge that reports as a failure.
+    try {
+      await git.deleteRemoteBranch(task.sourceRepo, task.branch);
+    } catch (err) {
+      noteProblem(`could not delete the remote branch ${task.branch}: ${(err as Error).message}. Delete it with: git -C ${task.sourceRepo} push origin --delete ${task.branch}`);
+    }
+
     // Only now, with the merge confirmed, is it safe to destroy anything.
     try {
       await git.removeWorktree(task.sourceRepo, task.worktree, task.branch);

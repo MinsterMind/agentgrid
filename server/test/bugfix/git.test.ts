@@ -145,6 +145,29 @@ describe("GitOps", () => {
     await expect(failing.removeWorktree(repo, "/nope", "bugfix/PAY-99")).rejects.toThrow(/cleanup incomplete/);
   });
 
+  describe("deleteRemoteBranch", () => {
+    it("deletes the branch on the remote and tolerates one that is already gone", async () => {
+      const remote = await mkdtemp(path.join(tmpdir(), "ag-remote-del-"));
+      await run("git", ["init", "--bare", "-b", "main", remote]);
+      const repo2 = await makeRepo();
+      await run("git", ["remote", "add", "origin", remote], { cwd: repo2 });
+      await run("git", ["push", "-u", "origin", "main"], { cwd: repo2 });
+      await run("git", ["checkout", "-b", "bugfix/X-9"], { cwd: repo2 });
+      await writeFile(path.join(repo2, "b.txt"), "two\n");
+      await run("git", ["add", "-A"], { cwd: repo2 });
+      await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "two"], { cwd: repo2 });
+      await run("git", ["push", "origin", "bugfix/X-9"], { cwd: repo2 });
+      expect((await run("git", ["ls-remote", remote, "refs/heads/bugfix/X-9"])).stdout).toMatch(/bugfix\/X-9/);
+
+      await new GitOps().deleteRemoteBranch(repo2, "bugfix/X-9");
+      expect((await run("git", ["ls-remote", remote, "refs/heads/bugfix/X-9"])).stdout.trim()).toBe("");
+
+      // A repo configured to delete branches on merge (or a second pass after a retry) leaves
+      // nothing to delete — that is not a failure anyone should be told about.
+      await expect(new GitOps().deleteRemoteBranch(repo2, "bugfix/X-9")).resolves.toBeUndefined();
+    });
+  });
+
   describe("push", () => {
     it("pushes the branch to a real remote, and handles local rewrites", async () => {
       // A bare repo on disk is a real remote: no network, but a genuine push.

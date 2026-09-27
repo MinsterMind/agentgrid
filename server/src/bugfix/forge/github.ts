@@ -134,8 +134,14 @@ export function githubAdapter(run: Runner): ForgeAdapter {
     },
 
     async merge(repoDir: string, number: number, method: MergeMethod) {
+      // No `--delete-branch`: it deletes the LOCAL branch too, and the task branch is checked out
+      // in the linked worktree while this runs, so git refuses ("cannot delete branch ... used by
+      // worktree"), gh exits non-zero, and a merge that irreversibly happened comes back as
+      // `ok: false` — presenting a successful merge as "Stage failed", which spec §5.4 forbids.
+      // The engine deletes the remote branch itself once the merge is confirmed (`doMerge`), where
+      // a failure can only ever become a cleanup note.
       const flag = method === "squash" ? "--squash" : method === "rebase" ? "--rebase" : "--merge";
-      const r = await run("gh", ["pr", "merge", String(number), flag, "--delete-branch"], repoDir);
+      const r = await run("gh", ["pr", "merge", String(number), flag], repoDir);
       const message = ((r.code === 0 ? r.stdout : (r.stderr ?? r.stdout)) ?? "").trim();
       return { ok: r.code === 0, message: message || (r.code === 0 ? "merged" : `gh exited ${r.code}`) };
     },

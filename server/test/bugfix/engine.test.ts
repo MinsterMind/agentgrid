@@ -22,9 +22,10 @@ const ISSUE: TrackerIssue = { key: "PAY-42", title: "Boom", url: "https://x/PAY-
  *  overrides `commits` — the feedback-round harness (`onMonitoringTask`, below) sets it after
  *  reaching monitoring, and it has to actually drive this mock's `commitsAhead()` rather than
  *  just look like it does. */
-function fakeGit(state: { commits: number; head?: string; commitsAhead?: number; rebaseState?: { inProgress: boolean; conflicted: string[] }; removed?: Array<{ repo: string; worktree: string; branch: string }>; removeError?: string }) {
+function fakeGit(state: { commits: number; head?: string; commitsAhead?: number; rebaseState?: { inProgress: boolean; conflicted: string[] }; removed?: Array<{ repo: string; worktree: string; branch: string }>; removeError?: string; remoteDeleted?: Array<{ dir: string; branch: string }>; deleteRemoteError?: string }) {
   const calls: string[] = [];
   state.removed ??= [];
+  state.remoteDeleted ??= [];
   const g = new GitOps(async () => "");
   g.defaultBranch = async () => "main";
   g.hasRemote = async () => "git@github.com:acme/pay.git";
@@ -38,6 +39,11 @@ function fakeGit(state: { commits: number; head?: string; commitsAhead?: number;
     // second `atMergeGate()`/`onMonitoringTask()` call in the same test) would then trip the
     // "leftover worktree" guard against a worktree this fake claims it already tore down.
     await rm(worktree, { recursive: true, force: true });
+  };
+  g.deleteRemoteBranch = async (dir, branch) => {
+    calls.push("delete-remote");
+    if (state.deleteRemoteError) throw new Error(state.deleteRemoteError);
+    state.remoteDeleted!.push({ dir, branch });
   };
   g.currentBranch = async () => "bugfix/PAY-42";
   g.revParse = async () => state.head ?? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -72,7 +78,7 @@ const forge = {
 
 let home: string; let repo: string; let store: Store; let bugs: BugTaskStore; let fake: ReturnType<typeof makeFakeQuery>;
 let engine: BugFixEngine; let comments: Array<[string, string]>;
-let gitState: { commits: number; head?: string; commitsAhead?: number; rebaseState?: { inProgress: boolean; conflicted: string[] }; removed?: Array<{ repo: string; worktree: string; branch: string }>; removeError?: string };
+let gitState: { commits: number; head?: string; commitsAhead?: number; rebaseState?: { inProgress: boolean; conflicted: string[] }; removed?: Array<{ repo: string; worktree: string; branch: string }>; removeError?: string; remoteDeleted?: Array<{ dir: string; branch: string }>; deleteRemoteError?: string };
 
 beforeEach(async () => {
   home = await mkdtemp(path.join(tmpdir(), "eng-home-"));
@@ -1133,6 +1139,36 @@ describe("merging", () => {
     expect(gitState.removed).toEqual([{ repo: t.sourceRepo, worktree: t.worktree, branch: t.branch }]);
     expect(store.getAgent(t.agentId)?.state).toBe("free");
     expect(t.error).toBeNull();
+  });
+
+  /**
+   * C4: the merge call used to pass `gh pr merge --delete-branch`, which also deletes the LOCAL
+   * branch — and the task branch is checked out in the linked worktree, so git refuses and gh
+   * exits non-zero. An irreversible merge that actually happened then presented as "Stage
+   * failed". The remote branch is deleted here instead, once the merge is confirmed, where the
+   * worst a failure can do is add a line to the cleanup note.
+   */
+  it("deletes the remote branch itself, after the merge is confirmed", async () => {
+    const { engine, bugs, gitState, taskId } = await atMergeGate();
+    await engine.approve(taskId);
+    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    const t = bugs.get(taskId);
+    expect(t.stage).toBe("done");
+    expect(gitState.remoteDeleted).toEqual([{ dir: t.sourceRepo, branch: t.branch }]);
+    expect(t.error).toBeNull();
+  });
+
+  it("turns a failed remote-branch deletion into a cleanup note, never a failed merge", async () => {
+    const { engine, bugs, gitState, taskId } = await atMergeGate();
+    gitState.deleteRemoteError = "remote rejected the delete (protected branch)";
+    await engine.approve(taskId);
+    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    const t = bugs.get(taskId);
+    expect(t.stage).toBe("done");
+    expect(t.outcome).toBe("merged");
+    expect(t.error).toMatch(/protected branch/);
+    expect(t.error).toContain(t.branch);              // says which branch is still out there
+    expect(gitState.removed).toHaveLength(1);         // and the rest of teardown still ran
   });
 
   it("honours a method chosen at the gate", async () => {

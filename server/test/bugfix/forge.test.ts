@@ -215,11 +215,20 @@ describe("listReviewEvents", () => {
 });
 
 describe("merge", () => {
-  it("merges with the requested method and asks for the branch to be deleted", async () => {
+  /**
+   * `--delete-branch` deletes the LOCAL branch as well as the remote one, and the task branch is
+   * checked out in the linked worktree at this point — git refuses ("cannot delete branch
+   * 'bugfix/…' used by worktree"), `gh` exits 1, and a merge that irreversibly happened comes
+   * back as `ok: false`, which `doMerge` turns into "Stage failed". Spec §5.4 forbids exactly
+   * that. The remote branch is deleted by the engine instead, after the merge is confirmed, where
+   * a failure can only become a cleanup note.
+   */
+  it("merges with the requested method and never asks gh to delete the branch", async () => {
     const calls: string[][] = [];
     const f = githubAdapter(async (_c, args) => { calls.push(args); return { stdout: "merged", code: 0 }; });
     expect(await f.merge("/r", 7, "squash")).toEqual({ ok: true, message: "merged" });
-    expect(calls[0]).toEqual(["pr", "merge", "7", "--squash", "--delete-branch"]);
+    expect(calls[0]).toEqual(["pr", "merge", "7", "--squash"]);
+    expect(calls[0]).not.toContain("--delete-branch");
     await f.merge("/r", 7, "rebase");
     expect(calls[1]).toContain("--rebase");
   });
