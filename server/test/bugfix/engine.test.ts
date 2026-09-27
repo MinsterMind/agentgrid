@@ -900,6 +900,42 @@ describe("a feedback round", () => {
     expect(bugs.get("bt1").stage).toBe("monitoring");
   });
 
+  // I3: the warn tick patches the error and nothing reported recovery, so a three-tick blip left
+  // the message on the card until some later transition happened to clear it.
+  it("clears the forge-unreachable note as soon as a poll succeeds again", async () => {
+    const { engine, bugs, gitState } = await onMonitoringTask();
+    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: null, unavailable: "gh: could not connect" });
+    expect(bugs.get("bt1").error).toMatch(/could not check/i);
+    await engine.onPrFinding({ taskId: "bt1", pr: { ...gitState.pr, checks: "PENDING" }, event: null, checkedAt: "2026-09-27T10:00:00Z" });
+    expect(bugs.get("bt1").error).toBeNull();
+  });
+
+  it("clears it on a quiet tick too, and records when that tick happened", async () => {
+    const { engine, bugs } = await onMonitoringTask();
+    await engine.onPrFinding({ taskId: "bt1", pr: null, event: null, unavailable: "gh: could not connect" });
+    expect(bugs.get("bt1").error).toMatch(/could not check/i);
+    await engine.onPrChecked("bt1", "2026-09-27T10:00:00Z");
+    expect(bugs.get("bt1").error).toBeNull();
+    expect(bugs.get("bt1").prCheckedAt).toBe("2026-09-27T10:00:00Z");
+  });
+
+  it("leaves an error that is not about reaching the forge alone — the cap message must survive a poll", async () => {
+    const { engine, bugs, gitState } = await onMonitoringTask();
+    await bugs.patch("bt1", { feedbackRounds: FEEDBACK_ROUND_CAP });
+    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "checks-failed", checks: "still failing" } });
+    const capped = bugs.get("bt1").error;
+    expect(capped).toMatch(/feedback rounds/i);
+    await engine.onPrChecked("bt1", "2026-09-27T10:00:00Z");
+    expect(bugs.get("bt1").error).toBe(capped);
+  });
+
+  it("does not advance the poll time when the forge could not be read", async () => {
+    const { engine, bugs } = await onMonitoringTask();
+    await engine.onPrChecked("bt1", "2026-09-27T10:00:00Z");
+    await engine.onPrFinding({ taskId: "bt1", pr: bugs.get("bt1").pr, event: null, unavailable: "gh: down", checkedAt: "2026-09-27T10:05:00Z" });
+    expect(bugs.get("bt1").prCheckedAt).toBe("2026-09-27T10:00:00Z");
+  });
+
   // item 4: the "forge unreachable" branch — no event, but a reason the watcher couldn't check
   // must still land on the task, without touching its stage or dispatching anything.
   it("records the unavailable error without dispatching or changing stage", async () => {

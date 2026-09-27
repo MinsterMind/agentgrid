@@ -283,12 +283,35 @@ export class BugFixEngine {
     // `approved` is a watched stage — see `BugTaskStore.patchPr` for the staleness rule and the
     // race it exists to lose safely.
     if (f.pr) await this.deps.bugs.patchPr(task.id, f.pr, f.checkedAt ?? new Date().toISOString());
+    await this.clearUnreachable(task.id);
     if (!f.event) return;
     if (REVIEW_FEEDBACK_EVENTS.has(f.event.type) && task.feedbackRounds >= FEEDBACK_ROUND_CAP) {
       await this.deps.bugs.patch(task.id, { error: `this task has hit ${task.feedbackRounds} feedback rounds; AgentGrid has stopped dispatching after ${FEEDBACK_ROUND_CAP} feedback rounds — use "Ask the agent to address these" to continue` });
       return;
     }
     await this.advance(task.id, f.event);
+  }
+
+  /**
+   * A tick that read the forge cleanly and found nothing different (see `WatcherDeps.onChecked`).
+   * There is no new PR view to record, but the poll happened: the card's "Last checked" moves, and
+   * a stale "couldn't reach the forge" note clears. Nothing here touches stage, so it needs no
+   * place in `advance()`'s chain.
+   */
+  async onPrChecked(taskId: string, checkedAt: string): Promise<void> {
+    const task = this.deps.bugs.get(taskId);
+    // Cosmetic ordering only — a concurrent finding's own (newer) stamp must not be walked
+    // backwards by a quiet tick that started looking earlier.
+    if (!task.prCheckedAt || task.prCheckedAt <= checkedAt) await this.deps.bugs.patch(taskId, { prCheckedAt: checkedAt });
+    await this.clearUnreachable(taskId);
+  }
+
+  /** Drop the "couldn't reach the forge" note now that the forge has been reached. Only that
+   *  note: an error saying something else — the feedback-round cap, above all, which is the
+   *  user's one signal that the watcher has stopped dispatching — must survive a successful
+   *  poll, since nothing about the poll answers it. */
+  private async clearUnreachable(taskId: string): Promise<void> {
+    if (this.deps.bugs.get(taskId).error?.startsWith(UNREACHABLE)) await this.deps.bugs.patch(taskId, { error: null });
   }
 
   async diffFor(taskId: string): Promise<DiffResult> {

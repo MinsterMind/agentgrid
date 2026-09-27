@@ -293,6 +293,40 @@ describe("the monitoring card", () => {
     await userEvent.click(screen.getByRole("button", { name: /Ask the agent to address these/i }));
     expect(addressComments).toHaveBeenCalledWith("bt1", undefined);
   });
+
+  // I1: the feedback-round cap writes its explanation into `task.error` and changes no stage, so
+  // nothing notifies. If the card does not render it, the watcher has silently stopped working on
+  // the task and the user is never told why — or what the way forward is.
+  it("shows the feedback-round cap message, which is the only signal that dispatching stopped", () => {
+    const cap = 'this task has hit 5 feedback rounds; AgentGrid has stopped dispatching after 5 feedback rounds — use "Ask the agent to address these" to continue';
+    render(<BugPanel task={monitoring({ error: cap })} onChanged={() => {}} />);
+    expect(screen.getByTestId("monitoring-error")).toHaveTextContent(/hit 5 feedback rounds/);
+    // And the escape hatch it names is right there.
+    expect(screen.getByRole("button", { name: /Ask the agent to address these/i })).toBeInTheDocument();
+  });
+
+  // I2: `pr.lastSeenEventAt` is the PR's own `updatedAt` from the forge. On a quiet PR it claims
+  // hours ago while polling is perfectly healthy, and when the forge is unreachable it never
+  // moves at all. "Last checked" must be a poll time.
+  it("shows when the server last polled, not when the PR was last updated", () => {
+    const t = monitoring({
+      prCheckedAt: "2026-09-26T15:30:00Z",
+      pr: { number: 7, url: "https://x/pr/7", state: "OPEN", reviewDecision: null, checks: "SUCCESS",
+        mergeable: "MERGEABLE", headSha: "abc", lastSeenEventAt: "2026-09-26T09:00:00Z" },
+    });
+    render(<BugPanel task={t} onChanged={() => {}} />);
+    const shown = screen.getByTestId("pr-last-checked").textContent ?? "";
+    expect(shown).toContain(new Date("2026-09-26T15:30:00Z").toLocaleString());
+    expect(shown).not.toContain(new Date("2026-09-26T09:00:00Z").toLocaleString());
+  });
+
+  it("says it has not polled yet rather than showing a PR timestamp as a poll time", () => {
+    const t = monitoring({ prCheckedAt: null,
+      pr: { number: 7, url: "https://x/pr/7", state: "OPEN", reviewDecision: null, checks: "SUCCESS",
+        mergeable: "MERGEABLE", headSha: "abc", lastSeenEventAt: "2026-09-26T09:00:00Z" } });
+    render(<BugPanel task={t} onChanged={() => {}} />);
+    expect(screen.getByTestId("pr-last-checked")).toHaveTextContent(/not checked yet/i);
+  });
 });
 
 describe("the labelled diff gate", () => {

@@ -21,6 +21,11 @@ export interface WatcherDeps {
   bugs: BugTaskStore;
   forge: ForgeAdapter | null;
   onFinding: (f: PrFinding) => void | Promise<void>;
+  /** A tick that read the forge cleanly and found nothing different at all. It produces no
+   *  finding — there is nothing to report about the PR — but the poll itself is news twice over:
+   *  it is what the card's "Last checked" means, and it is the evidence that a "couldn't reach the
+   *  forge" note is stale. Optional so a caller that needs neither can leave it off. */
+  onChecked?: (taskId: string, checkedAt: string) => void | Promise<void>;
   now?: () => number;
   baseMs?: number;
   ceilingMs?: number;
@@ -124,7 +129,7 @@ export class PrWatcher {
     // that field alone says "something happened", not "something that matters happened".
     const stateChanged = statesDiffer(pr, prev);
     const anyChange = pr.lastSeenEventAt !== prev.lastSeenEventAt || stateChanged;
-    if (!anyChange) { this.schedule(task.id, b, false); return; }
+    if (!anyChange) { this.schedule(task.id, b, false); await this.deps.onChecked?.(task.id, checkedAt); return; }
 
     const event = await this.decide(task, pr, forge);
     // Reset to base only when the tick produced an event, or the change was to a state field.

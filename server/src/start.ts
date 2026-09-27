@@ -145,6 +145,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   // offline tests and the e2e advance without waiting real minutes.
   const prWatcher = engine && forge
     ? new PrWatcher({ bugs: bugStore, forge, onFinding: f => engine.onPrFinding(f).catch(err => log(`bugfix: watcher finding failed: ${(err as Error).message}`)),
+        onChecked: (id, at) => engine.onPrChecked(id, at).catch(err => log(`bugfix: recording the poll failed: ${(err as Error).message}`)),
         ...(fake ? { baseMs: 200, ceilingMs: 1_000 } : {}) })
     : null;
   prWatcher?.start(fake ? 100 : 1_000);

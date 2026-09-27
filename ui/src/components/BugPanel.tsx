@@ -34,8 +34,8 @@ function describeError(e: unknown): string {
  *  BugLauncher's intake error already uses, reused here for the cleanup message a `done`
  *  task with leftovers carries (it names paths and the exact commands to clear them, so the
  *  lines have to stay lines). */
-function Lines({ text, className }: { text: string; className?: string }) {
-  return <div className={className}>{text.split("\n").map((line, i) => <div key={i}>{line}</div>)}</div>;
+function Lines({ text, className, ...rest }: { text: string; className?: string } & Record<`data-${string}`, string | undefined>) {
+  return <div className={className} {...rest}>{text.split("\n").map((line, i) => <div key={i}>{line}</div>)}</div>;
 }
 
 const REVIEW_LABEL: Record<string, string> = { CHANGES_REQUESTED: "Changes requested", APPROVED: "Approved", REVIEW_REQUIRED: "Review required" };
@@ -223,8 +223,17 @@ export function BugPanel({ task, onChanged, onTranscript }: { task: BugTask; onC
         <div className="gate" data-testid="gate-monitoring">
           <h4>Monitoring</h4>
           {task.pr && <PrChips pr={task.pr} />}
-          {task.pr && <p className="hint" data-testid="pr-last-checked">Last checked {new Date(task.pr.lastSeenEventAt).toLocaleString()}</p>}
-          {task.error && task.error.startsWith("could not check") && <div className="err">{task.error}</div>}
+          {/* `prCheckedAt` is when the server actually polled the forge. Deliberately NOT
+              `pr.lastSeenEventAt`, which is the PR's own `updatedAt`: on a quiet PR that claims
+              hours ago while polling is healthy, and when the forge is unreachable it sits still
+              — wrong in both directions, and about a different thing entirely. */}
+          {task.pr && <p className="hint" data-testid="pr-last-checked">
+            {task.prCheckedAt ? `Last checked ${new Date(task.prCheckedAt).toLocaleString()}` : "Not checked yet"}
+          </p>}
+          {/* Any error resting on a monitoring task is something the user needs: either the
+              forge could not be read, or the feedback-round cap has stopped the watcher from
+              dispatching — and the cap changes no stage, so this card is its only signal. */}
+          {task.error && <Lines className="err" data-testid="monitoring-error" text={task.error} />}
           <div className="row">
             <button className="btn p" disabled={busy} onClick={() => act(() => api.addressComments(task.id))}>Ask the agent to address these</button>
             <button className="btn d" disabled={busy} onClick={() => act(() => api.cancelBug(task.id))}>Cancel task</button>

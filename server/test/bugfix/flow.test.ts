@@ -85,6 +85,17 @@ describe("the whole bug-fix flow, offline in fake mode", () => {
       expect(done.pr).toMatchObject({ state: "OPEN" });
       expect(done.pr?.url).toBeTruthy();
       expect(done.error).toBeNull();
+
+      // With no script, every fake-forge read returns the same view, so every tick is a "nothing
+      // differs" tick and produces no finding at all. `prCheckedAt` moving is therefore proof the
+      // poll itself is reported and wired through — which is what the card's "Last checked" reads.
+      const deadline = Date.now() + 5_000;
+      let polled = await get<BugTask>(`${url}/api/bugtasks/${created.id}`);
+      while (!polled.prCheckedAt && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 50));
+        polled = await get<BugTask>(`${url}/api/bugtasks/${created.id}`);
+      }
+      expect(polled.prCheckedAt).toBeTruthy();
     } finally {
       await running?.close();
     }

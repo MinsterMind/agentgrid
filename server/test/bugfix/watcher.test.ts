@@ -195,6 +195,20 @@ describe("PrWatcher", () => {
     expect(spy).toHaveBeenCalledTimes(1);      // approved is watched: a conflict can appear at the merge gate
   });
 
+  // I2/I3: a tick that reads the forge cleanly and finds nothing different produces no finding —
+  // there is nothing to report about the PR. But the poll itself is news: it is what "Last
+  // checked" means, and it is the evidence that a "couldn't reach the forge" note is stale.
+  it("reports a clean tick that changed nothing, so the poll time and a recovery are not lost", async () => {
+    const { bugs } = await monitoringTask();
+    const { found, onFinding } = collect();
+    const checked: Array<[string, string]> = [];
+    const w = new PrWatcher({ bugs, forge: forgeWith([{ found: pr() }]), onFinding,
+      onChecked: (id, at) => { checked.push([id, at]); }, now: () => 1_000, jitter: ms => ms });
+    await w.poll();
+    expect(found).toEqual([]);                       // nothing about the PR differs
+    expect(checked).toEqual([["bt1", new Date(1_000).toISOString()]]);
+  });
+
   it("does nothing at all without a forge or a PR", async () => {
     const { bugs, id } = await monitoringTask();
     const { found, onFinding } = collect();
