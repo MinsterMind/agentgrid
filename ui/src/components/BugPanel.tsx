@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError } from "../api";
-import type { BugTask } from "../types";
+import { api, ApiError, type MergeMethod } from "../api";
+import { bugMerged } from "../format";
+import type { BugTask, PrInfo } from "../types";
 
 interface DiffData { patch: string; files: Array<{ path: string; additions: number; deletions: number }>; additions: number; deletions: number }
 
@@ -29,7 +30,32 @@ function describeError(e: unknown): string {
   return (e as Error).message;
 }
 
-export function BugPanel({ task, onChanged }: { task: BugTask; onChanged: (t: BugTask) => void }) {
+/** Renders a possibly-multi-line message as one <div> per line — the same convention
+ *  BugLauncher's intake error already uses, reused here for the cleanup message a `done`
+ *  task with leftovers carries (it names paths and the exact commands to clear them, so the
+ *  lines have to stay lines). */
+function Lines({ text, className, ...rest }: { text: string; className?: string } & Record<`data-${string}`, string | undefined>) {
+  return <div className={className} {...rest}>{text.split("\n").map((line, i) => <div key={i}>{line}</div>)}</div>;
+}
+
+const REVIEW_LABEL: Record<string, string> = { CHANGES_REQUESTED: "Changes requested", APPROVED: "Approved", REVIEW_REQUIRED: "Review required" };
+const CHECKS_LABEL: Record<string, string> = { SUCCESS: "Checks passing", FAILURE: "Checks failing", ERROR: "Checks failing", PENDING: "Checks pending" };
+const MERGEABLE_LABEL: Record<string, string> = { MERGEABLE: "Mergeable", CONFLICTING: "Conflicting", UNKNOWN: "Mergeable state unknown" };
+
+/** The PR's forge-state chips, shared by the monitoring and merge-gate cards. The PR link
+ *  itself is already rendered once, in the head row above, for every stage that has a PR —
+ *  this only adds the state that the head row doesn't carry. */
+function PrChips({ pr }: { pr: PrInfo }) {
+  return (
+    <div className="row" data-testid="pr-summary">
+      {pr.reviewDecision && <span className="chip">{REVIEW_LABEL[pr.reviewDecision] ?? pr.reviewDecision}</span>}
+      {pr.checks && <span className="chip">{CHECKS_LABEL[pr.checks] ?? pr.checks}</span>}
+      {pr.mergeable && <span className="chip">{MERGEABLE_LABEL[pr.mergeable] ?? pr.mergeable}</span>}
+    </div>
+  );
+}
+
+export function BugPanel({ task, onChanged, onTranscript }: { task: BugTask; onChanged: (t: BugTask) => void; onTranscript?: (agentId: string) => void }) {
   const [plan, setPlan] = useState<string | null>(null);
   const [planErr, setPlanErr] = useState<string | null>(null);
   const [diff, setDiff] = useState<DiffData | null>(null);
@@ -39,6 +65,14 @@ export function BugPanel({ task, onChanged }: { task: BugTask; onChanged: (t: Bu
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [mergeMethod, setMergeMethod] = useState<MergeMethod>(task.mergeMethod);
+  // The select's own override, only — it must NOT track every prop update (an SSE-refreshed
+  // `task` for the SAME task shouldn't clobber what the human just picked), but it MUST reset
+  // when the panel is repointed at a DIFFERENT task: SidePanel keeps one BugPanel mounted
+  // across the whole sidebar's lifetime and re-renders it with a new `task` prop on selection
+  // change, with no `key` to force a remount — so without this, switching from task A to task
+  // B while A's method is still selected would merge B with A's method.
+  useEffect(() => { setMergeMethod(task.mergeMethod); }, [task.id]);
 
   // The freshest task prop the parent has handed us, kept outside render so an in-flight
   // 409 refetch can compare against the CURRENT props when it resolves, not the ones captured
@@ -122,6 +156,18 @@ export function BugPanel({ task, onChanged }: { task: BugTask; onChanged: (t: Bu
       {gate === "diff" && (
         <div className="gate" data-testid="gate-diff">
           <h4>Diff review</h4>
+          {task.gate?.reason === "feedback" && (
+            <div className="hint" data-testid="gate-reason">
+              <b>Reviewers asked for changes.</b>
+              {(() => {
+                const comments = [...task.history].reverse().find(h => h.stage === "review-feedback")?.note;
+                return comments ? <p>{comments}</p> : null;
+              })()}
+            </div>
+          )}
+          {task.gate?.reason === "rebase" && (
+            <p className="hint" data-testid="gate-reason"><b>This branch conflicts with <code>{task.baseBranch}</code>.</b></p>
+          )}
           {/* The diff above is a live `git diff`; this is the commit the server pinned when the
               gate opened, and the one it will insist on before pushing. */}
           {task.approvedHead && <p className="hint" data-testid="diff-commit">Reviewing commit {task.approvedHead.slice(0, 7)}</p>}
@@ -147,7 +193,7 @@ export function BugPanel({ task, onChanged }: { task: BugTask; onChanged: (t: Bu
             ))}
           </ul>
           <div className="row">
-            <button className="btn p" disabled={busy || !diffReady} onClick={() => act(() => api.approveBug(task.id))}>Create PR</button>
+            <button className="btn p" disabled={busy || !diffReady} onClick={() => act(() => api.approveBug(task.id))}>{task.gate?.reason ? "Approve" : "Create PR"}</button>
             <button className="btn" disabled={busy} onClick={() => setAsking(true)}>Request changes…</button>
             <button className="btn d" disabled={busy} onClick={() => act(() => api.cancelBug(task.id))}>Cancel task</button>
           </div>
@@ -174,8 +220,75 @@ export function BugPanel({ task, onChanged }: { task: BugTask; onChanged: (t: Bu
       )}
 
       {task.stage === "monitoring" && (
-        <p className="hint">PR open — tracked manually in this version. Merge it in the forge when you're ready.</p>
+        <div className="gate" data-testid="gate-monitoring">
+          <h4>Monitoring</h4>
+          {task.pr && <PrChips pr={task.pr} />}
+          {/* `prCheckedAt` is when the server actually polled the forge. Deliberately NOT
+              `pr.lastSeenEventAt`, which is the PR's own `updatedAt`: on a quiet PR that claims
+              hours ago while polling is healthy, and when the forge is unreachable it sits still
+              — wrong in both directions, and about a different thing entirely. */}
+          {task.pr && <p className="hint" data-testid="pr-last-checked">
+            {task.prCheckedAt ? `Last checked ${new Date(task.prCheckedAt).toLocaleString()}` : "Not checked yet"}
+          </p>}
+          {/* Any error resting on a monitoring task is something the user needs: either the
+              forge could not be read, or the feedback-round cap has stopped the watcher from
+              dispatching — and the cap changes no stage, so this card is its only signal. */}
+          {task.error && <Lines className="err" data-testid="monitoring-error" text={task.error} />}
+          <div className="row">
+            <button className="btn p" disabled={busy} onClick={() => act(() => api.addressComments(task.id))}>Ask the agent to address these</button>
+            <button className="btn d" disabled={busy} onClick={() => act(() => api.cancelBug(task.id))}>Cancel task</button>
+          </div>
+        </div>
       )}
+
+      {gate === "merge" && (
+        <div className="gate" data-testid="gate-merge">
+          <h4>Ready to merge</h4>
+          {task.pr && <PrChips pr={task.pr} />}
+          <label className="row">Merge method
+            <select value={mergeMethod} onChange={e => setMergeMethod(e.target.value as MergeMethod)}>
+              <option value="squash">Squash and merge</option>
+              <option value="merge">Merge commit</option>
+              <option value="rebase">Rebase and merge</option>
+            </select>
+          </label>
+          <div className="row">
+            <button className="btn p" disabled={busy} onClick={() => act(() => api.approveBug(task.id, mergeMethod))}>Merge</button>
+            <button className="btn" disabled={busy} onClick={() => setAsking(true)}>Request changes…</button>
+            <button className="btn d" disabled={busy} onClick={() => act(() => api.cancelBug(task.id))}>Cancel task</button>
+          </div>
+        </div>
+      )}
+
+      {(task.stage === "pushing" || task.stage === "merging") && (
+        <p className="hint" data-testid="gate-server-stage">{task.stage === "pushing" ? "Pushing…" : "Merging…"}</p>
+      )}
+
+      {task.stage === "done" && (() => {
+        // A `done` task with an error isn't automatically a failure: any error on a task that
+        // actually merged is cleanup left behind by that merge — a worktree or branch teardown
+        // that didn't finish, never the merge itself — and must render as "merged, with
+        // leftovers", not as a failed outcome. The classification is the server's own durable
+        // `outcome` (see `bugMerged`), not the error's wording and not `pr.state`.
+        const merged = bugMerged(task);
+        return (
+          <div className="gate" data-testid="gate-done">
+            <h4>{merged ? "Merged" : "Closed without merging"}</h4>
+            {task.error && merged && (
+              <>
+                <p className="hint">Merged, but cleanup left something behind:</p>
+                <Lines className="outcome err" text={task.error} />
+              </>
+            )}
+            {task.error && !merged && <div className="err">{task.error}</div>}
+            {onTranscript && task.agentId && <div className="row"><button className="btn" onClick={() => onTranscript(task.agentId)}>Transcript</button></div>}
+            <p className="hint">Dismissing removes this task and frees its agent — this cannot be undone.</p>
+            <div className="row">
+              <button className="btn d" disabled={busy} onClick={() => act(async () => { await api.dismissBug(task.id); return task; })}>Dismiss</button>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

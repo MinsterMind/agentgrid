@@ -126,4 +126,17 @@ describe("BugLauncher", () => {
     expect(section).not.toBeNull();
     await waitFor(() => expect(within(section as HTMLElement).getByText(/not configured/)).toBeInTheDocument());
   });
+
+  // I4: `mergePolicy: "auto"` is validated and persisted but read nowhere — nothing implements
+  // auto-merge, and the merge gate is the point of this workflow. The control stays visible (it
+  // is a real planned behaviour) but must not be selectable, or the launcher promises a merge
+  // that will never happen.
+  it("does not offer auto-merge as a usable choice, since nothing implements it", () => {
+    render(<BugLauncher onCreated={() => {}} onClose={() => {}} />);
+    const select = screen.getByLabelText(/when the PR is approved/i) as HTMLSelectElement;
+    expect(select).toHaveValue("ask");
+    const auto = Array.from(select.options).find(o => o.value === "auto")!;
+    expect(auto.disabled).toBe(true);
+    expect(auto.textContent).toMatch(/not yet available/i);
+  });
 });

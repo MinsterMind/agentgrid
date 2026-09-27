@@ -39,4 +39,11 @@ describe("detectStage, against the real stage presets", () => {
   it("treats an ordinary agent prompt as 'other', so plain fake mode keeps its canned behaviour", () => {
     expect(detectStage("Please look at the failing test and tell me what you find.")).toEqual({ stage: "other" });
   });
+
+  it("recognises the review-feedback and rebase prompts", async () => {
+    const fb = await renderStagePrompt("review-feedback", { ...task, stage: "review-feedback" }, { ...ctx, note: { text: "fix it", trusted: false } }, presets);
+    expect(detectStage(fb)).toMatchObject({ stage: "review-feedback" });
+    const rb = await renderStagePrompt("rebase", { ...task, stage: "rebase" }, ctx, presets);
+    expect(detectStage(rb)).toMatchObject({ stage: "rebase" });
+  });
 });

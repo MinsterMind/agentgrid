@@ -1,7 +1,10 @@
 import { shellQuote } from "../../shell.js";
-import type { CreatePrContext, ForgeAdapter, PrInfo, Runner } from "./types.js";
+import type { CreatePrContext, ForgeAdapter, MergeMethod, PrInfo, ReviewEvent, Runner } from "./types.js";
 
-const FIELDS = "number,url,state,isDraft,reviewDecision,mergeable,updatedAt,statusCheckRollup";
+const FIELDS = "number,url,state,isDraft,reviewDecision,mergeable,updatedAt,statusCheckRollup,headRefOid";
+const PR_FIELDS = FIELDS;
+/** gh says "no pull requests found" for a genuinely absent PR; anything else is a broken call. */
+const NOT_FOUND = /no pull requests? found|could not resolve to a pullrequest/i;
 
 const FAILURE_STATES = ["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED"];
 const SUCCESS_STATES = ["SUCCESS", "NEUTRAL", "SKIPPED"];
@@ -32,6 +35,23 @@ function rollup(checks: Array<{ status?: string; state?: string; conclusion?: st
   if (outcomes.includes("FAILURE")) return "FAILURE";
   if (outcomes.includes("PENDING")) return "PENDING";
   return "SUCCESS";
+}
+
+/** Valid JSON is not necessarily a PR body — `{}`, `[]`, `null` all parse cleanly. A
+ *  fabricated `found` is the one PrLookup state the watcher cannot recover from, so
+ *  require the two fields that are never optional on a real `gh pr view` payload. */
+function looksLikePr(pr: any): boolean {
+  return typeof pr === "object" && pr !== null && !Array.isArray(pr)
+    && typeof pr.number === "number" && typeof pr.url === "string";
+}
+
+function toPrInfo(pr: any): PrInfo {
+  return {
+    number: pr.number, url: pr.url, state: (pr.state ?? "OPEN").toUpperCase() as PrInfo["state"],
+    reviewDecision: pr.reviewDecision ?? null, checks: rollup(pr.statusCheckRollup),
+    mergeable: pr.mergeable ?? null, headSha: pr.headRefOid ?? null,
+    lastSeenEventAt: pr.updatedAt ?? new Date().toISOString(),
+  };
 }
 
 export function githubAdapter(run: Runner): ForgeAdapter {
@@ -66,14 +86,64 @@ export function githubAdapter(run: Runner): ForgeAdapter {
         pr = allResult.pr;
       }
       if (!pr) return null;
-      return {
-        number: pr.number, url: pr.url,
-        state: (pr.state ?? "OPEN").toUpperCase() as PrInfo["state"],
-        reviewDecision: pr.reviewDecision ?? null,
-        checks: rollup(pr.statusCheckRollup),
-        mergeable: pr.mergeable ?? null,
-        lastSeenEventAt: pr.updatedAt ?? new Date().toISOString(),
+      return toPrInfo(pr);
+    },
+
+    async getPr(repoDir: string, number: number) {
+      const r = await run("gh", ["pr", "view", String(number), "--json", PR_FIELDS], repoDir);
+      if (r.code !== 0) {
+        const msg = (r.stderr ?? r.stdout ?? "").trim() || `gh exited ${r.code}`;
+        return NOT_FOUND.test(msg) ? { found: null } : { unavailable: msg };
+      }
+      let parsed: any;
+      try { parsed = JSON.parse(r.stdout); }
+      catch { return { unavailable: `could not read gh output for PR #${number}` }; }
+      if (!looksLikePr(parsed)) return { unavailable: `gh output for PR #${number} did not look like a pull request` };
+      return { found: toPrInfo(parsed) };
+    },
+
+    async listReviewEvents(repoDir: string, number: number, since: string): Promise<ReviewEvent[]> {
+      // `gh pr view --json reviews,comments` builds its author objects from GraphQL, whose
+      // Bot.login carries no `[bot]` suffix and no bot field at all on a per-review/per-comment
+      // author — that's only true of `--json author` (the PR's own author). REST is the
+      // authoritative source here: `user.type === "Bot"` is real, and `gh api`'s `{owner}`/
+      // `{repo}` placeholders resolve from repoDir (passed as cwd) the same way `gh pr` does.
+      // Two calls instead of one GraphQL query is acceptable — this only runs when a PR
+      // actually changed and changes were requested.
+      const [reviewsR, commentsR] = await Promise.all([
+        run("gh", ["api", `repos/{owner}/{repo}/pulls/${number}/reviews`], repoDir),
+        run("gh", ["api", `repos/{owner}/{repo}/issues/${number}/comments`], repoDir),
+      ]);
+      const parseArray = (r: { stdout: string; code: number }): any[] => {
+        if (r.code !== 0) return [];
+        try { const v = JSON.parse(r.stdout || "[]"); return Array.isArray(v) ? v : []; }
+        catch { return []; }
       };
+      // REST's `user.type === "Bot"` is the real signal (dependabot, github-actions, ...);
+      // the `[bot]` login suffix is kept only as corroboration/fallback. What neither field
+      // catches: a PAT-driven service *user* account reports `type: "User"` with no suffix
+      // and is indistinguishable from a human by anything either API exposes.
+      const isBot = (u: any) => Boolean(u?.type === "Bot" || /\[bot\]$/i.test(u?.login ?? ""));
+      const out: ReviewEvent[] = [
+        ...parseArray(reviewsR).map((v: any) => ({ kind: "review" as const, state: (v.state ?? "").toUpperCase(),
+          author: v.user?.login ?? "", isBot: isBot(v.user), body: v.body ?? "", at: v.submitted_at ?? "" })),
+        ...parseArray(commentsR).map((c: any) => ({ kind: "comment" as const, state: "",
+          author: c.user?.login ?? "", isBot: isBot(c.user), body: c.body ?? "", at: c.created_at ?? "" })),
+      ];
+      return out.filter(e => e.at > since).sort((a, b) => a.at.localeCompare(b.at));
+    },
+
+    async merge(repoDir: string, number: number, method: MergeMethod) {
+      // No `--delete-branch`: it deletes the LOCAL branch too, and the task branch is checked out
+      // in the linked worktree while this runs, so git refuses ("cannot delete branch ... used by
+      // worktree"), gh exits non-zero, and a merge that irreversibly happened comes back as
+      // `ok: false` — presenting a successful merge as "Stage failed", which spec §5.4 forbids.
+      // The engine deletes the remote branch itself once the merge is confirmed (`doMerge`), where
+      // a failure can only ever become a cleanup note.
+      const flag = method === "squash" ? "--squash" : method === "rebase" ? "--rebase" : "--merge";
+      const r = await run("gh", ["pr", "merge", String(number), flag], repoDir);
+      const message = ((r.code === 0 ? r.stdout : (r.stderr ?? r.stdout)) ?? "").trim();
+      return { ok: r.code === 0, message: message || (r.code === 0 ? "merged" : `gh exited ${r.code}`) };
     },
   };
 }

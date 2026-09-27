@@ -206,13 +206,33 @@ export function createApp(deps: AppDeps) {
     if (mergeMethod !== undefined && !MERGE_METHODS.includes(mergeMethod)) throw new BadRequest(`mergeMethod must be one of ${MERGE_METHODS.join(", ")}`);
     res.status(201).json(await bugs().engine.intake({ issueRef: issueRef.trim(), repo, mergePolicy, mergeMethod }));
   }));
-  app.post("/api/bugtasks/:id/approve", wrap(async (req, res) => res.json(await bugs().engine.approve(req.params.id as string))));
+  // `mergeMethod` is honoured only at the merge gate (`engine.mergeTask` checks the task is
+  // actually "approved" before persisting it) — passing it anywhere else is simply ignored by
+  // `mergeTask`, same as it always was. Validated here, before the engine is ever touched, so
+  // a bad value 400s uniformly regardless of what stage the task happens to be in.
+  app.post("/api/bugtasks/:id/approve", wrap(async (req, res) => {
+    const b = bugs();
+    const method = req.body?.mergeMethod;
+    if (method !== undefined && !MERGE_METHODS.includes(method)) throw new BadRequest(`mergeMethod must be one of ${MERGE_METHODS.join(", ")}`);
+    res.json(method ? await b.engine.mergeTask(req.params.id as string, method) : await b.engine.approve(req.params.id as string));
+  }));
   app.post("/api/bugtasks/:id/cancel", wrap(async (req, res) => res.json(await bugs().engine.cancel(req.params.id as string))));
   app.post("/api/bugtasks/:id/retry", wrap(async (req, res) => res.json(await bugs().engine.retry(req.params.id as string))));
   app.post("/api/bugtasks/:id/request-changes", wrap(async (req, res) => {
     const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
     if (!text) throw new BadRequest("text is required");
     res.json(await bugs().engine.requestChanges(req.params.id as string, text));
+  }));
+  /** The manual feedback round from the monitoring card — bypasses the watcher's dispatch cap
+   *  (see `engine.addressComments`'s own comment): a human clicking this is the opposite of
+   *  the unattended dispatch that cap exists to bound. */
+  app.post("/api/bugtasks/:id/address-comments", wrap(async (req, res) => {
+    const text = typeof req.body?.text === "string" ? req.body.text : undefined;
+    res.json(await bugs().engine.addressComments(req.params.id as string, text));
+  }));
+  app.delete("/api/bugtasks/:id", wrap(async (req, res) => {
+    await bugs().engine.dismiss(req.params.id as string);
+    res.status(204).end();
   }));
   app.get("/api/bugfix/issues", wrap(async (_req, res) => res.json(await bugs().tracker.listMyIssues())));
   app.get("/api/bugfix/preflight", wrap(async (req, res) => {

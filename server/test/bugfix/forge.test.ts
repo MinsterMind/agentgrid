@@ -1,11 +1,16 @@
 import { describe, it, expect } from "vitest";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { makeForge, type Runner } from "../../src/bugfix/forge/index.js";
+import { githubAdapter } from "../../src/bugfix/forge/github.js";
+
+const fixture = (name: string) => readFile(path.resolve("test/bugfix/fixtures/gh", name), "utf8");
 
 /** One recorded `gh pr list` payload — the shape the adapter must survive. */
 const GH_PR_LIST = JSON.stringify([{
   number: 482, url: "https://github.com/acme/pay/pull/482", state: "OPEN", isDraft: false,
   reviewDecision: "REVIEW_REQUIRED", mergeable: "MERGEABLE", updatedAt: "2026-09-25T10:00:00Z",
-  statusCheckRollup: [{ state: "SUCCESS" }, { state: "SUCCESS" }],
+  headRefOid: "cafe482", statusCheckRollup: [{ state: "SUCCESS" }, { state: "SUCCESS" }],
 }]);
 
 const runner = (out: Record<string, { stdout: string; code: number }>): { run: Runner; calls: string[] } => {
@@ -39,7 +44,7 @@ describe("github adapter", () => {
     const r = runner({ "gh pr list": { stdout: GH_PR_LIST, code: 0 } });
     const pr = await makeForge({ preset: "github" }, r.run)!.findPr("/repo", "bugfix/PAY-42");
     expect(pr).toEqual({ number: 482, url: "https://github.com/acme/pay/pull/482", state: "OPEN",
-      reviewDecision: "REVIEW_REQUIRED", checks: "SUCCESS", mergeable: "MERGEABLE", lastSeenEventAt: "2026-09-25T10:00:00Z" });
+      reviewDecision: "REVIEW_REQUIRED", checks: "SUCCESS", mergeable: "MERGEABLE", headSha: "cafe482", lastSeenEventAt: "2026-09-25T10:00:00Z" });
     expect(r.calls[0]).toContain("--head bugfix/PAY-42");
   });
 
@@ -126,5 +131,110 @@ describe("github adapter", () => {
       expect(await makeForge({ preset: "github" }, r.run)!.findPr("/r", "b")).toBeNull();
       expect(r.calls).toHaveLength(1);
     });
+  });
+});
+
+describe("getPr", () => {
+  it("returns the PR when gh succeeds", async () => {
+    const stdout = await fixture("pr-changes-requested.json");
+    const f = githubAdapter(async () => ({ stdout, code: 0 }));
+    const r = await f.getPr("/r", 7);
+    expect(r).toEqual({ found: { number: 7, url: "https://github.com/acme/app/pull/7", state: "OPEN",
+      reviewDecision: "CHANGES_REQUESTED", checks: "SUCCESS", mergeable: "MERGEABLE", headSha: "abc123",
+      lastSeenEventAt: "2026-09-26T09:00:00Z" } });
+  });
+
+  it("distinguishes a missing PR from a gh failure", async () => {
+    const missing = githubAdapter(async () => ({ stdout: "", code: 1, stderr: "no pull requests found" } as any));
+    expect(await missing.getPr("/r", 7)).toEqual({ found: null });
+
+    const broken = githubAdapter(async () => ({ stdout: "", code: 1, stderr: "could not connect to api.github.com" } as any));
+    const r = await broken.getPr("/r", 7);
+    expect(r).toMatchObject({ unavailable: expect.stringMatching(/could not connect/i) });
+
+    const garbage = githubAdapter(async () => ({ stdout: "not json", code: 0 }));
+    expect(await garbage.getPr("/r", 7)).toMatchObject({ unavailable: expect.stringMatching(/could not read/i) });
+  });
+
+  it("reports a conflicting PR as such", async () => {
+    const f = githubAdapter(async () => ({ stdout: await fixture("pr-conflicting.json"), code: 0 }));
+    const r = await f.getPr("/r", 7);
+    expect(r).toMatchObject({ found: { mergeable: "CONFLICTING" } });
+  });
+
+  it("never reports `found` for valid JSON that isn't shaped like a PR", async () => {
+    for (const body of ["{}", "[]", "null", '{"number":"seven"}']) {
+      const f = githubAdapter(async () => ({ stdout: body, code: 0 }));
+      const r = await f.getPr("/r", 7);
+      expect(r).toMatchObject({ unavailable: expect.stringMatching(/did not look like a pull request/i) });
+    }
+  });
+});
+
+/** `listReviewEvents` makes two separate `gh api` calls (reviews, then issue comments) —
+ *  route each to its half of the fixture by inspecting which REST path was requested. */
+const eventsRunner = async (fixtureName: string) => {
+  const raw = JSON.parse(await fixture(fixtureName));
+  return async (_cmd: string, args: string[]) => {
+    const path = args[args.length - 1] as string;
+    if (path.includes("/reviews")) return { stdout: JSON.stringify(raw.reviews ?? []), code: 0 };
+    if (path.includes("/comments")) return { stdout: JSON.stringify(raw.comments ?? []), code: 0 };
+    return { stdout: "", code: 1 };
+  };
+};
+
+describe("listReviewEvents", () => {
+  it("normalises reviews and comments, marking bots via REST's `user.type === \"Bot\"` (the [bot] suffix is corroboration, not the primary signal)", async () => {
+    const f = githubAdapter(await eventsRunner("events-with-bot.json"));
+    const events = await f.listReviewEvents("/r", 7, "2026-09-26T08:00:00Z");
+    expect(events).toEqual([
+      { kind: "review", state: "CHANGES_REQUESTED", author: "alice", isBot: false, body: "This leaks a handle.", at: "2026-09-26T09:00:00Z" },
+      { kind: "comment", state: "", author: "pytorch-bot[bot]", isBot: true, body: "Build failed.", at: "2026-09-26T09:05:00Z" },
+    ]);
+  });
+
+  it("does not treat a plain human `type: User` login as a bot", async () => {
+    const f = githubAdapter(await eventsRunner("events-with-bot.json"));
+    const events = await f.listReviewEvents("/r", 7, "2026-09-26T08:00:00Z");
+    expect(events[0]).toMatchObject({ author: "alice", isBot: false });
+  });
+
+  it("treats a `type: Bot` comment author as a bot", async () => {
+    const f = githubAdapter(await eventsRunner("events-with-bot.json"));
+    const events = await f.listReviewEvents("/r", 7, "2026-09-26T08:00:00Z");
+    expect(events[1]).toMatchObject({ author: "pytorch-bot[bot]", isBot: true });
+  });
+
+  it("drops events at or before `since`, and never throws on a gh failure", async () => {
+    const f = githubAdapter(await eventsRunner("events-with-bot.json"));
+    expect(await f.listReviewEvents("/r", 7, "2026-09-26T09:05:00Z")).toEqual([]);
+
+    const broken = githubAdapter(async () => ({ stdout: "", code: 1 }));
+    expect(await broken.listReviewEvents("/r", 7, "2026-09-26T08:00:00Z")).toEqual([]);
+  });
+});
+
+describe("merge", () => {
+  /**
+   * `--delete-branch` deletes the LOCAL branch as well as the remote one, and the task branch is
+   * checked out in the linked worktree at this point — git refuses ("cannot delete branch
+   * 'bugfix/…' used by worktree"), `gh` exits 1, and a merge that irreversibly happened comes
+   * back as `ok: false`, which `doMerge` turns into "Stage failed". Spec §5.4 forbids exactly
+   * that. The remote branch is deleted by the engine instead, after the merge is confirmed, where
+   * a failure can only become a cleanup note.
+   */
+  it("merges with the requested method and never asks gh to delete the branch", async () => {
+    const calls: string[][] = [];
+    const f = githubAdapter(async (_c, args) => { calls.push(args); return { stdout: "merged", code: 0 }; });
+    expect(await f.merge("/r", 7, "squash")).toEqual({ ok: true, message: "merged" });
+    expect(calls[0]).toEqual(["pr", "merge", "7", "--squash"]);
+    expect(calls[0]).not.toContain("--delete-branch");
+    await f.merge("/r", 7, "rebase");
+    expect(calls[1]).toContain("--rebase");
+  });
+
+  it("reports why a merge was refused instead of throwing", async () => {
+    const f = githubAdapter(async () => ({ stdout: "", code: 1, stderr: "Pull request is not mergeable" } as any));
+    expect(await f.merge("/r", 7, "squash")).toEqual({ ok: false, message: expect.stringMatching(/not mergeable/i) as unknown as string });
   });
 });

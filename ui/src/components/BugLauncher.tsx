@@ -89,10 +89,15 @@ export function BugLauncher({ onCreated, onClose }: { onCreated: (task: BugTask)
             <button className="btn" onClick={async () => { const r = await api.pickFolder().catch(() => undefined); if (r?.path) setRepo(r.path); }}>Browse…</button>
           </div></label>
         {repoTrimmed && !repoValid && <div className="err">Enter an absolute repo path</div>}
+        {/* `mergePolicy: "auto"` is validated and persisted by the server but read nowhere —
+            nothing implements auto-merge, and the merge gate is the whole point of this workflow.
+            The option stays listed, because it is a real planned behaviour and hiding it would
+            make the single remaining choice look like a pointless control, but it must not be
+            selectable: offering it would promise a merge that never happens. */}
         <label>When the PR is approved
           <select value={mergePolicy} onChange={e => setMergePolicy(e.target.value as "ask" | "auto")}>
             <option value="ask">ask me before merging</option>
-            <option value="auto">merge automatically</option>
+            <option value="auto" disabled>merge automatically (not yet available)</option>
           </select></label>
 
         {checking && <p className="hint">Checking repo…</p>}

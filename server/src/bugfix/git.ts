@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 
@@ -107,5 +108,48 @@ export class GitOps {
     const realRepo = await realpath(repo).catch(() => repo);
     const target = path.resolve(realRepo, path.relative(repo, dir));
     return out.split("\n").some(l => l.startsWith("worktree ") && path.resolve(l.slice("worktree ".length).trim()) === target);
+  }
+
+  /**
+   * Is a rebase half-finished in this worktree, and which paths are still conflicted?
+   * `git status --porcelain` marks conflicts with U on either side (UU, AU, UD, …); the
+   * rebase directories are how git itself knows a rebase is in flight.
+   */
+  async rebaseState(dir: string): Promise<{ inProgress: boolean; conflicted: string[] }> {
+    const gitDir = (await this.run(dir, ["rev-parse", "--git-path", "rebase-merge"])).trim();
+    const applyDir = (await this.run(dir, ["rev-parse", "--git-path", "rebase-apply"])).trim();
+    const inProgress = [gitDir, applyDir].some(p => p && existsSync(path.resolve(dir, p)));
+    const status = await this.run(dir, ["status", "--porcelain"]);
+    const conflicted = status.split("\n")
+      .filter(l => /^(DD|AU|UD|UA|DU|AA|UU)\s/.test(l))
+      .map(l => l.slice(3).trim());
+    return { inProgress, conflicted };
+  }
+
+  /**
+   * Push the task's branch. `force` uses --force-with-lease, never --force: a lease refuses
+   * when the remote moved under us, which is the difference between rewriting our own history
+   * and destroying someone else's. Only the rebase path passes force, and only after the human
+   * has approved the rebased diff.
+   */
+  /**
+   * Delete the task branch on `origin` after a merge has been confirmed. Separate from the
+   * merge call on purpose: `gh pr merge --delete-branch` also deletes the LOCAL branch, which
+   * git refuses while that branch is checked out in the task's worktree — failing the whole
+   * merge report over cleanup. Here the caller can treat a failure as a note instead.
+   *
+   * A branch that is already gone (a repo that deletes branches on merge, or a second pass
+   * after a retry) is not a failure: there is nothing to clean up, which is the desired state.
+   */
+  async deleteRemoteBranch(dir: string, branch: string): Promise<void> {
+    await this.run(dir, ["push", "origin", "--delete", branch]).catch((err: Error) => {
+      if (/remote ref does not exist|unable to delete '[^']*': remote ref does not exist/i.test(err.message)) return;
+      throw err;
+    });
+  }
+
+  async push(dir: string, branch: string, opts: { force?: boolean } = {}): Promise<void> {
+    const args = ["push", ...(opts.force ? ["--force-with-lease"] : []), "origin", `${branch}:${branch}`];
+    await this.run(dir, args);
   }
 }

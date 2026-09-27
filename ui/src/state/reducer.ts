@@ -26,6 +26,7 @@ export function reducer(s: UiState, a: Action): UiState {
       if (e.type === "assignment") return { ...s, assignments: { ...s.assignments, [e.assignment.id]: e.assignment } };
       if (e.type === "agent-removed") return { ...s, agents: s.agents.filter(x => x.id !== e.id), selectedId: s.selectedId === e.id ? null : s.selectedId };
       if (e.type === "bugtask") return { ...s, bugTasks: { ...s.bugTasks, [e.task.id]: e.task } };
+      if (e.type === "bugtask-removed") { const { [e.id]: _drop, ...bugTasks } = s.bugTasks; return { ...s, bugTasks }; }
       const i = s.agents.findIndex(x => x.id === e.agent.id);
       const agents = i === -1 ? [...s.agents, e.agent] : s.agents.map((x, j) => (j === i ? e.agent : x));
       return { ...s, agents };
@@ -72,7 +73,16 @@ export const sessionIdFor = (s: UiState, agent: Agent): string | null => {
 };
 export const activityFor = (s: UiState, agent: Agent): SessionActivity | null => { const sid = sessionIdFor(s, agent); return sid ? s.activity[sid] ?? null : null; };
 
-const FINISHED_BUG_STAGES = ["done", "cancelled"];
-/** The bug task an agent is currently working, if any. */
-export const bugTaskFor = (s: UiState, agent: Agent): BugTask | null =>
-  Object.values(s.bugTasks).find(t => t.agentId === agent.id && !FINISHED_BUG_STAGES.includes(t.stage)) ?? null;
+// "cancelled" has no card of its own in BugPanel — nothing to show, so it stays hidden the
+// moment it lands, exactly like before. "done" is different: it has its own card (Merged /
+// Closed without merging) with the Dismiss button that actually clears it, so hiding it here
+// too would take the card away in the same tick it appears — before a human could ever see or
+// dismiss it. It stays visible until dismissed, which removes it from the store outright.
+const HIDDEN_BUG_STAGES = ["cancelled"];
+/** The bug task an agent is currently working, if any — preferring an active task over a
+ *  `done` one lingering on the same (now reused) agent, so a fresh assignment isn't shadowed
+ *  by a stale card the human just hasn't dismissed yet. */
+export const bugTaskFor = (s: UiState, agent: Agent): BugTask | null => {
+  const mine = Object.values(s.bugTasks).filter(t => t.agentId === agent.id && !HIDDEN_BUG_STAGES.includes(t.stage));
+  return mine.find(t => t.stage !== "done") ?? mine.find(t => t.stage === "done") ?? null;
+};

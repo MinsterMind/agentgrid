@@ -1,0 +1,16 @@
+The pull request for {{issueKey}} conflicts with {{baseBranch}} and cannot be merged.
+
+{{note}}
+
+Your job in this step, in {{worktree}}:
+
+1. Fetch the latest {{baseBranch}}.
+2. Rebase {{branch}} onto it.
+3. Resolve every conflict. Keep the intent of both sides: the fix this branch makes, and
+   whatever changed on {{baseBranch}} underneath it.
+4. Leave no conflict markers, and finish the rebase — `git status` must be clean.
+5. Run whatever tests cover the areas you touched.
+6. Summarise what conflicted and how you resolved it.
+
+Do not push. Do not merge. A human reviews the rebased diff before anything reaches the
+pull request, and the server force-pushes with a lease only after that approval.

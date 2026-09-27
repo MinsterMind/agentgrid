@@ -1,9 +1,11 @@
 export type BugStage =
   | "intake" | "analyzing" | "plan-review" | "implementing" | "diff-review"
-  | "opening-pr" | "monitoring" | "review-feedback" | "rebase" | "approved"
-  | "merging" | "done" | "cancelled" | "failed";
+  | "opening-pr" | "monitoring" | "review-feedback" | "rebase" | "pushing"
+  | "approved" | "merging" | "done" | "cancelled" | "failed";
 
-export type GateKind = "plan" | "diff" | "review" | "merge" | "rebase";
+/** A gate's kind is what the card renders. There is no "rebase" gate: a rebase round lands at the
+ *  DIFF gate carrying `reason: "rebase"` (see `Transition.gate`), which is what labels it. */
+export type GateKind = "plan" | "diff" | "review" | "merge";
 
 /** Normalised ticket — every tracker preset returns this shape. */
 export interface TrackerIssue {
@@ -19,6 +21,8 @@ export interface PrInfo {
   reviewDecision: string | null;
   checks: string | null;
   mergeable: string | null;
+  /** `gh`'s `headRefOid` — the server's only proof that a push actually landed on the PR. */
+  headSha: string | null;
   lastSeenEventAt: string;
 }
 
@@ -32,18 +36,57 @@ export interface BugTask {
   baseBranch: string;
   agentId: string;
   stage: BugStage;
-  gate: { kind: GateKind; openedAt: string } | null;
+  gate: { kind: GateKind; openedAt: string; reason?: "feedback" | "rebase" } | null;
   mergePolicy: "ask" | "auto";
   mergeMethod: "squash" | "merge" | "rebase";
   /** The commit HEAD pointed at when the diff gate opened — i.e. exactly what the human
    *  approved. `opening-pr` refuses to run unless HEAD is still this commit. */
   approvedHead: string | null;
+  /**
+   * How the task ENDED, set by the server at the moment it knows — "merged" on the transition
+   * out of `merging` (which only runs once the forge itself has been re-read and reports
+   * MERGED), "closed" on a `pr-closed` ending. Null until then.
+   *
+   * It exists because both earlier signals were proxies that disagreed: the card classified on
+   * `pr.state === "MERGED"` (a view a stale watcher tick could overwrite, and whose write is
+   * best-effort) and the notification on matching the error text (which a copy edit would
+   * silently reclassify). A merged task and a closed-without-merging one must be distinguishable
+   * without reading prose or inferring from a PR view. Records written before this field existed
+   * normalise to null in `BugTaskStore.init`.
+   */
+  outcome: "merged" | "closed" | null;
+  /**
+   * The PR head a `checks-failed` round was last dispatched at. A failing build, like a
+   * CHANGES_REQUESTED decision, STANDS until CI runs again — so the failure alone does not say
+   * whether it has been answered, and any later change (a bot comment, an unrelated field move)
+   * would otherwise re-fire a round with nothing new in it, which `verify()` then fails for
+   * having no new commits.
+   *
+   * The mechanism deliberately rejected for reviews is exactly right here: a review can arrive
+   * without the head moving, but a FIX for failing checks always moves it. So a red build at a
+   * head we have already answered is old news, and a red build at any other head — including the
+   * first one, where this is null — is not. Records written before this field existed normalise
+   * to null in `BugTaskStore.init`.
+   */
+  checksRoundHead: string | null;
   pr: PrInfo | null;
+  /** When `pr` was actually read from the forge (ISO), as opposed to `pr.lastSeenEventAt`,
+   *  which is the forge's own `updatedAt` for the pull request. Two things need it: the card's
+   *  "Last checked", and `BugTaskStore.patchPr`'s staleness rule — the watcher writes PR views
+   *  outside the engine's per-task lock, so a tick whose `getPr` was already in flight must not
+   *  be able to land its pre-merge view on top of the merge's own bookkeeping. Records written
+   *  before this field existed normalise to null in `BugTaskStore.init`. */
+  prCheckedAt: string | null;
   costUsd: number;
   history: Array<{ stage: BugStage; at: string; note: string }>;
   error: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Incremented when a review-feedback stage is dispatched. Durable, so a restart cannot
+   *  reset a task's budget against the cap. Tasks persisted before this field existed are
+   *  normalised to 0 in `BugTaskStore.init` — the one place old records enter the system —
+   *  so every consumer here can treat it as an honest `number`. */
+  feedbackRounds: number;
 }
 
 export type BugEvent =
@@ -52,27 +95,63 @@ export type BugEvent =
   | { type: "approve" }
   | { type: "request-changes"; text: string }
   | { type: "cancel" }
-  | { type: "retry" };
+  | { type: "retry" }
+  /** `source` says whose words `comments` are, and therefore whether the agent may obey them:
+   *  "forge" is reviewer/CI text pulled off the pull request (data, fenced in the prompt);
+   *  "operator" is the human at the console typing into this app. The watcher only ever
+   *  produces "forge"; `addressComments` produces either, depending on whether the human
+   *  supplied the text themselves. */
+  | { type: "review-changes-requested"; comments: string; source: "forge" | "operator" }
+  /** `headSha` is the PR head the failing build ran against, and the engine records it as
+   *  `BugTask.checksRoundHead` when it dispatches the round — that is what stops the same red
+   *  build being answered twice. Null when the adapter does not report a head. */
+  | { type: "checks-failed"; checks: string; headSha: string | null }
+  | { type: "review-approved" }
+  | { type: "conflicting" }
+  | { type: "pr-closed" }
+  | { type: "pr-merged" };
 
 export interface Transition {
   stage: BugStage;
-  gate: { kind: GateKind; openedAt: string } | null;
+  /** Set only on the transitions that END a task, and then it is the durable answer to "did
+   *  this merge?" — see `BugTask.outcome`. Absent leaves whatever the task already had. */
+  outcome?: "merged" | "closed";
+  gate: { kind: GateKind; openedAt: string; reason?: "feedback" | "rebase" } | null;
   error: string | null;
   note: string;
-  /** Stage the engine must now run an assignment for; null when waiting on a human or resting. */
+  /** Stage the engine must now run an assignment for; null when waiting on a human or resting
+   *  (a gate stage), or when a server stage is what's next (the engine runs it, not an agent). */
   run: BugStage | null;
 }
 
 /** Stages whose work is done by an agent assignment. */
-export const AGENT_STAGES: BugStage[] = ["analyzing", "implementing", "opening-pr"];
+export const AGENT_STAGES: BugStage[] = ["analyzing", "implementing", "opening-pr", "review-feedback", "rebase"];
 /** Stages that are waiting on a human click. */
-export const GATE_STAGES: BugStage[] = ["plan-review", "diff-review"];
+export const GATE_STAGES: BugStage[] = ["plan-review", "diff-review", "approved"];
+/** Stages the ENGINE performs itself — no assignment, no agent, no tokens. They still
+ *  report stage-done/stage-failed, so failure and retry work exactly as for agent stages. */
+export const SERVER_STAGES: BugStage[] = ["pushing", "merging"];
+/** Resting stages the watcher polls. Never an agent stage: two things driving one task is
+ *  the bug class Phase 1 spent its Criticals on. */
+export const WATCHED_STAGES: BugStage[] = ["monitoring", "approved"];
+/** Agent stages dispatched to resolve a review round; distinct from the other AGENT_STAGES
+ *  because they're the ones a feedback-round budget must count against. */
+export const FEEDBACK_AGENT_STAGES: BugStage[] = ["review-feedback", "rebase"];
 export const TERMINAL_STAGES: BugStage[] = ["done", "cancelled", "failed"];
 /**
  * Stages a startup crash can strand a task in with nothing left to finish it: the
- * AGENT_STAGES (an assignment was dispatched but never reported back) plus "intake"
- * (the task record was written, but the transition into "analyzing" never landed).
- * Recovery fails tasks sitting in any of these so they get a card and a working Retry
- * instead of being silently orphaned.
+ * AGENT_STAGES (an assignment was dispatched but never reported back), "intake" (the task
+ * record was written, but the transition into "analyzing" never landed), and the
+ * SERVER_STAGES ("pushing"/"merging" — the engine itself was mid-step, with no assignment
+ * to report back either). A crash mid-"merging" is the worst place in the whole workflow
+ * to have no way out: nothing — not the user, not the server — otherwise knows whether the
+ * merge actually landed, and neither `retry` (which requires "failed") nor any other event
+ * is legal from a server stage. Recovery fails tasks sitting in any of these so they get a
+ * card and a working Retry instead of being silently orphaned. Retrying back into "merging"
+ * or "pushing" is safe: `doMerge` re-reads the PR before merging (a merge that already
+ * landed short-circuits into a teardown-only pass, never a second `forge.merge` call — see
+ * its own comment on the entry-route discriminator, which still resolves to "approved"
+ * through the interposed "failed"), and `doPush` re-checks the pin and pushes a branch that
+ * may already be pushed, which is a no-op.
  */
-export const RECOVERABLE_STAGES: BugStage[] = ["intake", ...AGENT_STAGES];
+export const RECOVERABLE_STAGES: BugStage[] = ["intake", ...AGENT_STAGES, ...SERVER_STAGES];

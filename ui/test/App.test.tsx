@@ -3,8 +3,8 @@ import { render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "../src/App";
 import { api } from "../src/api";
-import { notifyWaiting } from "../src/notify";
-import type { Agent, GridEvent, GridState, RoleDef } from "../src/types";
+import { notifyWaiting, notifyBugTask } from "../src/notify";
+import type { Agent, BugTask, GridEvent, GridState, RoleDef } from "../src/types";
 
 vi.mock("../src/api", () => ({
   api: {
@@ -30,6 +30,7 @@ vi.mock("../src/api", () => ({
 vi.mock("../src/notify", () => ({
   notifyWaiting: vi.fn(),
   notifyFinished: vi.fn(),
+  notifyBugTask: vi.fn(),
   setTitleCount: vi.fn(),
   settings: { notifyWaiting: true, notifyFinished: false },
 }));
@@ -43,7 +44,17 @@ function agent(id: string, state: Agent["state"]): Agent {
   return { id, role: "coder", repo: "/tmp", displayName: id, createdAt: new Date().toISOString(), state, currentAssignmentId: null };
 }
 
-function snapshot(agents: Agent[]): GridState { return { roles: [role], agents, assignments: [], liveSessions: [], sessionStatuses: [], bugTasks: [] }; }
+function snapshot(agents: Agent[], bugTasks: BugTask[] = []): GridState { return { roles: [role], agents, assignments: [], liveSessions: [], sessionStatuses: [], bugTasks }; }
+
+function bugTask(id: string, stage: BugTask["stage"], error: string | null = null, outcome: BugTask["outcome"] = null): BugTask {
+  return {
+    id, issue: { key: "PAY-42", title: "Boom", url: "u", status: "Open", priority: "High", description: "d", acceptanceCriteria: [] },
+    trackerProject: "PAY", sourceRepo: "/r", worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main",
+    agentId: "bugfix@w", stage, gate: null, mergePolicy: "ask", mergeMethod: "squash", approvedHead: null,
+    outcome, checksRoundHead: null, pr: null, prCheckedAt: null, costUsd: 0, history: [], error, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    feedbackRounds: 0,
+  };
+}
 
 let onSnapshot: (s: GridState) => void;
 let onChange: (e: GridEvent) => void;
@@ -72,6 +83,47 @@ describe("App notification transitions", () => {
     act(() => onChange({ type: "agent-removed", id: "A" }));
     act(() => onChange({ type: "agent", agent: agent("A", "waiting") }));
     expect(notifyWaiting).not.toHaveBeenCalled();
+  });
+});
+
+describe("App bug-task notifications", () => {
+  it("notifies naming the issue key on the moments a user isn't watching the grid", () => {
+    render(<App />);
+    act(() => onSnapshot(snapshot([], [bugTask("bt1", "monitoring")])));
+
+    act(() => onChange({ type: "bugtask", task: bugTask("bt1", "review-feedback") }));
+    expect(notifyBugTask).toHaveBeenCalledWith(expect.stringContaining("PAY-42"), "attention");
+
+    act(() => onChange({ type: "bugtask", task: bugTask("bt1", "approved") }));
+    expect(notifyBugTask).toHaveBeenCalledWith(expect.stringMatching(/PAY-42.*ready to merge/i), "attention");
+
+    act(() => onChange({ type: "bugtask", task: bugTask("bt1", "done", null, "merged") }));
+    expect(notifyBugTask).toHaveBeenCalledWith(expect.stringMatching(/PAY-42.*merged/i), "finished");
+  });
+
+  // The classification is the server's own durable `outcome`, not the error text: a merged task
+  // can legitimately carry an error (cleanup left behind), and a closed one's message is prose a
+  // copy edit could reword.
+  it("distinguishes a pr-closed ending from a merge by the recorded outcome, not the error text", () => {
+    render(<App />);
+    act(() => onSnapshot(snapshot([], [bugTask("bt2", "monitoring")])));
+    act(() => onChange({ type: "bugtask", task: bugTask("bt2", "done", "the forge says it went away", "closed") }));
+    expect(notifyBugTask).toHaveBeenCalledWith(expect.stringMatching(/PAY-42.*closed without merging/i), "finished");
+  });
+
+  it("still calls a merge a merge when cleanup left something behind", () => {
+    render(<App />);
+    act(() => onSnapshot(snapshot([], [bugTask("bt4", "monitoring")])));
+    act(() => onChange({ type: "bugtask", task: bugTask("bt4", "done", "worktree cleanup incomplete: …", "merged") }));
+    expect(notifyBugTask).toHaveBeenCalledWith(expect.stringMatching(/PAY-42.*merged/i), "finished");
+    expect(notifyBugTask).not.toHaveBeenCalledWith(expect.stringMatching(/closed without merging/i), "finished");
+  });
+
+  it("does not notify on a snapshot that merely reflects the already-current stage", () => {
+    render(<App />);
+    act(() => onSnapshot(snapshot([], [bugTask("bt3", "monitoring")])));
+    act(() => onSnapshot(snapshot([], [bugTask("bt3", "monitoring")])));
+    expect(notifyBugTask).not.toHaveBeenCalled();
   });
 });
 

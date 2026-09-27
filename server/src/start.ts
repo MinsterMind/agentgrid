@@ -14,12 +14,14 @@ import { attachPtyWebSocket } from "./api/ws.js";
 import { listAllSessions, listLiveSessions, LiveSessionWatcher } from "./sessions.js";
 import { SessionStatusWatcher } from "./sessionStatus.js";
 import { BugTaskStore } from "./bugfix/store.js";
-import { IntegrationsStore } from "./bugfix/integrations.js";
+import { IntegrationsStore, type Integrations } from "./bugfix/integrations.js";
 import { GitOps } from "./bugfix/git.js";
 import { makeForge } from "./bugfix/forge/index.js";
 import { mcpTracker, type TrackerProvider } from "./bugfix/tracker.js";
 import { BugFixEngine, recoverStuckBugTasks } from "./bugfix/engine.js";
+import { PrWatcher } from "./bugfix/watcher.js";
 import { fakeAgentQuery } from "./fake/agent.js";
+import { fakeForge, type ScriptedStep } from "./fake/forge.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -38,10 +40,27 @@ export interface StartOptions {
   presetsDir?: string;
   /** Scripted runner/terminal/sessions — no Claude Code needed (used by e2e). Default: AGENTGRID_FAKE. */
   fake?: boolean;
+  /** Fake mode only: scripts the fake forge's PR story for the watcher to discover. */
+  fakePrScript?: ScriptedStep[];
   log?: (msg: string) => void;
 }
 
 export interface RunningServer { port: number; url: string; home: string; close(): Promise<void> }
+
+/** Parses `AGENTGRID_FAKE_PR_SCRIPT` (a JSON array of `ScriptedStep`) into `fakePrScript`.
+ *  Undefined input (the env var unset) is fine — fake mode without a script is a normal,
+ *  supported thing. But if the var IS set and isn't valid JSON, or isn't an array, that's a
+ *  typo the caller needs to know about immediately: failing loudly at startup beats booting a
+ *  server that silently runs with no script, which just makes whatever depends on that script
+ *  (an e2e's Playwright web server, say) hang waiting for a story that never arrives. */
+export function parseFakePrScript(raw: string | undefined): ScriptedStep[] | undefined {
+  if (raw === undefined) return undefined;
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); }
+  catch (err) { throw new Error(`AGENTGRID_FAKE_PR_SCRIPT is not valid JSON: ${(err as Error).message}`); }
+  if (!Array.isArray(parsed)) throw new Error("AGENTGRID_FAKE_PR_SCRIPT must be a JSON array of ScriptedStep");
+  return parsed as ScriptedStep[];
+}
 
 // Scripted runner for UI e2e: every assignment asks one permission, then succeeds.
 
@@ -103,7 +122,14 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   await recoverStuckBugTasks(bugStore).catch(err => log(`bugfix: startup recovery failed: ${(err as Error).message}`));
 
   const integrations = new IntegrationsStore(home);
-  const cfg = await integrations.read();
+  // A corrupt integrations.json must not stop the server booting — the grid works without a
+  // tracker or forge — but it must not pass unmentioned either: booting with an empty config
+  // silently strips the tracker, the forge and the project->repo memory. Say it, then carry on
+  // with nothing configured.
+  const cfg = await integrations.read().catch((err: Error) => {
+    log(`bugfix: ${err.message}`);
+    return { projectRepos: {} } as Integrations;
+  });
   const presetsDir = opts.presetsDir ?? path.resolve(here, "..", "presets");
 
   // Fake mode: a canned tracker and forge so the whole flow can be exercised without Jira or gh.
@@ -113,18 +139,25 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       status: "Open", priority: "High", description: "A fake ticket used in fake mode.", acceptanceCriteria: ["it stops happening"] }),
     comment: async () => {},
   };
-  const fakeForge = {
-    name: "fake", authStatus: async () => ({ ok: true, message: "fake forge" }),
-    createPrCommand: () => "echo 'fake pr created'",
-    findPr: async () => ({ number: 1, url: "https://example.invalid/pr/1", state: "OPEN" as const, reviewDecision: null, checks: "SUCCESS", mergeable: "MERGEABLE", lastSeenEventAt: new Date().toISOString() }),
-  };
-
   const tracker = fake ? fakeTracker : (cfg.tracker ? mcpTracker(cfg.tracker, presetsDir) : null);
-  const forge = fake ? fakeForge : makeForge(cfg.forge);
+  // Only read the script in fake mode: it is used nowhere else, and a stale malformed value left
+  // in a real deployment's environment would otherwise throw here and stop the server booting.
+  const fakePrScript = fake ? (opts.fakePrScript ?? parseFakePrScript(process.env.AGENTGRID_FAKE_PR_SCRIPT)) : undefined;
+  const forge = fake ? fakeForge(fakePrScript ?? []) : makeForge(cfg.forge);
   const engine = tracker ? new BugFixEngine({ store, bugs: bugStore, manager, git: new GitOps(), integrations, tracker, forge, presetsDir }) : null;
   // Recovery already ran above (`recoverStuckBugTasks`, tracker or no tracker) —
   // `BugFixEngine` has no recovery step of its own to call.
   if (engine) engine.attach();
+
+  // The watcher polls the forge for tasks resting on an open PR and hands findings to the
+  // engine, which stays the only writer of task state. In fake mode it ticks fast so the
+  // offline tests and the e2e advance without waiting real minutes.
+  const prWatcher = engine && forge
+    ? new PrWatcher({ bugs: bugStore, forge, onFinding: f => engine.onPrFinding(f).catch(err => log(`bugfix: watcher finding failed: ${(err as Error).message}`)),
+        onChecked: (id, at) => engine.onPrChecked(id, at).catch(err => log(`bugfix: recording the poll failed: ${(err as Error).message}`)),
+        ...(fake ? { baseMs: 200, ceilingMs: 1_000 } : {}) })
+    : null;
+  prWatcher?.start(fake ? 100 : 1_000);
 
   const app = createApp({ store, manager, writeToTerminal: (sid, data) => ptys.write(sid, data), transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }),
     openTerminal, runInTerminal, staticDir, browseRoot: opts.browseRoot ?? process.env.AGENTGRID_BROWSE_ROOT, ...(fakeSessions ? { sessions: fakeSessions } : {}),
@@ -142,6 +175,6 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   log(`AgentGrid on ${url}  (data: ${home}${staticDir ? "" : ", UI not built"})`);
   return {
     port: bound, url, home,
-    close: () => new Promise<void>(resolve => { watcher.stop(); statuses.stop(); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }),
+    close: () => new Promise<void>(resolve => { watcher.stop(); statuses.stop(); prWatcher?.stop(); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }),
   };
 }

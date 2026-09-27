@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { nextStage } from "../../src/bugfix/stages.js";
-import type { BugStage, BugTask } from "../../src/bugfix/types.js";
+import type { BugEvent, BugStage, BugTask } from "../../src/bugfix/types.js";
 
 const task = (stage: BugStage, extra: Partial<BugTask> = {}): BugTask => ({
   id: "bt1",
   issue: { key: "PAY-1", title: "t", url: "u", status: "Open", priority: "High", description: "d", acceptanceCriteria: [] },
   trackerProject: "PAY", sourceRepo: "/r", worktree: "/r/.worktrees/bugfix-PAY-1", branch: "bugfix/PAY-1",
   baseBranch: "main", agentId: "bugfix@r", stage, gate: null, mergePolicy: "ask", mergeMethod: "squash",
-  pr: null, costUsd: 0, history: [], error: null, createdAt: "", updatedAt: "", ...extra,
+  pr: null, costUsd: 0, history: [], error: null, createdAt: "", updatedAt: "", feedbackRounds: 0, ...extra,
 });
 
 describe("nextStage — happy path through Phase 1", () => {
@@ -78,4 +78,103 @@ describe("nextStage — loops, failures, cancel", () => {
     expect(() => nextStage(task("plan-review"), { type: "stage-failed", reason: "x" })).toThrow(/plan-review/);
     expect(() => nextStage(task("diff-review"), { type: "stage-failed", reason: "x" })).toThrow(/diff-review/);
   });
+});
+
+const at = (stage: BugStage, extra: Partial<BugTask> = {}): BugTask => task(stage, extra);
+
+describe("Phase 2: the monitoring loop", () => {
+  it("changes requested and failing checks both open a feedback round", () => {
+    expect(nextStage(at("monitoring"), { type: "review-changes-requested", comments: "fix the leak" }))
+      .toMatchObject({ stage: "review-feedback", run: "review-feedback", note: "fix the leak" });
+    expect(nextStage(at("monitoring"), { type: "checks-failed", checks: "unit-tests" }))
+      .toMatchObject({ stage: "review-feedback", run: "review-feedback", note: "unit-tests" });
+  });
+
+  it("an approval opens the merge gate, and conflict opens a rebase", () => {
+    expect(nextStage(at("monitoring"), { type: "review-approved" }))
+      .toMatchObject({ stage: "approved", run: null, gate: { kind: "merge" } });
+    expect(nextStage(at("monitoring"), { type: "conflicting" }))
+      .toMatchObject({ stage: "rebase", run: "rebase" });
+  });
+
+  it("a PR closed without merging ends the task with a reason and no success", () => {
+    const t = nextStage(at("monitoring"), { type: "pr-closed" });
+    expect(t).toMatchObject({ stage: "done", run: null });
+    expect(t.error).toMatch(/closed without merging/i);
+    // The outcome is recorded explicitly, not left to be inferred from this message's wording
+    // or from a PR view a race can stale.
+    expect(t.outcome).toBe("closed");
+  });
+
+  it("records the merged outcome on the transition out of merging", () => {
+    const t = nextStage(at("merging"), { type: "stage-done" });
+    expect(t).toMatchObject({ stage: "done", run: null, outcome: "merged" });
+  });
+
+  it("refuses a monitoring event anywhere but monitoring", () => {
+    const events: BugEvent[] = [
+      { type: "review-changes-requested", comments: "x" },
+      { type: "checks-failed", checks: "x" },
+      { type: "review-approved" },
+      { type: "conflicting" },
+      { type: "pr-closed" },
+    ];
+    for (const event of events) {
+      expect(() => nextStage(at("implementing"), event)).toThrow(/only while monitoring/i);
+    }
+  });
+});
+
+describe("Phase 2: feedback and rebase land at the diff gate, then the server pushes", () => {
+  it("a verified feedback round opens the diff gate, labelled", () => {
+    expect(nextStage(at("review-feedback"), { type: "stage-done" }))
+      .toMatchObject({ stage: "diff-review", run: null, gate: { kind: "diff", reason: "feedback" } });
+    expect(nextStage(at("rebase"), { type: "stage-done" }))
+      .toMatchObject({ stage: "diff-review", run: null, gate: { kind: "diff", reason: "rebase" } });
+  });
+
+  it("approving a feedback diff pushes; approving an implement diff opens the PR", () => {
+    const feedback = at("diff-review", { gate: { kind: "diff", openedAt: "t", reason: "feedback" } });
+    expect(nextStage(feedback, { type: "approve" })).toMatchObject({ stage: "pushing", run: null });
+    const implement = at("diff-review", { gate: { kind: "diff", openedAt: "t" } });
+    expect(nextStage(implement, { type: "approve" })).toMatchObject({ stage: "opening-pr", run: "opening-pr" });
+  });
+
+  it("a successful push returns to monitoring", () => {
+    expect(nextStage(at("pushing"), { type: "stage-done" })).toMatchObject({ stage: "monitoring", run: null });
+  });
+
+  it("requesting changes at a labelled diff gate re-runs that same stage", () => {
+    const feedback = at("diff-review", { gate: { kind: "diff", openedAt: "t", reason: "feedback" } });
+    expect(nextStage(feedback, { type: "request-changes", text: "not quite" }))
+      .toMatchObject({ stage: "review-feedback", run: "review-feedback", note: "not quite" });
+    const rebase = at("diff-review", { gate: { kind: "diff", openedAt: "t", reason: "rebase" } });
+    expect(nextStage(rebase, { type: "request-changes", text: "redo" })).toMatchObject({ stage: "rebase", run: "rebase" });
+  });
+});
+
+describe("Phase 2: the merge gate", () => {
+  it("approving merges, and requesting changes sends it back to a feedback round", () => {
+    expect(nextStage(at("approved"), { type: "approve" })).toMatchObject({ stage: "merging", run: null });
+    expect(nextStage(at("approved"), { type: "request-changes", text: "one more thing" }))
+      .toMatchObject({ stage: "review-feedback", run: "review-feedback", note: "one more thing" });
+  });
+
+  it("a confirmed merge ends the task", () => {
+    expect(nextStage(at("merging"), { type: "stage-done" })).toMatchObject({ stage: "done", run: null });
+  });
+
+  it("still refuses stage-failed at a gate, including the new one", () => {
+    expect(() => nextStage(at("approved"), { type: "stage-failed", reason: "x" })).toThrow(/waiting on a human/i);
+  });
+
+  it("a failed server stage is retryable", () => {
+    const failed = at("failed", { history: [{ stage: "pushing", at: "t", note: "" }, { stage: "failed", at: "t", note: "" }] });
+    expect(nextStage(failed, { type: "retry" })).toMatchObject({ stage: "pushing", run: null });
+  });
+});
+
+it("an externally merged PR routes to the same merging stage", () => {
+  expect(nextStage(at("monitoring"), { type: "pr-merged" })).toMatchObject({ stage: "merging", run: null });
+  expect(() => nextStage(at("implementing"), { type: "pr-merged" })).toThrow(/only while monitoring/i);
 });

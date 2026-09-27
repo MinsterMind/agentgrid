@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { BugTaskStore } from "../../src/bugfix/store.js";
 import { NotFound } from "../../src/store/store.js";
-import type { TrackerIssue } from "../../src/bugfix/types.js";
+import type { PrInfo, TrackerIssue } from "../../src/bugfix/types.js";
 
 const issue: TrackerIssue = { key: "PAY-42", title: "Boom", url: "https://x/PAY-42", status: "Open", priority: "High", description: "d", acceptanceCriteria: ["a"] };
 let home: string; let store: BugTaskStore; let events: unknown[];
@@ -24,9 +24,20 @@ describe("BugTaskStore", () => {
     const t = await mk();
     expect(t.id).toBe("bt1");
     expect(t).toMatchObject({ stage: "intake", gate: null, pr: null, error: null, costUsd: 0 });
+    expect(t.feedbackRounds).toBe(0);
     expect(JSON.parse(await readFile(path.join(home, "bugtasks", "bt1.json"), "utf8"))).toEqual(t);
     expect(events).toEqual([{ type: "bugtask", task: t }]);
     expect((await mk()).id).toBe("bt2");
+  });
+
+  it("normalises a task written before feedbackRounds existed to 0 on load", async () => {
+    const t = await mk();
+    const raw = JSON.parse(await readFile(path.join(home, "bugtasks", `${t.id}.json`), "utf8"));
+    delete raw.feedbackRounds;
+    await writeFile(path.join(home, "bugtasks", `${t.id}.json`), JSON.stringify(raw));
+    const reloaded = new BugTaskStore(home);
+    await reloaded.init();
+    expect(reloaded.get(t.id).feedbackRounds).toBe(0);
   });
 
   it("reloads from disk and continues the id counter", async () => {
@@ -115,5 +126,72 @@ describe("BugTaskStore concurrent mutations", () => {
     const after = store.get(t.id);
     expect(after.stage).toBe("cancelled");
     expect(after.history.map(h => h.stage)).toEqual(["intake", "analyzing", "cancelled"]);
+  });
+});
+
+describe("remove", () => {
+  it("deletes the task file and its artifacts, and emits bugtask-removed", async () => {
+    const t = await mk();
+    await store.writeArtifact(t.id, "plan.md", "# Plan");
+    const dir = store.dir(t.id);   // capture before removal — a pure string join, no I/O
+    await store.remove(t.id);
+    expect(() => store.get(t.id)).toThrow(NotFound);
+    await expect(readFile(path.join(home, "bugtasks", `${t.id}.json`), "utf8")).rejects.toThrow();
+    await expect(store.readArtifact(t.id, "plan.md")).rejects.toThrow(NotFound);
+    // `readArtifact` above throws NotFound because the *task* is gone (its own `get(id)`
+    // guard), which would pass even if the artifacts directory were never actually deleted —
+    // assert on the directory itself, not on an already-guarded read of it.
+    await expect(stat(dir)).rejects.toThrow();
+    expect(events.at(-1)).toEqual({ type: "bugtask-removed", id: t.id });
+
+    // gone from a reload too
+    const reloaded = new BugTaskStore(home);
+    await reloaded.init();
+    expect(reloaded.list()).toEqual([]);
+  });
+
+  it("unknown ids throw NotFound without emitting", async () => {
+    const before = events.length;
+    await expect(store.remove("bt999")).rejects.toThrow(NotFound);
+    expect(events.length).toBe(before);
+  });
+});
+
+/**
+ * C2: the watcher's PR view is written outside the engine's per-task lock, so a tick whose
+ * `getPr` was already in flight can land after a newer view (the merge's own bookkeeping).
+ * `patchPr` is where that is decided, so the rule is tested here rather than hoped for.
+ */
+describe("patchPr", () => {
+  const view = (over: Partial<PrInfo> = {}): PrInfo => ({ number: 7, url: "https://x/pr/7", state: "OPEN",
+    reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: "abc", lastSeenEventAt: "t", ...over });
+
+  it("records the view and when it was read", async () => {
+    const t = await mk();
+    const after = await store.patchPr(t.id, view(), "2026-09-27T10:00:00Z");
+    expect(after.pr).toMatchObject({ state: "OPEN" });
+    expect(after.prCheckedAt).toBe("2026-09-27T10:00:00Z");
+  });
+
+  it("drops a view that was read before the one already stored", async () => {
+    const t = await mk();
+    await store.patchPr(t.id, view({ state: "MERGED" }), "2026-09-27T10:00:05Z");
+    const after = await store.patchPr(t.id, view({ state: "OPEN" }), "2026-09-27T10:00:00Z");
+    expect(after.pr).toMatchObject({ state: "MERGED" });
+    expect(after.prCheckedAt).toBe("2026-09-27T10:00:05Z");
+  });
+
+  it("never downgrades a confirmed merge, whatever the timestamps say", async () => {
+    const t = await mk();
+    await store.patchPr(t.id, view({ state: "MERGED" }), "2026-09-27T10:00:00Z");
+    const after = await store.patchPr(t.id, view({ state: "OPEN" }), "2026-09-27T10:00:09Z");
+    expect(after.pr).toMatchObject({ state: "MERGED" });
+  });
+
+  it("accepts a newer view, including one that confirms the merge", async () => {
+    const t = await mk();
+    await store.patchPr(t.id, view({ checks: "PENDING" }), "2026-09-27T10:00:00Z");
+    const after = await store.patchPr(t.id, view({ state: "MERGED" }), "2026-09-27T10:00:05Z");
+    expect(after.pr).toMatchObject({ state: "MERGED" });
   });
 });

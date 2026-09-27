@@ -89,6 +89,37 @@ describe("api client", () => {
     expect(result).toEqual({ id: "bt1", stage: "analyzing" });
   });
 
+  it("approveBug: POST /api/bugtasks/:id/approve with a mergeMethod", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ id: "bt1", stage: "merging" }));
+    const result = await api.approveBug("bt1", "merge");
+    expect(fetchMock).toHaveBeenCalledWith("/api/bugtasks/bt1/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mergeMethod: "merge" }),
+    });
+    expect(result).toEqual({ id: "bt1", stage: "merging" });
+  });
+
+  it("addressComments: POST /api/bugtasks/:id/address-comments, with and without text", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: "bt1", stage: "review-feedback" }));
+    await api.addressComments("bt1");
+    expect(fetchMock).toHaveBeenCalledWith("/api/bugtasks/bt1/address-comments", { method: "POST", headers: {}, body: undefined });
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: "bt1", stage: "review-feedback" }));
+    await api.addressComments("bt1", "please also cover the retry path");
+    expect(fetchMock).toHaveBeenCalledWith("/api/bugtasks/bt1/address-comments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "please also cover the retry path" }),
+    });
+  });
+
+  it("dismissBug: DELETE /api/bugtasks/:id", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+    const result = await api.dismissBug("bt1");
+    expect(fetchMock).toHaveBeenCalledWith("/api/bugtasks/bt1", { method: "DELETE", headers: {}, body: undefined });
+    expect(result).toBeUndefined();
+  });
+
   it("myIssues: GET /api/bugfix/issues", async () => {
     fetchMock.mockResolvedValue(jsonResponse([{ key: "PAY-1" }]));
     const result = await api.myIssues();

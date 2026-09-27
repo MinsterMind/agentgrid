@@ -1,6 +1,6 @@
 import path from "node:path";
 import { stat } from "node:fs/promises";
-import { Conflict } from "../store/store.js";
+import { Conflict, NotFound } from "../store/store.js";
 import type { Store } from "../store/store.js";
 import type { Manager } from "../runner/manager.js";
 import type { Assignment } from "../types.js";
@@ -9,9 +9,29 @@ import { GitOps, branchName, worktreePath, type DiffResult } from "./git.js";
 import { IntegrationsStore } from "./integrations.js";
 import type { ForgeAdapter } from "./forge/index.js";
 import type { TrackerProvider } from "./tracker.js";
-import { renderStagePrompt } from "./prompts.js";
+import { renderStagePrompt, type StageNote } from "./prompts.js";
 import { nextStage } from "./stages.js";
-import { AGENT_STAGES, RECOVERABLE_STAGES, TERMINAL_STAGES, type BugStage, type BugTask } from "./types.js";
+import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask } from "./types.js";
+import { describeComments, type PrFinding } from "./watcher.js";
+import type { MergeMethod } from "./forge/types.js";
+
+/** After this many rounds the watcher's findings stop dispatching and only report. A
+ *  pathological review thread should not quietly spend the user's budget. */
+export const FEEDBACK_ROUND_CAP = 5;
+
+/** Prefix of the "the forge could not be read" note. One constant because three places have to
+ *  agree on it: the write, the clear once a poll succeeds again, and the card that renders it. */
+export const UNREACHABLE = "could not check the pull request:";
+
+/**
+ * Every watcher event type that routes to `review-feedback` (see `nextStage`'s
+ * "review-changes-requested"/"checks-failed" cases in stages.ts). The cap in `onPrFinding`
+ * applies to this whole set, not to one member of it: it exists to stop the *watcher* from
+ * spending the user's budget unattended, and that purpose doesn't care which kind of finding
+ * is what keeps re-triggering a round — a PR whose CI keeps failing burns exactly as much
+ * agent time per round as one whose reviewers keep asking for changes.
+ */
+const REVIEW_FEEDBACK_EVENTS: ReadonlySet<BugEvent["type"]> = new Set(["review-changes-requested", "checks-failed"]);
 
 /**
  * Startup recovery. Needs only the bug store — no tracker, forge, manager or
@@ -43,8 +63,9 @@ export interface EngineDeps {
 export class BugFixEngine {
   readonly deps: EngineDeps;
   private role: string;
-  /** Notes from a "request changes" gate, consumed by the next render. */
-  private pendingNote = new Map<string, string>();
+  /** Notes from a gate or a review round, consumed by the next render. The note carries whether
+   *  its words are the operator's (obeyable) or the forge's (data) — see `StageNote`. */
+  private pendingNote = new Map<string, StageNote>();
   /** Guards `attach()` against registering a second listener on a repeat call. */
   private attached = false;
   /**
@@ -177,6 +198,66 @@ export class BugFixEngine {
   approve(taskId: string): Promise<BugTask> { return this.advance(taskId, { type: "approve" }); }
   cancel(taskId: string): Promise<BugTask> { return this.advance(taskId, { type: "cancel" }); }
   retry(taskId: string): Promise<BugTask> { return this.advance(taskId, { type: "retry" }); }
+
+  /** The merge gate's approve. When a method is chosen at the gate, it's recorded before the
+   *  transition runs, so `doMerge` reads the one the human actually picked, not the task's
+   *  default from intake — but only once the task is actually sitting at the merge gate. The
+   *  same principle as `requestChanges`'s own note (see its comment): a call that turns out
+   *  not to be valid here (`approve` below will throw for it) must not leave a method choice
+   *  behind for whatever the next successful transition happens to be. */
+  async mergeTask(taskId: string, method?: MergeMethod): Promise<BugTask> {
+    if (method && this.deps.bugs.get(taskId).stage === "approved") {
+      await this.deps.bugs.patch(taskId, { mergeMethod: method });
+    }
+    return this.approve(taskId);
+  }
+
+  /** Removes a finished task and its agent. Refused while the task is still live — dismissing
+   *  a running task would strand its agent mid-assignment with nothing left to ack it. */
+  async dismiss(taskId: string): Promise<void> {
+    const task = this.deps.bugs.get(taskId);
+    if (!TERMINAL_STAGES.includes(task.stage)) throw new Conflict(`task ${taskId} is still running (${task.stage})`);
+    // Only "already archived" (NotFound, from archiveAgent's own `getAgent` guard) is fine to
+    // swallow here — a genuine failure (e.g. EPERM renaming the agent directory) must not be
+    // silently eaten, or it orphans the agent directory with nothing left to report it.
+    await this.deps.store.archiveAgent(task.agentId).catch(err => { if (!(err instanceof NotFound)) throw err; });
+    this.currentDispatch.delete(task.id);
+    await this.deps.bugs.remove(task.id);
+  }
+
+  /**
+   * A feedback round the user asked for, from the monitoring card. It deliberately ignores
+   * FEEDBACK_ROUND_CAP: the cap exists to stop the *watcher* spending money unattended, and a
+   * human clicking the button is the opposite of unattended. Routes through the same
+   * "review-changes-requested" transition a watcher finding would (`nextStage` only accepts
+   * that event while "monitoring", so this is refused anywhere else, same as a watcher's own
+   * finding would be).
+   */
+  async addressComments(taskId: string, text?: string): Promise<BugTask> {
+    const task = this.deps.bugs.get(taskId);
+    const trimmed = text?.trim();
+    // The human's own words are the operator speaking; anything read back off the pull request
+    // is forge text, whoever asked for it to be fetched.
+    const comments = trimmed || (await this.recentComments(task));
+    return this.advance(taskId, { type: "review-changes-requested", comments, source: trimmed ? "operator" : "forge" });
+  }
+
+  /** Comments the click itself didn't supply: read fresh from the forge since the PR's last
+   *  seen event, and render them the same way the watcher's own `decide()` does (via the
+   *  shared `describeComments`) — so a manual round reads no differently from an automatic
+   *  one. Falls back to a short, generic note rather than failing the click when the forge
+   *  can't be read: a human pressing "address these" is not asking for a network diagnostic. */
+  private async recentComments(task: BugTask): Promise<string> {
+    const { forge } = this.deps;
+    if (!forge || !task.pr) return "see the pull request";
+    try {
+      const events = await forge.listReviewEvents(task.sourceRepo, task.pr.number, task.pr.lastSeenEventAt);
+      return describeComments(events) || "see the pull request";
+    } catch {
+      return "see the pull request";
+    }
+  }
+
   async requestChanges(taskId: string, text: string): Promise<BugTask> {
     if (!text.trim()) throw new Conflict("say what should change");
     // The note is stored inside `advanceLocked`, only once the transition itself has
@@ -186,6 +267,52 @@ export class BugFixEngine {
     // stage dispatch turned out to be, appearing as a reviewer note on a stage no
     // reviewer commented on.
     return this.advance(taskId, { type: "request-changes", text: text.trim() });
+  }
+
+  /**
+   * Apply a watcher finding. The watcher never writes task state; this is where its findings
+   * become transitions, under the same per-task lock as every other mutation.
+   */
+  async onPrFinding(f: PrFinding): Promise<void> {
+    const task = this.deps.bugs.get(f.taskId);
+    // Nothing was read, so there is no fresher view to record — `f.pr` on this path is the LAST
+    // KNOWN view echoed back, and writing it would advance `prCheckedAt` to a moment at which
+    // the forge was in fact unreadable, making the card's "Last checked" claim a poll that
+    // failed.
+    if (f.unavailable) { await this.deps.bugs.patch(task.id, { error: `${UNREACHABLE} ${f.unavailable}` }); return; }
+    // `patchPr`, not `patch`: this write happens outside `advance()`'s per-task chain, and
+    // `approved` is a watched stage — see `BugTaskStore.patchPr` for the staleness rule and the
+    // race it exists to lose safely.
+    if (f.pr) await this.deps.bugs.patchPr(task.id, f.pr, f.checkedAt ?? new Date().toISOString());
+    await this.clearUnreachable(task.id);
+    if (!f.event) return;
+    if (REVIEW_FEEDBACK_EVENTS.has(f.event.type) && task.feedbackRounds >= FEEDBACK_ROUND_CAP) {
+      await this.deps.bugs.patch(task.id, { error: `this task has hit ${task.feedbackRounds} feedback rounds; AgentGrid has stopped dispatching after ${FEEDBACK_ROUND_CAP} feedback rounds — use "Ask the agent to address these" to continue` });
+      return;
+    }
+    await this.advance(task.id, f.event);
+  }
+
+  /**
+   * A tick that read the forge cleanly and found nothing different (see `WatcherDeps.onChecked`).
+   * There is no new PR view to record, but the poll happened: the card's "Last checked" moves, and
+   * a stale "couldn't reach the forge" note clears. Nothing here touches stage, so it needs no
+   * place in `advance()`'s chain.
+   */
+  async onPrChecked(taskId: string, checkedAt: string): Promise<void> {
+    const task = this.deps.bugs.get(taskId);
+    // Cosmetic ordering only — a concurrent finding's own (newer) stamp must not be walked
+    // backwards by a quiet tick that started looking earlier.
+    if (!task.prCheckedAt || task.prCheckedAt <= checkedAt) await this.deps.bugs.patch(taskId, { prCheckedAt: checkedAt });
+    await this.clearUnreachable(taskId);
+  }
+
+  /** Drop the "couldn't reach the forge" note now that the forge has been reached. Only that
+   *  note: an error saying something else — the feedback-round cap, above all, which is the
+   *  user's one signal that the watcher has stopped dispatching — must survive a successful
+   *  poll, since nothing about the poll answers it. */
+  private async clearUnreachable(taskId: string): Promise<void> {
+    if (this.deps.bugs.get(taskId).error?.startsWith(UNREACHABLE)) await this.deps.bugs.patch(taskId, { error: null });
   }
 
   async diffFor(taskId: string): Promise<DiffResult> {
@@ -209,9 +336,28 @@ export class BugFixEngine {
   private async advanceLocked(taskId: string, event: Parameters<typeof nextStage>[1]): Promise<BugTask> {
     const current = this.deps.bugs.get(taskId);
     const t = nextStage(current, event); // throws for an invalid transition — nothing below runs, including storing a note
-    if (event.type === "request-changes") this.pendingNote.set(taskId, event.text);
+    // These three event types all carry the text a review-feedback (or rebase) dispatch must
+    // see as its `note` — a human's own request-changes text, a reviewer's forge comments, or
+    // a checks failure — the same way `request-changes` already did before Phase 2.
+    // `trusted` says whose words these are, which is what decides whether the prompt fences them:
+    // a human at this console typed the request-changes text (and may have typed an
+    // `addressComments` one, hence `source`); reviewer comments and checks messages come off the
+    // pull request and are data.
+    if (event.type === "request-changes") this.pendingNote.set(taskId, { text: event.text, trusted: true });
+    if (event.type === "review-changes-requested") this.pendingNote.set(taskId, { text: event.comments, trusted: event.source === "operator" });
+    if (event.type === "checks-failed") this.pendingNote.set(taskId, { text: event.checks, trusted: false });
+    // Record which head's red build this round answers, so the watcher can tell a build it has
+    // already answered from a new one (see `BugTask.checksRoundHead`). Written only now, after
+    // `nextStage` accepted the transition — a refused event must leave nothing behind.
+    if (event.type === "checks-failed") await this.deps.bugs.patch(taskId, { checksRoundHead: event.headSha });
     let task = await this.deps.bugs.apply(taskId, t);
     await this.settleTerminal(task);
+    // A server stage is work the engine does itself: no assignment, no agent, no tokens. It
+    // still reports stage-done/stage-failed, so failure and retry behave exactly as for an
+    // agent stage. Fire it detached — it calls back into `advance`, which would deadlock on
+    // this task's own chain link if awaited here (the same reason `onAssignmentFinished` is
+    // detached from the store's event listener rather than awaited there).
+    if (SERVER_STAGES.includes(task.stage)) { void this.runServerStage(task); return task; }
     if (!t.run) return task;
     try {
       task = await this.runStage(task, t.run);
@@ -260,6 +406,10 @@ export class BugFixEngine {
         throw new Error(`the branch moved since the diff was approved: approved ${task.approvedHead}, HEAD is now ${head}. Review the new diff (request changes, then approve again) before opening a pull request.`);
       }
     }
+    // A restart cannot reset a task's feedback-round budget against the cap (`feedbackRounds`
+    // is durable), so this has to land before dispatch, not after — a stage that failed after
+    // dispatching still counts as one round spent, not a free retry of the cap itself.
+    if (stage === "review-feedback") await this.deps.bugs.patch(task.id, { feedbackRounds: task.feedbackRounds + 1 });
     const prompt = await renderStagePrompt(stage, task, ctx, this.deps.presetsDir);
     this.pendingNote.delete(task.id);
 
@@ -311,6 +461,165 @@ export class BugFixEngine {
       throw new Error(settled.error ?? "the agent's run failed before the stage could start");
     }
     return bugs.get(task.id);
+  }
+
+  /** Runs a `SERVER_STAGES` stage: no assignment, no agent — the engine does the work itself
+   *  and reports stage-done/stage-failed exactly as `onAssignmentFinished` does for an agent
+   *  stage, so retry and failure handling behave identically either way. */
+  private async runServerStage(task: BugTask): Promise<void> {
+    try {
+      // "merging"'s cleanup message (if any) has to land *after* the stage-done transition
+      // below, not before it: `nextStage`'s "merging" case advances to "done" via `go(...)`,
+      // which always writes `error: null` — a patch made before that transition would just be
+      // clobbered by it. `doMerge` reports the message back instead of writing it itself.
+      let cleanupError: string | null = null;
+      if (task.stage === "pushing") await this.doPush(task);
+      else if (task.stage === "merging") cleanupError = await this.doMerge(task);
+      await this.advance(task.id, { type: "stage-done" });
+      if (cleanupError) await this.deps.bugs.patch(task.id, { error: cleanupError });
+    } catch (err) {
+      await this.advance(task.id, { type: "stage-failed", reason: (err as Error).message }).catch(() => {});
+    }
+  }
+
+  /** Push the task's branch for an approved feedback or rebase diff. The server acts here,
+   *  not an agent: no tokens, no improvisation, just the exact commit the human approved. */
+  private async doPush(task: BugTask): Promise<void> {
+    const { git, forge, bugs } = this.deps;
+    // Re-check the pin against the commit the human approved. The gate could have opened
+    // minutes ago; anything that moved HEAD since is unreviewed.
+    const head = await git.revParse(task.worktree);
+    if (head !== task.approvedHead) {
+      throw new Error(`the branch moved since the diff was approved: approved ${task.approvedHead}, HEAD is now ${head}. Review the new diff (request changes, then approve again) before pushing.`);
+    }
+    // The gate that recorded which round this was is already gone by the time this runs —
+    // the transition into "pushing" clears it (`gate: null`) — so read it from the task's own
+    // history instead: the most recent entry naming an agent stage. "rebase" means force (a
+    // lease, never a bare force — see GitOps.push); "review-feedback" (or nothing found)
+    // means a plain push.
+    const lastRound = [...task.history].reverse().find(h => h.stage === "review-feedback" || h.stage === "rebase");
+    const force = lastRound?.stage === "rebase";
+    await git.push(task.worktree, task.branch, { force });
+    if (!forge || !task.pr) return;
+    // Verify rather than trust: confirm the PR actually carries what was just pushed.
+    const readAt = new Date().toISOString();
+    const lookup = await forge.getPr(task.sourceRepo, task.pr.number);
+    if ("found" in lookup && lookup.found) {
+      await bugs.patchPr(task.id, lookup.found, readAt);
+      // `headSha` is the server's only proof a push landed (Task 1). An adapter that doesn't
+      // report it gives null here — skip the comparison rather than failing on an absence of
+      // evidence either way.
+      if (lookup.found.headSha && lookup.found.headSha !== head) {
+        throw new Error(`the pull request is still on ${lookup.found.headSha} after the push`);
+      }
+    }
+  }
+
+  /** The merge gate's approve, executed server-side. The only irreversible step in the whole
+   *  workflow — a merge cannot be undone, and teardown destroys a worktree and a branch — so
+   *  everything here is ordered to fail safe: verify before merging, verify again before
+   *  tearing anything down, and never let a cleanup problem hide a merge that already happened.
+   *
+   *  Returns the cleanup message when teardown left something behind, or null when it's
+   *  clean — the caller (`runServerStage`) applies it as the task's `error` *after* the
+   *  stage-done transition lands, since that transition unconditionally clears `error`. */
+  private async doMerge(task: BugTask): Promise<string | null> {
+    const { forge, bugs, git, tracker } = this.deps;
+    if (!forge) throw new Error("no forge adapter: cannot merge");
+    if (!task.pr) throw new Error("no pull request recorded for this task");
+
+    // This stage is reached two ways, and only one of them may actually call `forge.merge`.
+    // The merge gate's own `approve` passes through "approved" first (`wait("approved",
+    // "merge")`, then `serverRun("merging")` on the next approve) — a human explicitly gated
+    // it. The watcher's `pr-merged` finding (see stages.ts) jumps straight from "monitoring"
+    // to "merging", with no gate at all: it exists to *confirm* a merge that already happened
+    // in the browser, not to request one. Without this distinction, a watcher or adapter that
+    // ever misreports a still-open PR as MERGED would cause this server to perform a real
+    // merge with no human in the loop and no gate ever opened — the one place this task must
+    // not fail open on an irreversible action. So: derive the entry route from history (the
+    // same shape `doPush` uses for its force flag) and let only the gated route call merge;
+    // the ungated route may only confirm, and must fail the stage — never merge — when the PR
+    // doesn't already read MERGED.
+    //
+    // Skip "failed" as well as "merging": `retry` re-enters "merging" directly (stages.ts's
+    // `retry` case resumes a failed SERVER_STAGES stage with `serverRun(last.stage)`), so a
+    // gated merge that failed and got retried has "failed" sitting on top of the "approved"
+    // that actually gated it — without skipping it too, a retry of a failed *gated* merge
+    // would misread as the ungated route and refuse forever, with no way out but merging in
+    // the browser or dismissing the task. Skipping both still leaves the ungated route
+    // correctly ungated: its nearest non-"merging"/"failed" entry is "monitoring", never
+    // "approved", however many retries pile "merging"/"failed" pairs on top of it — and an
+    // *older* "approved" from an earlier, since-rejected merge-gate visit stays shadowed by
+    // whatever more recent stage (e.g. another "monitoring") sits between it and here.
+    const enteredFromGate = [...task.history].reverse().find(h => h.stage !== "merging" && h.stage !== "failed")?.stage === "approved";
+
+    // An externally merged PR arrives here too (pr-merged). Re-read before doing anything:
+    // merging something already merged is at best noise and at worst an error we would
+    // report as a failure.
+    const before = await forge.getPr(task.sourceRepo, task.pr.number);
+    // Defence in depth: a forge that ever returned a lookup for the wrong PR and happened to
+    // read MERGED would otherwise satisfy `alreadyMerged` and tear down a branch that was
+    // never actually merged. Cheap to check, and this is the one path where "cheap" still
+    // matters more than "the only adapter here can't currently do this".
+    if ("found" in before && before.found && before.found.number !== task.pr.number) {
+      throw new Error(`the forge returned pull request #${before.found.number} instead of the expected #${task.pr.number}`);
+    }
+    const alreadyMerged = "found" in before && before.found?.state === "MERGED";
+    if (!alreadyMerged && !enteredFromGate) {
+      const seen = "unavailable" in before ? `unavailable: ${before.unavailable}` : "found" in before && before.found ? `still ${before.found.state}` : "not found";
+      throw new Error(`the pull request has not merged yet (${seen}) — refusing to merge without a gate approval`);
+    }
+    if (!alreadyMerged) {
+      const res = await forge.merge(task.sourceRepo, task.pr.number, task.mergeMethod);
+      if (!res.ok) throw new Error(res.message);
+    }
+
+    // Verify rather than trust: the merge call succeeding is not the same as the PR being merged.
+    const afterReadAt = new Date().toISOString();
+    const after = await forge.getPr(task.sourceRepo, task.pr.number);
+    if ("found" in after && after.found && after.found.number !== task.pr.number) {
+      throw new Error(`the forge returned pull request #${after.found.number} instead of the expected #${task.pr.number}`);
+    }
+    if (!("found" in after) || after.found?.state !== "MERGED") {
+      throw new Error(`the pull request did not come back merged${"unavailable" in after ? ` (${after.unavailable})` : ""}`);
+    }
+    // From here on, the merge is a fact. Every remaining step is best-effort: a failure in
+    // any one of them must be folded into the cleanup message, never propagate and present a
+    // merged task as a failed one. `noteProblem` accumulates them all the same way.
+    let cleanup: string | null = null;
+    const noteProblem = (msg: string) => { cleanup = cleanup ? `${cleanup} Also: ${msg}` : msg; };
+
+    try {
+      await bugs.patchPr(task.id, after.found, afterReadAt);
+    } catch (err) {
+      noteProblem(`could not record the merged pull request: ${(err as Error).message}`);
+    }
+
+    // The remote branch, which `forge.merge` deliberately does not ask the forge to delete (see
+    // the adapter's own comment): doing it here means a delete that fails — a protected branch, a
+    // remote that already removed it, no network — becomes a line in the cleanup note instead of
+    // a merge that reports as a failure.
+    try {
+      await git.deleteRemoteBranch(task.sourceRepo, task.branch);
+    } catch (err) {
+      noteProblem(`could not delete the remote branch ${task.branch}: ${(err as Error).message}. Delete it with: git -C ${task.sourceRepo} push origin --delete ${task.branch}`);
+    }
+
+    // Only now, with the merge confirmed, is it safe to destroy anything.
+    try {
+      await git.removeWorktree(task.sourceRepo, task.worktree, task.branch);
+    } catch (err) {
+      noteProblem(`${(err as Error).message}. Left behind: ${task.worktree} and branch ${task.branch} — clear them with: git -C ${task.sourceRepo} worktree remove --force ${task.worktree} && git -C ${task.sourceRepo} branch -D ${task.branch}`);
+    }
+    try {
+      await this.stopAgent(task);
+    } catch (err) {
+      noteProblem(`could not free the agent after merging: ${(err as Error).message}`);
+    }
+    try {
+      await tracker.comment(task.issue.key, `Fixed by ${after.found.url} (merged).`);
+    } catch { /* the ticket is a courtesy; never fail a merged task over it */ }
+    return cleanup;
   }
 
   /** An assignment finished: verify the stage's real-world effect, then advance or fail. */
@@ -371,6 +680,44 @@ export class BugFixEngine {
       await bugs.writeArtifact(task.id, "diffstat.json", JSON.stringify({ files: diff.files, additions: diff.additions, deletions: diff.deletions }, null, 2));
       return;
     }
+    if (task.stage === "review-feedback") {
+      // Same branch check as "implementing" — the agent may have switched branches or
+      // detached HEAD inside the worktree.
+      const branch = await git.currentBranch(task.worktree);
+      if (branch !== task.branch) throw new Error(`worktree is on ${branch}, not the task branch ${task.branch}`);
+      // "New" means new relative to what the PR already has — commits from the previous round
+      // are not evidence this round did anything. `approvedHead` is exactly that reference
+      // point: the commit the human last approved, whether at the original diff gate or at the
+      // end of an earlier feedback round.
+      const head = await git.revParse(task.worktree);
+      if (head === task.approvedHead) throw new Error("no new commits addressing the review feedback");
+      const diff = await git.diff(task.worktree, task.baseBranch);
+      await bugs.patch(task.id, { approvedHead: head });
+      await bugs.writeArtifact(task.id, "diff.patch", diff.patch);
+      await bugs.writeArtifact(task.id, "diffstat.json", JSON.stringify({ files: diff.files, additions: diff.additions, deletions: diff.deletions }, null, 2));
+      return;
+    }
+    if (task.stage === "rebase") {
+      // Same branch check as "implementing"/"review-feedback" — the agent may have switched
+      // branches or detached HEAD inside the worktree.
+      const branch = await git.currentBranch(task.worktree);
+      if (branch !== task.branch) throw new Error(`worktree is on ${branch}, not the task branch ${task.branch}`);
+      // The server verifies rather than trusts: a rebase left half-finished, or with
+      // conflict markers still standing, must fail the stage rather than reach a human as
+      // "ready" — the preset tells the agent to finish and leave `git status` clean, but
+      // this is what actually enforces it.
+      const state = await git.rebaseState(task.worktree);
+      if (state.inProgress) throw new Error(`the rebase is not finished — still conflicted: ${state.conflicted.join(", ") || "unknown files"}`);
+      if (state.conflicted.length) throw new Error(`conflicts are unresolved in: ${state.conflicted.join(", ")}`);
+      if ((await git.commitsAhead(task.worktree, task.baseBranch)) === 0) throw new Error("nothing left on the branch after the rebase");
+      const diff = await git.diff(task.worktree, task.baseBranch);
+      // A rebase legitimately moves HEAD — re-pin `approvedHead` to the post-rebase head, or
+      // the eventual push's own pin check would fail every real rebase (Task 6's dependency).
+      await bugs.patch(task.id, { approvedHead: await git.revParse(task.worktree) });
+      await bugs.writeArtifact(task.id, "diff.patch", diff.patch);
+      await bugs.writeArtifact(task.id, "diffstat.json", JSON.stringify({ files: diff.files, additions: diff.additions, deletions: diff.deletions }, null, 2));
+      return;
+    }
     if (task.stage === "opening-pr") {
       // `runStage`'s pin check only runs BEFORE dispatch: it proves HEAD hadn't moved at
       // the moment this stage was launched, not that it stayed put for the run's whole
@@ -414,7 +761,17 @@ export class BugFixEngine {
   private async settleTerminal(task: BugTask): Promise<void> {
     if (!TERMINAL_STAGES.includes(task.stage)) return;
     this.currentDispatch.delete(task.id);
-    await this.stopAgent(task);
+    // Best-effort, deliberately guarded: the task's transition into a terminal stage has
+    // already landed and persisted by the time this runs, so a failure here (`stopAgent`'s
+    // own `store.getAgent` throwing when the agent was archived out from under the task) must
+    // never make this call's caller believe the transition itself failed. This matters
+    // beyond hygiene for "merging" -> "done": `doMerge` already folds a `stopAgent` failure
+    // of its own into the cleanup message it returns, but `runServerStage` only applies that
+    // message *after* `advance(stage-done)` resolves — and that `advance()` call is exactly
+    // what runs this method. An unguarded throw here would reject that `advance()` before the
+    // message is ever patched onto the task, silently discarding it even though the merge
+    // (and the message) both already happened.
+    await this.stopAgent(task).catch(() => {});
   }
 
   private async stopAgent(task: BugTask): Promise<void> {

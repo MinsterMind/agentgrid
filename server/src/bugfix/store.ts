@@ -1,8 +1,8 @@
 import { EventEmitter } from "node:events";
-import { mkdir, readdir, readFile, writeFile, rename } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { NotFound } from "../store/store.js";
-import { TERMINAL_STAGES, type BugTask, type TrackerIssue, type Transition } from "./types.js";
+import { TERMINAL_STAGES, type BugTask, type PrInfo, type TrackerIssue, type Transition } from "./types.js";
 
 let seq = 0;
 const writeChains = new Map<string, Promise<unknown>>();
@@ -48,6 +48,12 @@ export class BugTaskStore extends EventEmitter {
     await mkdir(this.root, { recursive: true });
     for (const f of (await readdir(this.root)).filter(f => f.endsWith(".json"))) {
       const t = JSON.parse(await readFile(path.join(this.root, f), "utf8")) as BugTask;
+      // Records written before this field existed load without it — normalise here, the one
+      // place old records enter the system, same as Phase 1 did for `approvedHead`.
+      t.feedbackRounds ??= 0;
+      t.prCheckedAt ??= null;
+      t.outcome ??= null;
+      t.checksRoundHead ??= null;
       this.tasks.set(t.id, t);
       const n = Number(t.id.slice(2));
       if (n >= this.next) this.next = n + 1;
@@ -94,9 +100,9 @@ export class BugTaskStore extends EventEmitter {
   async create(input: CreateBugTask): Promise<BugTask> {
     const now = new Date().toISOString();
     const task: BugTask = {
-      id: `bt${this.next++}`, ...input, stage: "intake", gate: null, approvedHead: null, pr: null,
+      id: `bt${this.next++}`, ...input, stage: "intake", gate: null, approvedHead: null, outcome: null, checksRoundHead: null, pr: null, prCheckedAt: null,
       costUsd: 0, history: [{ stage: "intake", at: now, note: "" }], error: null,
-      createdAt: now, updatedAt: now,
+      createdAt: now, updatedAt: now, feedbackRounds: 0,
     };
     await mkdir(this.dir(task.id), { recursive: true });
     return withWriteChain(this.file(task.id), () => this.save(task));
@@ -109,6 +115,8 @@ export class BugTaskStore extends EventEmitter {
       const cur = this.get(id);   // re-read: anything queued ahead of us has landed by now
       const now = new Date().toISOString();
       return this.save({ ...cur, stage: t.stage, gate: t.gate, error: t.error, updatedAt: now,
+        // Only the ending transitions carry an outcome; every other one leaves it alone.
+        ...(t.outcome !== undefined ? { outcome: t.outcome } : {}),
         history: [...cur.history, { stage: t.stage, at: now, note: t.note }] });
     });
   }
@@ -119,11 +127,50 @@ export class BugTaskStore extends EventEmitter {
       this.save({ ...this.get(id), ...p, id, updatedAt: new Date().toISOString() }));
   }
 
+  /**
+   * Record a PR view read from the forge at `checkedAt`. The one write in this workflow that
+   * several unsynchronised readers make: the watcher (outside the engine's per-task lock, for
+   * any watched stage — "approved" included), `doPush`'s post-push confirmation, and `doMerge`'s
+   * post-merge bookkeeping. A tick whose `getPr` was already in flight when the human clicked
+   * Merge can therefore resolve in the middle of `doMerge` and, unguarded, write its pre-merge
+   * OPEN view over the MERGED one — leaving a task at `done` whose PR reads unmerged.
+   *
+   * So the decision lives here, inside the same chained read-modify-write every other mutation
+   * uses, rather than at each caller: an older read never overwrites a newer one, and a
+   * confirmed merge is never downgraded at all — the second rule standing alone because it must
+   * hold even for two reads whose timestamps are equal, or for a caller that passes none.
+   * Returns the task as it now stands, whether or not the view was taken.
+   */
+  async patchPr(id: string, pr: PrInfo, checkedAt: string): Promise<BugTask> {
+    this.get(id);
+    return withWriteChain(this.file(id), async () => {
+      const cur = this.get(id);
+      if (cur.prCheckedAt && cur.prCheckedAt > checkedAt) return cur;           // read before what we already have
+      if (cur.pr?.state === "MERGED" && pr.state !== "MERGED") return cur;      // a merge is a fact
+      return this.save({ ...cur, pr, prCheckedAt: checkedAt, updatedAt: new Date().toISOString() });
+    });
+  }
+
   private async save(task: BugTask): Promise<BugTask> {
     await writeAtomic(this.file(task.id), task);
     this.tasks.set(task.id, task);
     this.emit("event", { type: "bugtask", task });
     return task;
+  }
+
+  /** Deletes the task file and its artifacts directory — used by `dismiss()` on a terminal
+   *  task. Same safeId guard and write chain as every other mutation here. The task's own
+   *  JSON file goes first: if the directory removal below then fails partway, the record is
+   *  already gone and what's left on disk is a harmless orphan directory, rather than a
+   *  live-looking card whose artifacts 404. */
+  async remove(id: string): Promise<void> {
+    this.get(id);   // throws NotFound for an unknown or malformed id, before queueing behind the chain
+    return withWriteChain(this.file(id), async () => {
+      await rm(this.file(id), { force: true });
+      await rm(this.dir(id), { recursive: true, force: true });
+      this.tasks.delete(id);
+      this.emit("event", { type: "bugtask-removed", id });
+    });
   }
 
   async writeArtifact(id: string, name: string, data: string): Promise<void> {

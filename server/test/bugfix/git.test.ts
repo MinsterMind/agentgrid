@@ -8,7 +8,23 @@ import { GitOps, worktreePath, branchName } from "../../src/bugfix/git.js";
 const sh = (cwd: string, args: string[]) => new Promise<string>((res, rej) =>
   execFile("git", args, { cwd }, (err, out) => (err ? rej(err) : res(String(out)))));
 
+const run = (cmd: string, args: string[], opts?: { cwd?: string }): Promise<{ stdout: string; stderr: string; code: number }> =>
+  new Promise((res) =>
+    execFile(cmd, args, { cwd: opts?.cwd }, (err, stdout, stderr) =>
+      res({ stdout: String(stdout), stderr: String(stderr), code: err?.code || 0 })));
+
 let repo: string; const git = new GitOps();
+
+/** A fresh, throwaway repo with one commit on `main` — for tests that don't need the shared
+ *  `repo`/`beforeEach` fixture, e.g. because they build their own branch topology. */
+async function makeRepo(): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), "repo-"));
+  await sh(dir, ["init", "-b", "main"]);
+  await sh(dir, ["config", "user.email", "t@t"]); await sh(dir, ["config", "user.name", "T"]);
+  await writeFile(path.join(dir, "a.txt"), "one\n");
+  await sh(dir, ["add", "."]); await sh(dir, ["commit", "-m", "init"]);
+  return dir;
+}
 
 beforeEach(async () => {
   repo = await mkdtemp(path.join(tmpdir(), "repo-"));
@@ -127,5 +143,145 @@ describe("GitOps", () => {
       return "";
     });
     await expect(failing.removeWorktree(repo, "/nope", "bugfix/PAY-99")).rejects.toThrow(/cleanup incomplete/);
+  });
+
+  describe("deleteRemoteBranch", () => {
+    it("deletes the branch on the remote and tolerates one that is already gone", async () => {
+      const remote = await mkdtemp(path.join(tmpdir(), "ag-remote-del-"));
+      await run("git", ["init", "--bare", "-b", "main", remote]);
+      const repo2 = await makeRepo();
+      await run("git", ["remote", "add", "origin", remote], { cwd: repo2 });
+      await run("git", ["push", "-u", "origin", "main"], { cwd: repo2 });
+      await run("git", ["checkout", "-b", "bugfix/X-9"], { cwd: repo2 });
+      await writeFile(path.join(repo2, "b.txt"), "two\n");
+      await run("git", ["add", "-A"], { cwd: repo2 });
+      await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "two"], { cwd: repo2 });
+      await run("git", ["push", "origin", "bugfix/X-9"], { cwd: repo2 });
+      expect((await run("git", ["ls-remote", remote, "refs/heads/bugfix/X-9"])).stdout).toMatch(/bugfix\/X-9/);
+
+      await new GitOps().deleteRemoteBranch(repo2, "bugfix/X-9");
+      expect((await run("git", ["ls-remote", remote, "refs/heads/bugfix/X-9"])).stdout.trim()).toBe("");
+
+      // A repo configured to delete branches on merge (or a second pass after a retry) leaves
+      // nothing to delete — that is not a failure anyone should be told about.
+      await expect(new GitOps().deleteRemoteBranch(repo2, "bugfix/X-9")).resolves.toBeUndefined();
+    });
+  });
+
+  describe("push", () => {
+    it("pushes the branch to a real remote, and handles local rewrites", async () => {
+      // A bare repo on disk is a real remote: no network, but a genuine push.
+      const remote = await mkdtemp(path.join(tmpdir(), "ag-remote-"));
+      await run("git", ["init", "--bare", "-b", "main", remote]);
+      const repo2 = await mkdtemp(path.join(tmpdir(), "ag-repo-"));
+      await run("git", ["init", "-b", "main"], { cwd: repo2 });
+      await run("git", ["config", "user.email", "t@t"], { cwd: repo2 });
+      await run("git", ["config", "user.name", "t"], { cwd: repo2 });
+      await writeFile(path.join(repo2, "a.txt"), "one\n");
+      await run("git", ["add", "-A"], { cwd: repo2 });
+      await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "one"], { cwd: repo2 });
+      await run("git", ["remote", "add", "origin", remote], { cwd: repo2 });
+      await run("git", ["push", "-u", "origin", "main"], { cwd: repo2 });
+
+      const git2 = new GitOps();
+      await run("git", ["checkout", "-b", "bugfix/X-1"], { cwd: repo2 });
+      await writeFile(path.join(repo2, "a.txt"), "one\n");
+      await run("git", ["add", "-A"], { cwd: repo2 });
+      await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "one"], { cwd: repo2 });
+
+      await git2.push(repo2, "bugfix/X-1");
+      const onRemote = await run("git", ["ls-remote", remote, "refs/heads/bugfix/X-1"]);
+      expect(onRemote.stdout).toMatch(/bugfix\/X-1/);
+
+      // Rewrite local history; a plain push must be refused and a lease push must succeed.
+      await run("git", ["commit", "--amend", "-m", "one (amended)", "--no-edit"], { cwd: repo2 });
+      await expect(git2.push(repo2, "bugfix/X-1")).rejects.toThrow(/rejected|non-fast-forward/i);
+      await git2.push(repo2, "bugfix/X-1", { force: true });
+      const after = await run("git", ["log", "-1", "--format=%s", "bugfix/X-1"], { cwd: remote });
+      expect(after.stdout.trim()).toBe("one (amended)");
+    });
+
+    it("force-with-lease refuses when the remote has moved, but bare --force succeeds (lease protection)", async () => {
+      // Create a bare remote and clone it twice to simulate concurrent work.
+      const bare = await mkdtemp(path.join(tmpdir(), "ag-bare-"));
+      await run("git", ["init", "--bare", "-b", "main", bare]);
+
+      // Set up the bare repo with an initial commit so we can clone it.
+      const setup = await mkdtemp(path.join(tmpdir(), "ag-setup-"));
+      await run("git", ["clone", bare, setup]);
+      await run("git", ["config", "user.email", "t@t"], { cwd: setup });
+      await run("git", ["config", "user.name", "t"], { cwd: setup });
+      await writeFile(path.join(setup, "init.txt"), "init\n");
+      await run("git", ["add", "."], { cwd: setup });
+      await run("git", ["commit", "-m", "init"], { cwd: setup });
+      await run("git", ["push"], { cwd: setup });
+
+      // Clone twice: `a` will move the remote, `b` will have stale tracking info.
+      const a = await mkdtemp(path.join(tmpdir(), "ag-a-"));
+      const b = await mkdtemp(path.join(tmpdir(), "ag-b-"));
+      await run("git", ["clone", bare, a]);
+      await run("git", ["clone", bare, b]);
+      await run("git", ["config", "user.email", "t@t"], { cwd: a });
+      await run("git", ["config", "user.name", "t"], { cwd: a });
+      await run("git", ["config", "user.email", "t@t"], { cwd: b });
+      await run("git", ["config", "user.name", "t"], { cwd: b });
+
+      // In `a`: create and push bugfix/X-1.
+      await run("git", ["checkout", "-b", "bugfix/X-1"], { cwd: a });
+      await writeFile(path.join(a, "a.txt"), "a\n");
+      await run("git", ["add", "."], { cwd: a });
+      await run("git", ["commit", "-m", "first"], { cwd: a });
+      await run("git", ["push", "-u", "origin", "bugfix/X-1"], { cwd: a });
+
+      // In `b`: fetch and check out bugfix/X-1, so `b` has the tracking info.
+      await run("git", ["fetch"], { cwd: b });
+      await run("git", ["checkout", "bugfix/X-1"], { cwd: b });
+
+      // In `a`: move the branch forward (simulate other work).
+      await writeFile(path.join(a, "a.txt"), "a2\n");
+      await run("git", ["add", "."], { cwd: a });
+      await run("git", ["commit", "-m", "second"], { cwd: a });
+      await run("git", ["push"], { cwd: a });
+      // Now the remote's bugfix/X-1 points to "second", but `b` still thinks it points to "first".
+
+      // In `b`: diverge from the tracked state and try to force-push. Lease should refuse.
+      await writeFile(path.join(b, "b.txt"), "b\n");
+      await run("git", ["add", "."], { cwd: b });
+      await run("git", ["commit", "-m", "b-diverge"], { cwd: b });
+
+      const git = new GitOps();
+      await expect(git.push(b, "bugfix/X-1", { force: true })).rejects.toThrow(/stale info|rejected/i);
+
+      // Verify the discriminator: plain --force should succeed in the same state.
+      const forceResult = await run("git", ["push", "--force", "origin", "bugfix/X-1"], { cwd: b });
+      expect(forceResult.code).toBe(0);
+    });
+  });
+});
+
+describe("rebaseState", () => {
+  it("reports a clean tree and a rebase left half-finished", async () => {
+    const repo = await makeRepo();
+    const git = new GitOps();
+    expect(await git.rebaseState(repo)).toEqual({ inProgress: false, conflicted: [] });
+
+    // Manufacture a real conflict: two branches touching the same line.
+    await writeFile(path.join(repo, "c.txt"), "base\n");
+    await run("git", ["add", "-A"], { cwd: repo });
+    await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "base"], { cwd: repo });
+    await run("git", ["checkout", "-b", "side"], { cwd: repo });
+    await writeFile(path.join(repo, "c.txt"), "side\n");
+    await run("git", ["add", "-A"], { cwd: repo });
+    await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "side"], { cwd: repo });
+    await run("git", ["checkout", "main"], { cwd: repo });
+    await writeFile(path.join(repo, "c.txt"), "main\n");
+    await run("git", ["add", "-A"], { cwd: repo });
+    await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "main"], { cwd: repo });
+    await run("git", ["checkout", "side"], { cwd: repo });
+    await run("git", ["rebase", "main"], { cwd: repo }).catch(() => {});   // leaves it conflicted
+
+    const state = await git.rebaseState(repo);
+    expect(state.inProgress).toBe(true);
+    expect(state.conflicted).toContain("c.txt");
   });
 });

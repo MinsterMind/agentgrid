@@ -38,7 +38,10 @@ const forge = {
   name: "github",
   authStatus: async () => ({ ok: true, message: "ok" }),
   createPrCommand: () => "gh pr create --base 'main' --head 'bugfix/PAY-42' --title 't' --body-file '/b'",
-  findPr: async () => ({ number: 7, url: "https://gh/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MEEGEABLE", lastSeenEventAt: "t" }),
+  findPr: async () => ({ number: 7, url: "https://gh/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MEEGEABLE", headSha: "abc1234", lastSeenEventAt: "t" }),
+  getPr: async () => ({ found: null }),
+  listReviewEvents: async () => [],
+  merge: async () => ({ ok: true, message: "merged (fake)" }),
 };
 
 /**

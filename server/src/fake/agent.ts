@@ -13,11 +13,13 @@ const run = promisify(execFile);
  * `detectStage` is exported and unit-tested against the real preset files so that rewording
  * a preset fails loudly here instead of silently making fake mode do nothing again.
  */
-export type FakeStage = "analyze" | "implement" | "open-pr" | "other";
+export type FakeStage = "analyze" | "implement" | "open-pr" | "review-feedback" | "rebase" | "other";
 
 const PLAN_PATH = /write your plan to (\S+)/i;
 const PR_BODY_PATH = /write the pr description to (\S+?)[:\s]/i;
 const APPROVED_PLAN = /the approved plan is at (\S+)/i;
+const REVIEW_FEEDBACK = /address the review feedback|reviewers have asked for changes/i;
+const REBASE = /rebase \S+ onto/i;
 
 export function detectStage(prompt: string): { stage: FakeStage; planPath?: string; prBodyPath?: string } {
   const plan = PLAN_PATH.exec(prompt);
@@ -26,6 +28,8 @@ export function detectStage(prompt: string): { stage: FakeStage; planPath?: stri
   if (prBody) return { stage: "open-pr", prBodyPath: prBody[1] };
   const approved = APPROVED_PLAN.exec(prompt);
   if (approved) return { stage: "implement", planPath: approved[1] };
+  if (REVIEW_FEEDBACK.test(prompt)) return { stage: "review-feedback" };
+  if (REBASE.test(prompt)) return { stage: "rebase" };
   return { stage: "other" };
 }
 
@@ -94,6 +98,15 @@ export const fakeAgentQuery: QueryFn = ({ prompt, options }) => (async function*
       await writeFile(prBodyPath, "Fake PR body: what broke, why, and how this fixture fixed it.\n");
       await writeFile(path.join(path.dirname(prBodyPath), "pr.json"), JSON.stringify({ number: 1, url: "https://example.invalid/pr/1" }));
       summary = "Wrote the PR description (fake); the forge reports the pull request.";
+    } else if (stage === "review-feedback") {
+      // The server's `verify` requires a commit beyond `approvedHead` for this stage.
+      await commitSomething(cwd);
+      summary = "Addressed the review feedback and committed (fake).";
+    } else if (stage === "rebase") {
+      // The server's `verify` requires a finished rebase (no rebase in progress) with commits
+      // ahead of base. A plain commit satisfies `rebaseState` without a real rebase needed.
+      await commitSomething(cwd);
+      summary = "Rebased onto the base branch (fake).";
     }
   } catch (err) {
     // Report it the way a real agent would: a failed run the server can verify and fail on,
