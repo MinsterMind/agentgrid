@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdtemp, chmod } from "node:fs/promises";
+import { mkdtemp, chmod, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { startServer, parseFakePrScript } from "../../src/start.js";
@@ -141,6 +141,35 @@ describe("startServer with the bug-fix workflow", () => {
       } finally { await running.close(); }
     } finally {
       await chmod(bugtasksDir, 0o700);   // restore, so cleanup of the tmp dir doesn't itself fail
+    }
+  });
+});
+
+describe("startServer's tolerance of bad config on disk", () => {
+  it("boots and serves with a corrupt integrations.json, saying so rather than failing silently", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "ag-bug-corrupt-"));
+    await writeFile(path.join(home, "integrations.json"), "{ not json");
+    const logs: string[] = [];
+    const running = await startServer({ home, port: 0, fake: true, log: m => logs.push(m) });
+    try {
+      expect((await fetch(`${running.url}/api/state`)).ok).toBe(true);
+      expect(logs.join("\n")).toMatch(/integrations\.json is corrupt/i);
+    } finally { await running.close(); }
+  });
+
+  // A stale, malformed AGENTGRID_FAKE_PR_SCRIPT left in the environment of a REAL deployment must
+  // not stop the server booting: the value is only ever used in fake mode.
+  it("ignores a malformed AGENTGRID_FAKE_PR_SCRIPT outside fake mode, and still refuses it inside", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "ag-bug-script-"));
+    const before = process.env.AGENTGRID_FAKE_PR_SCRIPT;
+    process.env.AGENTGRID_FAKE_PR_SCRIPT = "{not json";
+    try {
+      const running = await startServer({ home, port: 0, fake: false, log: () => {} });
+      await running.close();
+      await expect(startServer({ home, port: 0, fake: true, log: () => {} })).rejects.toThrow(/AGENTGRID_FAKE_PR_SCRIPT/);
+    } finally {
+      if (before === undefined) delete process.env.AGENTGRID_FAKE_PR_SCRIPT;
+      else process.env.AGENTGRID_FAKE_PR_SCRIPT = before;
     }
   });
 });

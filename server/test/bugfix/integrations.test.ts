@@ -47,9 +47,17 @@ describe("IntegrationsStore", () => {
     expect(await store.repoFor("PAY")).toBe("/r/payments-v2");
   });
 
-  it("survives a corrupt file rather than throwing", async () => {
+  // A corrupt file used to read as an empty config, so a server booted with the tracker and forge
+  // silently missing and the project->repo memory silently empty, with nothing anywhere saying
+  // why. `readForWrite` already refused to swallow it; reading follows suit.
+  it("says a corrupt file is corrupt rather than reading as an empty config", async () => {
     const { writeFile } = await import("node:fs/promises");
     await writeFile(path.join(home, "integrations.json"), "{ not json");
+    await expect(store.read()).rejects.toThrow(/corrupt/i);
+    await expect(store.read()).rejects.toThrow(path.join(home, "integrations.json"));
+  });
+
+  it("still reads a missing file as empty — there is nothing to lose there", async () => {
     expect(await store.read()).toEqual({ projectRepos: {} });
   });
 

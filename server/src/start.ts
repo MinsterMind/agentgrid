@@ -14,7 +14,7 @@ import { attachPtyWebSocket } from "./api/ws.js";
 import { listAllSessions, listLiveSessions, LiveSessionWatcher } from "./sessions.js";
 import { SessionStatusWatcher } from "./sessionStatus.js";
 import { BugTaskStore } from "./bugfix/store.js";
-import { IntegrationsStore } from "./bugfix/integrations.js";
+import { IntegrationsStore, type Integrations } from "./bugfix/integrations.js";
 import { GitOps } from "./bugfix/git.js";
 import { makeForge } from "./bugfix/forge/index.js";
 import { mcpTracker, type TrackerProvider } from "./bugfix/tracker.js";
@@ -122,7 +122,14 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   await recoverStuckBugTasks(bugStore).catch(err => log(`bugfix: startup recovery failed: ${(err as Error).message}`));
 
   const integrations = new IntegrationsStore(home);
-  const cfg = await integrations.read();
+  // A corrupt integrations.json must not stop the server booting — the grid works without a
+  // tracker or forge — but it must not pass unmentioned either: booting with an empty config
+  // silently strips the tracker, the forge and the project->repo memory. Say it, then carry on
+  // with nothing configured.
+  const cfg = await integrations.read().catch((err: Error) => {
+    log(`bugfix: ${err.message}`);
+    return { projectRepos: {} } as Integrations;
+  });
   const presetsDir = opts.presetsDir ?? path.resolve(here, "..", "presets");
 
   // Fake mode: a canned tracker and forge so the whole flow can be exercised without Jira or gh.
@@ -133,7 +140,9 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     comment: async () => {},
   };
   const tracker = fake ? fakeTracker : (cfg.tracker ? mcpTracker(cfg.tracker, presetsDir) : null);
-  const fakePrScript = opts.fakePrScript ?? parseFakePrScript(process.env.AGENTGRID_FAKE_PR_SCRIPT);
+  // Only read the script in fake mode: it is used nowhere else, and a stale malformed value left
+  // in a real deployment's environment would otherwise throw here and stop the server booting.
+  const fakePrScript = fake ? (opts.fakePrScript ?? parseFakePrScript(process.env.AGENTGRID_FAKE_PR_SCRIPT)) : undefined;
   const forge = fake ? fakeForge(fakePrScript ?? []) : makeForge(cfg.forge);
   const engine = tracker ? new BugFixEngine({ store, bugs: bugStore, manager, git: new GitOps(), integrations, tracker, forge, presetsDir }) : null;
   // Recovery already ran above (`recoverStuckBugTasks`, tracker or no tracker) —

@@ -36,30 +36,29 @@ export class IntegrationsStore {
   private file: string;
   constructor(private home: string) { this.file = path.join(home, "integrations.json"); }
 
-  async read(): Promise<Integrations> {
-    const raw = await readFile(this.file, "utf8").catch(() => "");
-    let parsed: Partial<Integrations> = {};
-    try { parsed = raw ? JSON.parse(raw) : {}; } catch { parsed = {}; }
-    return { ...parsed, projectRepos: parsed.projectRepos ?? {} };
-  }
-
   /**
-   * Like `read()`, but a parse error is not swallowed: a missing file still reads as
-   * empty (there is nothing to lose), but a corrupt one must stop `write()` cold rather
-   * than let it merge the new patch onto `{}` and overwrite whatever was actually on
-   * disk — `projectRepos` and the tracker/forge config included.
+   * A missing file reads as empty — there is nothing to lose there. A corrupt one throws, and
+   * used to be swallowed into `{}`: a server then booted with the tracker and forge silently
+   * absent and the project->repo memory silently empty, with nothing anywhere saying why, and
+   * the file itself still sitting on disk unfixed. Callers that must survive it (boot, above all)
+   * catch it and say so; `write()` has always refused to merge onto a corrupt base.
    */
-  private async readForWrite(): Promise<Integrations> {
+  async read(): Promise<Integrations> {
     const raw = await readFile(this.file, "utf8").catch(() => "");
     if (!raw) return { projectRepos: {} };
     let parsed: Partial<Integrations>;
     try { parsed = JSON.parse(raw); }
     catch (err) {
-      throw new Conflict(`integrations.json is corrupt and cannot be safely updated (${(err as Error).message}). ` +
+      throw new Conflict(`integrations.json is corrupt (${(err as Error).message}). ` +
         `Fix or remove ${this.file}, then try again.`);
     }
     return { ...parsed, projectRepos: parsed.projectRepos ?? {} };
   }
+
+  /** `read()` under its old name at the one call site that has to be explicit about why it needs
+   *  the strict behaviour: merging a patch onto `{}` would overwrite whatever was really on disk —
+   *  `projectRepos` and the tracker/forge config included. */
+  private readForWrite(): Promise<Integrations> { return this.read(); }
 
   /**
    * Merges `patch` (or the result of calling it with the freshly-read current config) onto disk.

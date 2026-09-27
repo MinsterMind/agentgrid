@@ -3,7 +3,9 @@ export type BugStage =
   | "opening-pr" | "monitoring" | "review-feedback" | "rebase" | "pushing"
   | "approved" | "merging" | "done" | "cancelled" | "failed";
 
-export type GateKind = "plan" | "diff" | "review" | "merge" | "rebase";
+/** A gate's kind is what the card renders. There is no "rebase" gate: a rebase round lands at the
+ *  DIFF gate carrying `reason: "rebase"` (see `Transition.gate`), which is what labels it. */
+export type GateKind = "plan" | "diff" | "review" | "merge";
 
 /** Normalised ticket — every tracker preset returns this shape. */
 export interface TrackerIssue {
