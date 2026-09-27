@@ -876,17 +876,34 @@ describe("a feedback round", () => {
   it("stops dispatching a checks-failed finding after the cap too, and reports it the same way", async () => {
     const { engine, bugs, gitState } = await onMonitoringTask();
     await bugs.patch("bt1", { feedbackRounds: FEEDBACK_ROUND_CAP });
-    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "checks-failed", checks: "checks are failing" } });
+    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "checks-failed", checks: "checks are failing", headSha: "aaa" } });
     const t = bugs.get("bt1");
     expect(t.stage).toBe("monitoring");                                  // no agent dispatched
     expect(t.error).toMatch(/feedback rounds/i);
+  });
+
+  // The engine is the only writer of task state, so the head the watcher must dedupe against is
+  // recorded here, at dispatch — and only once the transition has been accepted.
+  it("records the head a checks-failed round was dispatched at", async () => {
+    const { engine, bugs, gitState } = await onMonitoringTask();
+    expect(bugs.get("bt1").checksRoundHead).toBeNull();
+    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "checks-failed", checks: "red", headSha: "ccc" } });
+    expect(bugs.get("bt1").stage).toBe("review-feedback");
+    expect(bugs.get("bt1").checksRoundHead).toBe("ccc");
+  });
+
+  it("records nothing when the checks-failed event is refused — the cap already stopped the round", async () => {
+    const { engine, bugs, gitState } = await onMonitoringTask();
+    await bugs.patch("bt1", { feedbackRounds: FEEDBACK_ROUND_CAP });
+    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "checks-failed", checks: "red", headSha: "ccc" } });
+    expect(bugs.get("bt1").checksRoundHead).toBeNull();
   });
 
   // The other half of the fix: under the cap, a checks-failed finding must still dispatch —
   // the cap gates the round budget, not this particular event type.
   it("still dispatches review-feedback for a checks-failed finding when under the cap", async () => {
     const { engine, bugs, gitState } = await onMonitoringTask();
-    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "checks-failed", checks: "checks are failing" } });
+    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "checks-failed", checks: "checks are failing", headSha: "aaa" } });
     const t = bugs.get("bt1");
     expect(t.stage).toBe("review-feedback");
     expect(t.feedbackRounds).toBe(1);
@@ -922,7 +939,7 @@ describe("a feedback round", () => {
   it("leaves an error that is not about reaching the forge alone — the cap message must survive a poll", async () => {
     const { engine, bugs, gitState } = await onMonitoringTask();
     await bugs.patch("bt1", { feedbackRounds: FEEDBACK_ROUND_CAP });
-    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "checks-failed", checks: "still failing" } });
+    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "checks-failed", checks: "still failing", headSha: "aaa" } });
     const capped = bugs.get("bt1").error;
     expect(capped).toMatch(/feedback rounds/i);
     await engine.onPrChecked("bt1", "2026-09-27T10:00:00Z");

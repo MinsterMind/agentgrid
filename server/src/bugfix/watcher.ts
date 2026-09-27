@@ -144,7 +144,19 @@ export class PrWatcher {
     if (pr.state === "MERGED") return { type: "pr-merged" };
     if (pr.state === "CLOSED") return { type: "pr-closed" };
     if (pr.mergeable === "CONFLICTING") return { type: "conflicting" };
-    if (pr.checks === "FAILURE") return { type: "checks-failed", checks: `checks are failing on ${pr.url}` };
+    if (pr.checks === "FAILURE") {
+      // A red build stands until CI runs again, so "still FAILURE" is not evidence this failure is
+      // unanswered — the same shape as the standing CHANGES_REQUESTED below. Here the head IS the
+      // evidence: a fix for failing checks always moves it, so a failure at a head a round was
+      // already dispatched at is old news. Note what this deliberately does NOT do: dedupe on
+      // "checks moved TO failure", which would never dispatch at all for a PR that reaches
+      // `monitoring` already red (the stored view is FAILURE from the first look).
+      //
+      // No head on either side means no evidence either way — dispatch, the same fallback
+      // `doPush` takes for an adapter that doesn't report `headSha`.
+      if (pr.headSha && task.checksRoundHead && pr.headSha === task.checksRoundHead) return null;
+      return { type: "checks-failed", checks: `checks are failing on ${pr.url}`, headSha: pr.headSha ?? null };
+    }
     if (pr.reviewDecision === "CHANGES_REQUESTED") {
       // GitHub holds `reviewDecision === "CHANGES_REQUESTED"` until a reviewer re-reviews, so
       // the decision by itself says nothing about whether THIS review has been answered. After

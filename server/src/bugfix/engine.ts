@@ -346,6 +346,10 @@ export class BugFixEngine {
     if (event.type === "request-changes") this.pendingNote.set(taskId, { text: event.text, trusted: true });
     if (event.type === "review-changes-requested") this.pendingNote.set(taskId, { text: event.comments, trusted: event.source === "operator" });
     if (event.type === "checks-failed") this.pendingNote.set(taskId, { text: event.checks, trusted: false });
+    // Record which head's red build this round answers, so the watcher can tell a build it has
+    // already answered from a new one (see `BugTask.checksRoundHead`). Written only now, after
+    // `nextStage` accepted the transition — a refused event must leave nothing behind.
+    if (event.type === "checks-failed") await this.deps.bugs.patch(taskId, { checksRoundHead: event.headSha });
     let task = await this.deps.bugs.apply(taskId, t);
     await this.settleTerminal(task);
     // A server stage is work the engine does itself: no assignment, no agent, no tokens. It

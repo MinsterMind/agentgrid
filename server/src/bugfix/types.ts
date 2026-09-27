@@ -55,6 +55,20 @@ export interface BugTask {
    * normalise to null in `BugTaskStore.init`.
    */
   outcome: "merged" | "closed" | null;
+  /**
+   * The PR head a `checks-failed` round was last dispatched at. A failing build, like a
+   * CHANGES_REQUESTED decision, STANDS until CI runs again — so the failure alone does not say
+   * whether it has been answered, and any later change (a bot comment, an unrelated field move)
+   * would otherwise re-fire a round with nothing new in it, which `verify()` then fails for
+   * having no new commits.
+   *
+   * The mechanism deliberately rejected for reviews is exactly right here: a review can arrive
+   * without the head moving, but a FIX for failing checks always moves it. So a red build at a
+   * head we have already answered is old news, and a red build at any other head — including the
+   * first one, where this is null — is not. Records written before this field existed normalise
+   * to null in `BugTaskStore.init`.
+   */
+  checksRoundHead: string | null;
   pr: PrInfo | null;
   /** When `pr` was actually read from the forge (ISO), as opposed to `pr.lastSeenEventAt`,
    *  which is the forge's own `updatedAt` for the pull request. Two things need it: the card's
@@ -88,7 +102,10 @@ export type BugEvent =
    *  produces "forge"; `addressComments` produces either, depending on whether the human
    *  supplied the text themselves. */
   | { type: "review-changes-requested"; comments: string; source: "forge" | "operator" }
-  | { type: "checks-failed"; checks: string }
+  /** `headSha` is the PR head the failing build ran against, and the engine records it as
+   *  `BugTask.checksRoundHead` when it dispatches the round — that is what stops the same red
+   *  build being answered twice. Null when the adapter does not report a head. */
+  | { type: "checks-failed"; checks: string; headSha: string | null }
   | { type: "review-approved" }
   | { type: "conflicting" }
   | { type: "pr-closed" }

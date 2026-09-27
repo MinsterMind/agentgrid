@@ -51,7 +51,7 @@ function bugTask(id: string, stage: BugTask["stage"], error: string | null = nul
     id, issue: { key: "PAY-42", title: "Boom", url: "u", status: "Open", priority: "High", description: "d", acceptanceCriteria: [] },
     trackerProject: "PAY", sourceRepo: "/r", worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main",
     agentId: "bugfix@w", stage, gate: null, mergePolicy: "ask", mergeMethod: "squash", approvedHead: null,
-    outcome, pr: null, prCheckedAt: null, costUsd: 0, history: [], error, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    outcome, checksRoundHead: null, pr: null, prCheckedAt: null, costUsd: 0, history: [], error, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     feedbackRounds: 0,
   };
 }

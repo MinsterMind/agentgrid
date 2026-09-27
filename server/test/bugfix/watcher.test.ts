@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { PrWatcher, type PrFinding } from "../../src/bugfix/watcher.js";
 import { BugTaskStore } from "../../src/bugfix/store.js";
-import type { PrInfo, TrackerIssue } from "../../src/bugfix/types.js";
+import type { BugTask, PrInfo, TrackerIssue } from "../../src/bugfix/types.js";
 import type { ForgeAdapter, PrLookup, ReviewEvent } from "../../src/bugfix/forge/types.js";
 
 const issue: TrackerIssue = { key: "W-1", title: "t", url: "u", status: "Open", priority: "High", description: "d", acceptanceCriteria: [] };
@@ -217,6 +217,58 @@ describe("PrWatcher", () => {
     await new PrWatcher({ bugs, forge: forgeWith([{ found: pr() }]), onFinding, now: () => 0 }).poll();
     expect(found).toEqual([]);
   });
+  /**
+   * The same bug as C1, on the other event that routes to a feedback round. A standing
+   * `checks: "FAILURE"` is held until CI runs again, so the failure alone does not say the round
+   * is unanswered. The mechanism rejected for reviews is the right one here: a review can arrive
+   * without the head moving, but a FIX for failing checks always moves the head.
+   */
+  describe("standing failing checks", () => {
+    async function failingTask(over: Partial<BugTask> = {}) {
+      const { bugs, id } = await monitoringTask();
+      await bugs.patch(id, { pr: pr({ checks: "FAILURE" }), ...over });
+      return { bugs, id };
+    }
+
+    it("dispatches for a PR that arrives already failing, with no round recorded yet", async () => {
+      // Nothing has been dispatched for this task, so the red build IS news — this is the case a
+      // "only when checks moved TO failure" dedupe would silently never dispatch for, since the
+      // stored view is already FAILURE the first time the watcher looks.
+      const { bugs } = await failingTask();
+      const { found, onFinding } = collect();
+      const forge = forgeWith([{ found: pr({ checks: "FAILURE", lastSeenEventAt: "2026-09-26T09:30:00Z" }) }]);
+      await new PrWatcher({ bugs, forge, onFinding, now: () => 0, jitter: ms => ms }).poll();
+      expect(found[0].event).toMatchObject({ type: "checks-failed", headSha: "abc123" });
+    });
+
+    it("does not re-dispatch for a bot comment while the build stays red at the same head", async () => {
+      const { bugs } = await failingTask({ checksRoundHead: "abc123" });
+      const { found, onFinding } = collect();
+      const forge = forgeWith([{ found: pr({ checks: "FAILURE", lastSeenEventAt: "2026-09-26T09:30:00Z" }) }],
+        [{ kind: "comment", state: "", author: "ci-bot", isBot: true, body: "Build failed.", at: "2026-09-26T09:30:00Z" }]);
+      await new PrWatcher({ bugs, forge, onFinding, now: () => 0, jitter: ms => ms }).poll();
+      expect(found).toHaveLength(1);
+      expect(found[0].event).toBeNull();
+    });
+
+    it("dispatches again when the build is still failing at a NEW head — that is new information", async () => {
+      const { bugs } = await failingTask({ checksRoundHead: "abc123" });
+      const { found, onFinding } = collect();
+      // The round pushed a fix, so the head moved; CI ran again and is still red.
+      const forge = forgeWith([{ found: pr({ checks: "FAILURE", headSha: "def456", lastSeenEventAt: "2026-09-26T09:45:00Z" }) }]);
+      await new PrWatcher({ bugs, forge, onFinding, now: () => 0, jitter: ms => ms }).poll();
+      expect(found[0].event).toMatchObject({ type: "checks-failed", headSha: "def456" });
+    });
+
+    it("dispatches when the adapter reports no head at all, rather than suppressing on absent evidence", async () => {
+      const { bugs } = await failingTask({ checksRoundHead: "abc123" });
+      const { found, onFinding } = collect();
+      const forge = forgeWith([{ found: pr({ checks: "FAILURE", headSha: null, lastSeenEventAt: "2026-09-26T09:45:00Z" }) }]);
+      await new PrWatcher({ bugs, forge, onFinding, now: () => 0, jitter: ms => ms }).poll();
+      expect(found[0].event).toMatchObject({ type: "checks-failed" });
+    });
+  });
+
   /**
    * C1: a standing CHANGES_REQUESTED is held by GitHub until a reviewer re-reviews, so the
    * decision alone is not evidence that THIS review is unanswered. Each of these four cases
