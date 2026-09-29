@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import type { ForgeConfig } from "../integrations.js";
 import { githubAdapter } from "./github.js";
+import { bitbucketAdapter } from "./bitbucket.js";
 import type { ForgeAdapter, Runner } from "./types.js";
 
 export type { ForgeAdapter, CreatePrContext, Runner } from "./types.js";
@@ -12,5 +13,9 @@ const defaultRun: Runner = (cmd, args, cwd) => new Promise(res =>
 /** null means "no pollable forge configured" — the flow still runs, the PR is just tracked by hand. */
 export function makeForge(cfg: ForgeConfig | undefined, run: Runner = defaultRun): ForgeAdapter | null {
   if (cfg?.preset === "github") return githubAdapter(run);
+  if (cfg?.preset === "bitbucket") {
+    if (!cfg.username?.trim()) return null;   // no email, no Basic auth — preflight reports it
+    return bitbucketAdapter({ username: cfg.username });
+  }
   return null;   // gitlab + custom land in Phase 2
 }

@@ -13,7 +13,7 @@ describe("detectForge", () => {
     expect(detectForge("https://github.com/acme/pay")).toBe("github");
     expect(detectForge("git@gitlab.com:acme/pay.git")).toBe("gitlab");
     expect(detectForge("https://gitlab.example.com/acme/pay.git")).toBe("gitlab");
-    expect(detectForge("https://bitbucket.org/acme/pay")).toBeNull();
+    expect(detectForge("https://bitbucket.org/acme/pay")).toBe("bitbucket");
     expect(detectForge(null)).toBeNull();
   });
 
@@ -22,6 +22,14 @@ describe("detectForge", () => {
     expect(detectForge("https://notgitlab.io/a/b")).toBeNull();
     expect(detectForge("git@gitlab.example.com:a/b.git")).toBe("gitlab");
     expect(detectForge("https://gitlab.com/a/b")).toBe("gitlab");
+  });
+
+  it("detects bitbucket.org, and keeps github and gitlab as they were", () => {
+    expect(detectForge("git@bitbucket.org:acme/payments.git")).toBe("bitbucket");
+    expect(detectForge("https://bitbucket.org/acme/payments")).toBe("bitbucket");
+    expect(detectForge("git@github.com:acme/app.git")).toBe("github");
+    expect(detectForge("https://gitlab.com/acme/app")).toBe("gitlab");
+    expect(detectForge("git@example.com:acme/app.git")).toBeNull();
   });
 });
 

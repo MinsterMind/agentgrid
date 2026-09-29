@@ -107,8 +107,19 @@ describe("bug task routes", () => {
   });
 
   it("rejects an out-of-enum forge preset on PUT /api/integrations", async () => {
-    await request(app).put("/api/integrations").send({ forge: { preset: "bitbucket" } }).expect(400);
+    await request(app).put("/api/integrations").send({ forge: { preset: "sourcehut" } }).expect(400);
     expect((await request(app).get("/api/integrations")).body.forge).toBeUndefined();
+  });
+
+  it("accepts a bitbucket forge preset with a username on PUT /api/integrations", async () => {
+    const saved = await request(app).put("/api/integrations")
+      .send({ forge: { preset: "bitbucket", username: "me@example.com" } }).expect(200);
+    expect(saved.body.forge).toEqual({ preset: "bitbucket", username: "me@example.com" });
+    expect((await request(app).get("/api/integrations")).body.forge).toEqual({ preset: "bitbucket", username: "me@example.com" });
+  });
+
+  it("rejects a non-string forge username on PUT /api/integrations", async () => {
+    await request(app).put("/api/integrations").send({ forge: { preset: "bitbucket", username: 42 } }).expect(400);
   });
 
   it("rejects a malformed tracker on PUT /api/integrations, and accepts a well-formed one", async () => {

@@ -3,16 +3,17 @@ import path from "node:path";
 import { Conflict } from "../store/store.js";
 
 export interface TrackerConfig { preset: string; toolPrefix: string; mcpServers: Record<string, unknown>; hints?: string }
-export interface ForgeConfig { preset: "github" | "gitlab" | "custom"; getPr?: string; merge?: string; map?: Record<string, string> }
+export interface ForgeConfig { preset: "github" | "gitlab" | "bitbucket" | "custom"; username?: string; getPr?: string; merge?: string; map?: Record<string, string> }
 export interface Integrations { tracker?: TrackerConfig; forge?: ForgeConfig; projectRepos: Record<string, string> }
 
 /** Which forge a git remote belongs to; null means "we can't poll it" (the flow still works, manually). */
-export function detectForge(remoteUrl: string | null): "github" | "gitlab" | null {
+export function detectForge(remoteUrl: string | null): "github" | "gitlab" | "bitbucket" | null {
   if (!remoteUrl) return null;
   const host = remoteUrl.replace(/^[a-z]+:\/\//i, "").replace(/^[^@]+@/, "").split(/[/:]/)[0]?.toLowerCase() ?? "";
   const labels = host.split(".");
   if (host === "github.com" || host.endsWith(".github.com")) return "github";
   if (host === "gitlab.com" || labels.includes("gitlab")) return "gitlab";
+  if (host === "bitbucket.org" || host.endsWith(".bitbucket.org")) return "bitbucket";
   return null;
 }
 
