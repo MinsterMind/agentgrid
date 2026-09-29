@@ -21,7 +21,7 @@ import { mcpTracker, type TrackerProvider } from "./bugfix/tracker.js";
 import { BugFixEngine, recoverStuckBugTasks } from "./bugfix/engine.js";
 import { PrWatcher } from "./bugfix/watcher.js";
 import { fakeAgentQuery } from "./fake/agent.js";
-import { fakeForge, type ScriptedStep } from "./fake/forge.js";
+import { fakeForge, type ScriptedStep, type FakeForge } from "./fake/forge.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -45,7 +45,14 @@ export interface StartOptions {
   log?: (msg: string) => void;
 }
 
-export interface RunningServer { port: number; url: string; home: string; close(): Promise<void> }
+export interface RunningServer {
+  port: number; url: string; home: string;
+  /** Fake mode only: the test-only handle on the forge that served this server, so an
+   *  in-process test can assert on its call counts (e.g. exactly one `createPr`) without
+   *  a debug HTTP endpoint. Undefined outside fake mode. */
+  fakeForge?: FakeForge;
+  close(): Promise<void>;
+}
 
 /** Parses `AGENTGRID_FAKE_PR_SCRIPT` (a JSON array of `ScriptedStep`) into `fakePrScript`.
  *  Undefined input (the env var unset) is fine — fake mode without a script is a normal,
@@ -143,7 +150,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   // Only read the script in fake mode: it is used nowhere else, and a stale malformed value left
   // in a real deployment's environment would otherwise throw here and stop the server booting.
   const fakePrScript = fake ? (opts.fakePrScript ?? parseFakePrScript(process.env.AGENTGRID_FAKE_PR_SCRIPT)) : undefined;
-  const forge = fake ? fakeForge(fakePrScript ?? []) : makeForge(cfg.forge);
+  const fakeForgeHandle = fake ? fakeForge(fakePrScript ?? []) : null;
+  const forge = fakeForgeHandle ?? makeForge(cfg.forge);
   const engine = tracker ? new BugFixEngine({ store, bugs: bugStore, manager, git: new GitOps(), integrations, tracker, forge, presetsDir }) : null;
   // Recovery already ran above (`recoverStuckBugTasks`, tracker or no tracker) —
   // `BugFixEngine` has no recovery step of its own to call.
@@ -175,6 +183,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   log(`AgentGrid on ${url}  (data: ${home}${staticDir ? "" : ", UI not built"})`);
   return {
     port: bound, url, home,
+    ...(fakeForgeHandle ? { fakeForge: fakeForgeHandle } : {}),
     close: () => new Promise<void>(resolve => { watcher.stop(); statuses.stop(); prWatcher?.stop(); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }),
   };
 }

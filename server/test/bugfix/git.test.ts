@@ -285,3 +285,62 @@ describe("rebaseState", () => {
     expect(state.conflicted).toContain("c.txt");
   });
 });
+
+describe("wouldConflict", () => {
+  it("is true for a real conflict against the base and false for a clean merge", async () => {
+    const repo = await makeRepo();
+    await writeFile(path.join(repo, "c.txt"), "base\n");
+    await run("git", ["add", "-A"], { cwd: repo });
+    await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "base"], { cwd: repo });
+    await run("git", ["checkout", "-b", "side"], { cwd: repo });
+    await writeFile(path.join(repo, "c.txt"), "side\n");
+    await run("git", ["add", "-A"], { cwd: repo });
+    await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "side"], { cwd: repo });
+    await run("git", ["checkout", "main"], { cwd: repo });
+    await writeFile(path.join(repo, "c.txt"), "main\n");
+    await run("git", ["add", "-A"], { cwd: repo });
+    await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "main"], { cwd: repo });
+    await run("git", ["checkout", "side"], { cwd: repo });
+
+    const git = new GitOps();
+    expect(await git.wouldConflict(repo, "main")).toBe(true);
+
+    const clean = await makeRepo();
+    await run("git", ["checkout", "-b", "feature"], { cwd: clean });
+    await writeFile(path.join(clean, "new.txt"), "only here\n");
+    await run("git", ["add", "-A"], { cwd: clean });
+    await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "feature"], { cwd: clean });
+    expect(await git.wouldConflict(clean, "main")).toBe(false);
+  });
+
+  it("reports unknown (null), not conflicting, when the command fails with an exit code other than 1", async () => {
+    // A missing base ref, a missing object, or (on git < 2.38) an unrecognised --write-tree
+    // flag can all fail this command outright with a non-1 exit — none of them mean the
+    // merge would conflict, so this must not collapse to `true` the way a bare "reject means
+    // conflict" implementation would.
+    const failing = new GitOps(async () => {
+      const e = new Error("usage: git merge-tree ...") as Error & { code?: number | string };
+      e.code = 129;
+      throw e;
+    });
+    expect(await failing.wouldConflict("/r", "main")).toBeNull();
+  });
+
+  it("reports unknown (null) rather than conflicting on a spawn failure (e.g. git missing)", async () => {
+    const failing = new GitOps(async () => {
+      const e = new Error("spawn git ENOENT") as Error & { code?: number | string };
+      e.code = "ENOENT";
+      throw e;
+    });
+    expect(await failing.wouldConflict("/r", "main")).toBeNull();
+  });
+
+  it("still reports conflicting (true) when the injected runner rejects with exit code 1", async () => {
+    const conflicting = new GitOps(async () => {
+      const e = new Error("CONFLICT (content): Merge conflict in c.txt") as Error & { code?: number | string };
+      e.code = 1;
+      throw e;
+    });
+    expect(await conflicting.wouldConflict("/r", "main")).toBe(true);
+  });
+});

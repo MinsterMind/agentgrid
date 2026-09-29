@@ -16,8 +16,16 @@ export const branchName = (issueKey: string) => `bugfix/${assertIssueKey(issueKe
 export const worktreePath = (repo: string, issueKey: string) => path.join(repo, ".worktrees", `bugfix-${assertIssueKey(issueKey)}`);
 
 const defaultRun = (cwd: string, args: string[]) => new Promise<string>((res, rej) =>
-  execFile("git", args, { cwd, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) =>
-    err ? rej(new Error(String(stderr).trim() || err.message)) : res(String(stdout))));
+  execFile("git", args, { cwd, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
+    if (!err) { res(String(stdout)); return; }
+    const e = new Error(String(stderr).trim() || err.message) as Error & { code?: number | string | null };
+    // execFile sets `err.code` to the child's numeric exit code on a non-zero exit, or to a
+    // string (e.g. 'ENOENT') on a spawn failure. Preserved on the rejection so a caller that
+    // needs to tell "exit 1" apart from any other failure — `wouldConflict`, so far — doesn't
+    // have to re-derive it from stderr text.
+    e.code = (err as NodeJS.ErrnoException).code;
+    rej(e);
+  }));
 
 /** Every git touch the workflow needs. Injectable runner so tests can fake git when they want to. */
 export class GitOps {
@@ -151,5 +159,26 @@ export class GitOps {
   async push(dir: string, branch: string, opts: { force?: boolean } = {}): Promise<void> {
     const args = ["push", ...(opts.force ? ["--force-with-lease"] : []), "origin", `${branch}:${branch}`];
     await this.run(dir, args);
+  }
+
+  /**
+   * Would merging the base into HEAD conflict? `merge-tree` answers without touching the
+   * worktree. Nothing calls this yet, so its answer must be conservative rather than
+   * convenient: `git merge-tree --write-tree` exits 1 for a genuine conflict, per its own
+   * docs — but that same command also exits non-zero (and, on git < 2.38, fails outright
+   * with "unknown option") for an unresolvable base ref, a missing object, or any other
+   * "the question couldn't be answered" case. None of those are a conflict, and reading them
+   * as one would eventually block a merge that has nothing wrong with it. Exit code 1 is
+   * therefore the only signal read as CONFLICTING; every other non-zero exit or spawn
+   * failure (e.g. git not on PATH) reports `null` — unknown, never "fine" and never "block".
+   */
+  async wouldConflict(dir: string, baseBranch: string): Promise<boolean | null> {
+    try {
+      await this.run(dir, ["merge-tree", "--write-tree", "--name-only", baseBranch, "HEAD"]);
+      return false;
+    } catch (err) {
+      const code = (err as { code?: number | string | null } | undefined)?.code;
+      return code === 1 ? true : null;
+    }
   }
 }

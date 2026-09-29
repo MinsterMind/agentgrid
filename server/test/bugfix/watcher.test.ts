@@ -24,7 +24,7 @@ async function monitoringTask(): Promise<{ bugs: BugTaskStore; id: string }> {
 const forgeWith = (lookups: PrLookup[], events: ReviewEvent[] = []): ForgeAdapter => {
   let i = 0;
   return {
-    name: "fake", authStatus: async () => ({ ok: true, message: "" }), createPrCommand: () => "",
+    name: "fake", authStatus: async () => ({ ok: true, message: "" }), createPr: async () => ({ found: null }),
     findPr: async () => null, merge: async () => ({ ok: true, message: "merged" }),
     getPr: async () => lookups[Math.min(i++, lookups.length - 1)],
     listReviewEvents: async () => events,
@@ -124,7 +124,7 @@ describe("PrWatcher", () => {
     // Every call bumps lastSeenEventAt (as a bot comment would) but never touches any state
     // field — checks/reviewDecision/mergeable/state/headSha all stay exactly as stored.
     const forge: ForgeAdapter = {
-      name: "fake", authStatus: async () => ({ ok: true, message: "" }), createPrCommand: () => "",
+      name: "fake", authStatus: async () => ({ ok: true, message: "" }), createPr: async () => ({ found: null }),
       findPr: async () => null, merge: async () => ({ ok: true, message: "merged" }),
       getPr: async () => ({ found: pr({ lastSeenEventAt: `2026-09-26T09:${String(30 + tick++).padStart(2, "0")}:00Z` }) }),
       listReviewEvents: async () => [],

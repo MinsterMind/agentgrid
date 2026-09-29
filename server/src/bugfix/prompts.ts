@@ -23,8 +23,6 @@ export interface StageContext {
   artifactsDir: string;
   planPath: string;
   prBodyPath: string;
-  /** Verbatim command the agent must run in `opening-pr`. */
-  createPrCommand?: string;
   /** Free text from a gate or a review round — see `StageNote`. */
   note?: StageNote;
 }
@@ -76,9 +74,6 @@ const FILES: Partial<Record<BugStage, string>> = {
 export async function renderStagePrompt(stage: BugStage, task: BugTask, ctx: StageContext, presetsDir: string): Promise<string> {
   const file = FILES[stage];
   if (!file) throw new Error(`stage ${stage} has no prompt`);
-  if (stage === "opening-pr" && !ctx.createPrCommand?.trim()) {
-    throw new Error(`stage opening-pr requires ctx.createPrCommand, but it was missing or empty`);
-  }
   const template = await readFile(path.join(presetsDir, "stages", file), "utf8");
   const nonce = untrustedNonce();
   const q = (v: string) => quoteUntrusted(v, nonce);
@@ -93,7 +88,6 @@ export async function renderStagePrompt(stage: BugStage, task: BugTask, ctx: Sta
     acceptanceCriteria: q(task.issue.acceptanceCriteria.length ? task.issue.acceptanceCriteria.map(a => `- ${a}`).join("\n") : "- (none given)"),
     worktree: task.worktree, branch: task.branch, baseBranch: task.baseBranch,
     artifactsDir: ctx.artifactsDir, planPath: ctx.planPath, prBodyPath: ctx.prBodyPath,
-    createPrCommand: ctx.createPrCommand ?? "",
     // Two different sources travel through the same `note` placeholder, and the note itself says
     // which it is (`StageNote.trusted`) — never the stage, which receives both.
     note: !noteText ? ""

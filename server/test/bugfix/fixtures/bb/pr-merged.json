@@ -1,0 +1,5 @@
+{"id":7,"state":"MERGED","title":"PAY-42: Boom","updated_on":"2026-09-29T09:00:00.000000+00:00",
+ "links":{"html":{"href":"https://bitbucket.org/acme/payments/pull-requests/7"}},
+ "source":{"branch":{"name":"bugfix/PAY-42"},"commit":{"hash":"abc123"}},
+ "destination":{"branch":{"name":"main"}},
+ "participants":[{"user":{"nickname":"alice","account_id":"557058:alice"},"role":"REVIEWER","approved":true,"state":"approved"}]}

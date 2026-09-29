@@ -1,6 +1,6 @@
 export type BugStage =
   | "intake" | "analyzing" | "plan-review" | "implementing" | "diff-review"
-  | "opening-pr" | "monitoring" | "review-feedback" | "rebase" | "pushing"
+  | "opening-pr" | "creating-pr" | "monitoring" | "review-feedback" | "rebase" | "pushing"
   | "approved" | "merging" | "done" | "cancelled" | "failed";
 
 /** A gate's kind is what the card renders. There is no "rebase" gate: a rebase round lands at the
@@ -130,7 +130,7 @@ export const AGENT_STAGES: BugStage[] = ["analyzing", "implementing", "opening-p
 export const GATE_STAGES: BugStage[] = ["plan-review", "diff-review", "approved"];
 /** Stages the ENGINE performs itself — no assignment, no agent, no tokens. They still
  *  report stage-done/stage-failed, so failure and retry work exactly as for agent stages. */
-export const SERVER_STAGES: BugStage[] = ["pushing", "merging"];
+export const SERVER_STAGES: BugStage[] = ["pushing", "creating-pr", "merging"];
 /** Resting stages the watcher polls. Never an agent stage: two things driving one task is
  *  the bug class Phase 1 spent its Criticals on. */
 export const WATCHED_STAGES: BugStage[] = ["monitoring", "approved"];
@@ -142,16 +142,20 @@ export const TERMINAL_STAGES: BugStage[] = ["done", "cancelled", "failed"];
  * Stages a startup crash can strand a task in with nothing left to finish it: the
  * AGENT_STAGES (an assignment was dispatched but never reported back), "intake" (the task
  * record was written, but the transition into "analyzing" never landed), and the
- * SERVER_STAGES ("pushing"/"merging" — the engine itself was mid-step, with no assignment
- * to report back either). A crash mid-"merging" is the worst place in the whole workflow
- * to have no way out: nothing — not the user, not the server — otherwise knows whether the
- * merge actually landed, and neither `retry` (which requires "failed") nor any other event
- * is legal from a server stage. Recovery fails tasks sitting in any of these so they get a
- * card and a working Retry instead of being silently orphaned. Retrying back into "merging"
- * or "pushing" is safe: `doMerge` re-reads the PR before merging (a merge that already
- * landed short-circuits into a teardown-only pass, never a second `forge.merge` call — see
- * its own comment on the entry-route discriminator, which still resolves to "approved"
- * through the interposed "failed"), and `doPush` re-checks the pin and pushes a branch that
- * may already be pushed, which is a no-op.
+ * SERVER_STAGES ("pushing"/"creating-pr"/"merging" — the engine itself was mid-step, with
+ * no assignment to report back either). A crash mid-"merging" is the worst place in the
+ * whole workflow to have no way out: nothing — not the user, not the server — otherwise
+ * knows whether the merge actually landed, and neither `retry` (which requires "failed")
+ * nor any other event is legal from a server stage. Recovery fails tasks sitting in any of
+ * these so they get a card and a working Retry instead of being silently orphaned.
+ * Retrying back into "merging" or "pushing" is safe: `doMerge` re-reads the PR before
+ * merging (a merge that already landed short-circuits into a teardown-only pass, never a
+ * second `forge.merge` call — see its own comment on the entry-route discriminator, which
+ * still resolves to "approved" through the interposed "failed"), and `doPush` re-checks
+ * the pin and pushes a branch that may already be pushed, which is a no-op. Retrying back
+ * into "creating-pr" is safe for the same shape of reason: `git.push` is a no-op on an
+ * already-pushed branch, and `forge.createPr` adopts the PR that already exists for the
+ * branch instead of opening a second one (see `doCreatePr`) — so re-entering this stage
+ * after a crash can never open a duplicate pull request.
  */
 export const RECOVERABLE_STAGES: BugStage[] = ["intake", ...AGENT_STAGES, ...SERVER_STAGES];

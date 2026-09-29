@@ -1,4 +1,5 @@
 import * as nodePty from "node-pty";
+import { stripForgeSecrets } from "./env.js";
 
 /** The slice of node-pty's IPty we use — lets tests substitute a fake. */
 export interface PtyLike {
@@ -17,10 +18,15 @@ export interface Handle { write(d: string): void; resize(c: number, r: number): 
 interface Entry { pty: PtyLike; viewer: { onData: (d: string) => void; onEnd: (reason: string) => void; sub: { dispose(): void } } | null; /** Recent output, replayed to a reconnecting viewer. */ tail: string }
 const TAIL_MAX = 256 * 1024;
 
-/** The server may itself have been started from inside a Claude Code session; never leak that context into the embedded one. */
+/**
+ * The server may itself have been started from inside a Claude Code session; never leak
+ * that context into the embedded one. Also strips forge credentials (see env.ts) — the
+ * embedded Terminal is a real shell an agent can type into, so it must not see
+ * BITBUCKET_API_TOKEN/GH_TOKEN/GITHUB_TOKEN either.
+ */
 export function cleanEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(base)) if (!/^CLAUDE/i.test(k)) env[k] = v;
+  for (const [k, v] of Object.entries(stripForgeSecrets(base))) if (!/^CLAUDE/i.test(k)) env[k] = v;
   return { ...env, TERM: "xterm-256color", COLORTERM: "truecolor" };
 }
 

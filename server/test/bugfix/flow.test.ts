@@ -79,12 +79,19 @@ describe("the whole bug-fix flow, offline in fake mode", () => {
       expect(diff.additions).toBeGreaterThan(0);
       expect(diff.patch).toContain("diff --git");
 
-      // Stage 3: approving the diff opens the PR; the server confirms it is really open.
+      // Stage 3: approving the diff opens the PR. The server itself passes through
+      // `creating-pr` — no agent, no CLI — before landing on `monitoring`. That stage is
+      // a fast server stage (no agent dispatch to wait on), so rather than polling for it
+      // — which could miss the window entirely — check the task's own durable history.
       await post<BugTask>(`${url}/api/bugtasks/${created.id}/approve`);
       const done = await until(url, created.id, "monitoring");
+      expect(done.history.map(h => h.stage)).toContain("creating-pr");
       expect(done.pr).toMatchObject({ state: "OPEN" });
       expect(done.pr?.url).toBeTruthy();
       expect(done.error).toBeNull();
+      // Proof the *server* created the PR, not an agent: the fake forge recorded exactly
+      // one `createPr` call for this run.
+      expect(running.fakeForge?.createPrCalls()).toBe(1);
 
       // With no script, every fake-forge read returns the same view, so every tick is a "nothing
       // differs" tick and produces no finding at all. `prCheckedAt` moving is therefore proof the

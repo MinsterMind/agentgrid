@@ -28,18 +28,6 @@ describe("github adapter", () => {
     expect((await makeForge({ preset: "github" }, bad.run)!.authStatus()).ok).toBe(false);
   });
 
-  it("builds a create-PR command the agent can run verbatim", () => {
-    const f = makeForge({ preset: "github" })!;
-    const cmd = f.createPrCommand({ title: "PAY-42: fix retry", bodyFile: "/tmp/body.md", base: "main", head: "bugfix/PAY-42" });
-    expect(cmd).toBe(`gh pr create --base 'main' --head 'bugfix/PAY-42' --title 'PAY-42: fix retry' --body-file '/tmp/body.md'`);
-  });
-
-  it("quotes shell metacharacters in the title", () => {
-    const f = makeForge({ preset: "github" })!;
-    expect(f.createPrCommand({ title: "it's $(broken)", bodyFile: "/b", base: "main", head: "h" }))
-      .toContain(`--title 'it'\\''s $(broken)'`);
-  });
-
   it("finds the PR for a branch and normalises it to PrInfo", async () => {
     const r = runner({ "gh pr list": { stdout: GH_PR_LIST, code: 0 } });
     const pr = await makeForge({ preset: "github" }, r.run)!.findPr("/repo", "bugfix/PAY-42");
@@ -236,5 +224,51 @@ describe("merge", () => {
   it("reports why a merge was refused instead of throwing", async () => {
     const f = githubAdapter(async () => ({ stdout: "", code: 1, stderr: "Pull request is not mergeable" } as any));
     expect(await f.merge("/r", 7, "squash")).toEqual({ ok: false, message: expect.stringMatching(/not mergeable/i) as unknown as string });
+  });
+});
+
+describe("createPr", () => {
+  const ctx = { title: "PAY-42: Boom", bodyFile: "/a/bt1/pr-body.md", base: "main", head: "bugfix/PAY-42" };
+
+  it("creates the PR and returns the created PR, verified by a read", async () => {
+    const calls: string[][] = [];
+    const f = githubAdapter(async (_c, args) => {
+      calls.push(args);
+      if (args[1] === "create") return { stdout: "https://github.com/acme/app/pull/7\n", code: 0 };
+      // findPr goes through `gh pr list`, which returns an ARRAY — wrap the fixture.
+      return { stdout: `[${await readFile(path.resolve("test/bugfix/fixtures/gh/pr-changes-requested.json"), "utf8")}]`, code: 0 };
+    });
+    const r = await f.createPr("/r", ctx);
+    expect(calls[0]).toEqual(["pr", "create", "--base", "main", "--head", "bugfix/PAY-42",
+      "--title", "PAY-42: Boom", "--body-file", "/a/bt1/pr-body.md"]);
+    expect(r).toMatchObject({ found: { number: 7, state: "OPEN" } });
+  });
+
+  it("reports why it could not create, and never throws", async () => {
+    const f = githubAdapter(async () => ({ stdout: "", code: 1, stderr: "a pull request for branch already exists" }));
+    const r = await f.createPr("/r", ctx);
+    expect(r).toMatchObject({ unavailable: expect.stringMatching(/already exists/i) as unknown as string });
+  });
+
+  it("reads the failure text from stdout when a runner puts it there and stderr is empty, rather than the useless generic message", async () => {
+    // `??` only falls through on null/undefined, not on "" — a runner that captures a
+    // failure's text on stdout with stderr as "" must still surface that text, not
+    // `gh exited 1`.
+    const f = githubAdapter(async () => ({ stdout: "fatal: branch has no upstream", code: 1, stderr: "" }));
+    const r = await f.createPr("/r", ctx);
+    expect(r).toMatchObject({ unavailable: "fatal: branch has no upstream" });
+  });
+
+  it("adopts an existing PR rather than failing, when one is already open for the branch", async () => {
+    // gh refuses a duplicate; the server should then find the PR that already exists.
+    let call = 0;
+    const f = githubAdapter(async (_c, args) => {
+      call += 1;
+      if (args[1] === "create") return { stdout: "", code: 1, stderr: "a pull request for branch \"bugfix/PAY-42\" already exists" };
+      return { stdout: `[${await readFile(path.resolve("test/bugfix/fixtures/gh/pr-changes-requested.json"), "utf8")}]`, code: 0 };
+    });
+    const r = await f.createPr("/r", ctx);
+    expect(r).toMatchObject({ found: { number: 7 } });
+    expect(call).toBeGreaterThan(1);
   });
 });

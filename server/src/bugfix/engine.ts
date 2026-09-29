@@ -388,9 +388,6 @@ export class BugFixEngine {
     const ctx = {
       artifactsDir: dir, planPath: path.join(dir, "plan.md"), prBodyPath: path.join(dir, "pr-body.md"),
       note: this.pendingNote.get(task.id),
-      createPrCommand: stage === "opening-pr" && forge
-        ? forge.createPrCommand({ title: `${task.issue.key}: ${task.issue.title}`, bodyFile: path.join(dir, "pr-body.md"), base: task.baseBranch, head: task.branch })
-        : undefined,
     };
     if (stage === "opening-pr") {
       // Guard the only stage that touches the outside world.
@@ -475,6 +472,7 @@ export class BugFixEngine {
       let cleanupError: string | null = null;
       if (task.stage === "pushing") await this.doPush(task);
       else if (task.stage === "merging") cleanupError = await this.doMerge(task);
+      else if (task.stage === "creating-pr") await this.doCreatePr(task);
       await this.advance(task.id, { type: "stage-done" });
       if (cleanupError) await this.deps.bugs.patch(task.id, { error: cleanupError });
     } catch (err) {
@@ -482,16 +480,57 @@ export class BugFixEngine {
     }
   }
 
+  /**
+   * Re-check the approved-commit pin immediately before an irreversible outward action — the
+   * diff gate may have been open for a long time, and anything that moved HEAD since is
+   * unreviewed. Shared by `doCreatePr` and `doPush`, which differ only in what they're about
+   * to do next; `action` supplies that trailing clause so each keeps its own message.
+   * Returns the current HEAD so a caller that needs it (`doPush`, to compare against the PR's
+   * post-push headSha) doesn't have to re-read it.
+   */
+  private async assertPinned(task: BugTask, action: string): Promise<string> {
+    const head = await this.deps.git.revParse(task.worktree);
+    if (head !== task.approvedHead) {
+      throw new Error(`the branch moved since the diff was approved: approved ${task.approvedHead}, HEAD is now ${head}. Review the new diff (request changes, then approve again) before ${action}.`);
+    }
+    return head;
+  }
+
+  /**
+   * Push the approved commit and create the pull request. Server work for the same reason
+   * `doPush` and `doMerge` are: it is deterministic, it is outward-facing, and doing it here
+   * keeps every forge credential away from an agent. The pin is re-checked immediately
+   * before the push — the diff gate may have been open for a long time.
+   *
+   * This stage does NOT redo the branch/commits-ahead/approved-HEAD checks that guarded the
+   * old "opening-pr" agent stage (`runStage`'s `stage === "opening-pr"` block) — those guards
+   * ran once, before this task was ever dispatched into "creating-pr", and nothing between
+   * there and here can move HEAD again (no agent runs in between). `assertPinned` below is
+   * the one check that still needs to be live here, because it alone can still be violated —
+   * the diff gate may have sat open for a long time before approval reached this stage.
+   */
+  private async doCreatePr(task: BugTask): Promise<void> {
+    const { git, forge, bugs, tracker } = this.deps;
+    if (!forge) throw new Error("no forge adapter: cannot create a pull request");
+    await this.assertPinned(task, "opening a pull request");
+    await git.push(task.worktree, task.branch);
+    const body = path.join(bugs.dir(task.id), "pr-body.md");
+    const created = await forge.createPr(task.sourceRepo, {
+      title: `${task.issue.key}: ${task.issue.title}`, bodyFile: body,
+      base: task.baseBranch, head: task.branch });
+    if (!("found" in created) || !created.found) {
+      throw new Error("unavailable" in created ? created.unavailable : "the forge did not return a pull request");
+    }
+    if (created.found.state !== "OPEN") throw new Error(`pull request #${created.found.number} is ${created.found.state.toLowerCase()}, not open`);
+    await bugs.patchPr(task.id, created.found, new Date().toISOString());
+    await tracker.comment(task.issue.key, `Fix in progress — pull request: ${created.found.url}`).catch(() => {});
+  }
+
   /** Push the task's branch for an approved feedback or rebase diff. The server acts here,
    *  not an agent: no tokens, no improvisation, just the exact commit the human approved. */
   private async doPush(task: BugTask): Promise<void> {
     const { git, forge, bugs } = this.deps;
-    // Re-check the pin against the commit the human approved. The gate could have opened
-    // minutes ago; anything that moved HEAD since is unreviewed.
-    const head = await git.revParse(task.worktree);
-    if (head !== task.approvedHead) {
-      throw new Error(`the branch moved since the diff was approved: approved ${task.approvedHead}, HEAD is now ${head}. Review the new diff (request changes, then approve again) before pushing.`);
-    }
+    const head = await this.assertPinned(task, "pushing");
     // The gate that recorded which round this was is already gone by the time this runs —
     // the transition into "pushing" clears it (`gate: null`) — so read it from the task's own
     // history instead: the most recent entry naming an agent stage. "rebase" means force (a
@@ -660,7 +699,7 @@ export class BugFixEngine {
 
   /** The server's own evidence that a stage really happened. */
   private async verify(task: BugTask): Promise<void> {
-    const { bugs, git, forge, tracker } = this.deps;
+    const { bugs, git } = this.deps;
     if (task.stage === "analyzing") {
       const plan = await bugs.readArtifact(task.id, "plan.md");
       if (!plan?.trim()) throw new Error("the agent did not write plan.md");
@@ -719,26 +758,10 @@ export class BugFixEngine {
       return;
     }
     if (task.stage === "opening-pr") {
-      // `runStage`'s pin check only runs BEFORE dispatch: it proves HEAD hadn't moved at
-      // the moment this stage was launched, not that it stayed put for the run's whole
-      // duration. An agent that commits (and pushes) inside the worktree during the run
-      // itself moves HEAD after that check already passed — this is "the only stage that
-      // touches the outside world" per `runStage`'s own comment, and `open-pr.md` already
-      // tells the agent not to change code here, so the server must be what actually
-      // checks. Re-assert the pin before trusting anything this stage reports.
-      const head = await git.revParse(task.worktree);
-      if (head !== task.approvedHead) {
-        throw new Error(`the branch moved during opening-pr: approved ${task.approvedHead}, HEAD is now ${head}. Review the new diff (request changes, then approve again) before opening a pull request.`);
-      }
-      const pr = forge ? await forge.findPr(task.sourceRepo, task.branch) : null;
-      if (!pr) throw new Error("no pull request found for this branch");
-      // The adapter deliberately falls back to `--state all`, so a reused branch can
-      // carry a stale CLOSED or MERGED PR from an earlier round. Only an OPEN PR is
-      // evidence this run actually produced a fix worth reviewing; anything else must
-      // fail the stage rather than be recorded and rested on.
-      if (pr.state !== "OPEN") throw new Error(`pull request #${pr.number} is ${pr.state.toLowerCase()}, not open`);
-      await bugs.patch(task.id, { pr });
-      await tracker.comment(task.issue.key, `Fix in progress — pull request: ${pr.url}`).catch(() => {});
+      // The agent's only job here is the PR description — the server creates the PR
+      // itself (see doCreatePr), so there is nothing outward to verify yet.
+      const body = await bugs.readArtifact(task.id, "pr-body.md");
+      if (!body?.trim()) throw new Error("the agent did not write pr-body.md");
       return;
     }
   }

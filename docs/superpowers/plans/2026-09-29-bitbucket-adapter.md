@@ -1015,3 +1015,68 @@ git commit -m "test(bugfix): drive creating-pr offline; document Bitbucket setup
 - **The token getter is a function**, not a captured string, so a token exported after the server started is picked up on the next call rather than at construction.
 - **Task 1 leaves the tree briefly inconsistent** (the engine still references `createPrCommand` until Task 3). If it does not compile at the end of Task 1, stub the call site and say so; do not reach forward into Task 3's work.
 - **The spec's §4.3 foldings are the risky part.** If real Bitbucket responses contradict a fixture, trust the real response, fix the fixture, and say so in the report — the fixtures were written from documentation, not from live traffic.
+
+---
+
+## Execution addendum — known deviations and follow-ups (2026-09-29)
+
+This plan was executed to completion on `feat/bitbucket-adapter`. The following
+items were deliberately **not** done, and are recorded here rather than in the
+execution workspace, which is deleted when a plan completes.
+
+### Deviation from the spec
+
+- **`GitOps.wouldConflict` is implemented and tested, but nothing calls it.**
+  Spec §4.3/§11 promised conflict detection as one function with a documented
+  `git merge-tree` fallback for when Atlassian retires the `/conflicts`
+  endpoint. The function exists; the fallback is never reached. When
+  `/conflicts` fails today, `fetchMergeable` returns `mergeable: null`
+  (*unknown*), `watcher.ts` acts only on `"CONFLICTING"`, so a rebase round is
+  skipped rather than a conflict merged over — and `forge.merge` would still
+  fail with Bitbucket's own conflict message. The failure mode is silence, not
+  damage. Whoever wires it must also address the next item.
+
+- **`wouldConflict` cannot distinguish a real conflict from a bad base ref.**
+  `git merge-tree --write-tree` exits 1 for both (verified on git 2.50.1). The
+  function now correctly reports `null` (unknown) for spawn failures and for
+  pre-2.38 git that lacks `--write-tree`, but exit 1 is read as CONFLICTING.
+  A mitigation exists if needed: a real conflict's stdout carries `CONFLICT`
+  markers, a bad-ref failure's does not.
+
+- **`fetchChecks` uses `/pullrequests/{id}/statuses`**, where spec §4.3 named
+  `/commit/{sha}/statuses`. The PR-scoped endpoint is the better choice, but the
+  deviation is undocumented in the spec and its fixtures are unverified against
+  live Bitbucket.
+
+### Unverified against live Bitbucket
+
+Every Bitbucket fixture was written from Atlassian's published documentation,
+not from live traffic. Nothing in CI may call a live forge. Check these first on
+a real workspace, per spec §9's opt-in checklist:
+`participants[].approved` and the participant state field; the activity feed's
+`approval` entry shape; the `updated_on`/`created_on` microsecond timestamp
+format; and the `/pullrequests/{id}/statuses` response above.
+
+### Deferred follow-ups
+
+- **PR adoption is destination-blind in both adapters.** Bitbucket's
+  `findPrByBranch` matches on `source.branch.name` without
+  `destination.branch.name`; `gh pr list --head` is blind the same way. A stale
+  open PR from the same branch to a different base would be adopted. Cheap to
+  fix on the Bitbucket side.
+- **`listReviewEvents` filters `since` two different ways** — GitHub string-compares,
+  Bitbucket parses to milliseconds. Each is correct for its own forge's
+  timestamp format, but `ForgeAdapter.listReviewEvents`'s contract says only
+  "strictly after `since`"; the next forge has no guidance on which to copy.
+- **`isBot` defaults to "human"** when a forge reports no account type, in both
+  adapters. `ReviewEvent.isBot` is a boolean with no way to express "unknown".
+  Worst case is a wasted feedback round against the cap, never a bad merge.
+- **A `cancel` landing mid-`creating-pr`** makes `advance({stage-done})` throw,
+  swallowed by `runServerStage`'s catch — leaving a real, open PR against a
+  cancelled task. The same shape affects `pushing` and `merging` and predates
+  this work, but `creating-pr` is the first server stage that *creates* an
+  object rather than moving one.
+- **No Bitbucket fixture exercises the `approval` branch** of `listReviewEvents`.
+  `reviewDecision` reads `participants` and never the activity feed, so an
+  activity-shape mismatch cannot manufacture an approval; the worst case is an
+  approval comment missing from a rendered list.

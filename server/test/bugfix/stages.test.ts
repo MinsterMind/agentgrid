@@ -27,9 +27,9 @@ describe("nextStage — happy path through Phase 1", () => {
     expect(t).toMatchObject({ stage: "diff-review", run: null });
     expect(t.gate).toMatchObject({ kind: "diff" });
   });
-  it("approving the diff runs opening-pr, which rests in monitoring", () => {
+  it("approving the diff runs opening-pr, which dispatches creating-pr", () => {
     expect(nextStage(task("diff-review"), { type: "approve" })).toMatchObject({ stage: "opening-pr", run: "opening-pr" });
-    expect(nextStage(task("opening-pr"), { type: "stage-done" })).toMatchObject({ stage: "monitoring", run: null, gate: null });
+    expect(nextStage(task("opening-pr"), { type: "stage-done" })).toMatchObject({ stage: "creating-pr", run: null, gate: null });
   });
 });
 
@@ -177,4 +177,28 @@ describe("Phase 2: the merge gate", () => {
 it("an externally merged PR routes to the same merging stage", () => {
   expect(nextStage(at("monitoring"), { type: "pr-merged" })).toMatchObject({ stage: "merging", run: null });
   expect(() => nextStage(at("implementing"), { type: "pr-merged" })).toThrow(/only while monitoring/i);
+});
+
+describe("server-side PR creation", () => {
+  it("a verified opening-pr hands off to the creating-pr server stage", () => {
+    expect(nextStage(task("opening-pr"), { type: "stage-done" }))
+      .toMatchObject({ stage: "creating-pr", run: null });
+  });
+
+  it("a created PR rests in monitoring", () => {
+    expect(nextStage(task("creating-pr"), { type: "stage-done" }))
+      .toMatchObject({ stage: "monitoring", run: null });
+  });
+
+  it("a failed creation is retryable as a server stage", () => {
+    const failed = task("failed", { history: [
+      { stage: "creating-pr", at: "t", note: "" }, { stage: "failed", at: "t", note: "" }] });
+    expect(nextStage(failed, { type: "retry" })).toMatchObject({ stage: "creating-pr", run: null });
+  });
+
+  it("still refuses stage-failed at a gate, and creating-pr is not a gate", () => {
+    expect(() => nextStage(task("diff-review"), { type: "stage-failed", reason: "x" })).toThrow(/waiting on a human/i);
+    expect(nextStage(task("creating-pr"), { type: "stage-failed", reason: "boom" }))
+      .toMatchObject({ stage: "failed", error: "boom" });
+  });
 });

@@ -186,7 +186,7 @@ export function createApp(deps: AppDeps) {
 
   const MERGE_POLICIES = ["ask", "auto"] as const;
   const MERGE_METHODS = ["squash", "merge", "rebase"] as const;
-  const FORGE_PRESETS = ["github", "gitlab", "custom"] as const;
+  const FORGE_PRESETS = ["github", "gitlab", "bitbucket", "custom"] as const;
 
   app.get("/api/bugtasks", wrap((_req, res) => res.json(bugs().store.list())));
   app.get("/api/bugtasks/:id", wrap((req, res) => res.json(bugs().store.get(req.params.id as string))));
@@ -273,6 +273,17 @@ export function createApp(deps: AppDeps) {
       const forge = body.forge;
       if (!forge || typeof forge !== "object" || !FORGE_PRESETS.includes(forge.preset)) {
         throw new BadRequest(`forge.preset must be one of ${FORGE_PRESETS.join(", ")}`);
+      }
+      if (forge.username !== undefined && typeof forge.username !== "string") {
+        throw new BadRequest("forge.username must be a string");
+      }
+      // Bitbucket has no other way to authenticate (Basic auth needs the Atlassian email).
+      // A blank/whitespace username would otherwise sail through here, and `makeForge`
+      // would then just treat the whole forge as unconfigured — leaving the user with
+      // intake's generic "no forge configured", naming neither `forge.username` nor
+      // integrations.json. Reject it here instead, naming the field, per spec §1.
+      if (forge.preset === "bitbucket" && (typeof forge.username !== "string" || !forge.username.trim())) {
+        throw new BadRequest("forge.username is required for the bitbucket preset (your Atlassian account email)");
       }
       patch.forge = forge;
     }

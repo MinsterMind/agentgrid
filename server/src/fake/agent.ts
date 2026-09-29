@@ -16,7 +16,7 @@ const run = promisify(execFile);
 export type FakeStage = "analyze" | "implement" | "open-pr" | "review-feedback" | "rebase" | "other";
 
 const PLAN_PATH = /write your plan to (\S+)/i;
-const PR_BODY_PATH = /write the pr description to (\S+?)[:\s]/i;
+const PR_BODY_PATH = /write the pull request description to (\S+?)[:\s]/i;
 const APPROVED_PLAN = /the approved plan is at (\S+)/i;
 const REVIEW_FEEDBACK = /address the review feedback|reviewers have asked for changes/i;
 const REBASE = /rebase \S+ onto/i;
@@ -96,8 +96,7 @@ export const fakeAgentQuery: QueryFn = ({ prompt, options }) => (async function*
       summary = "Committed the fix (fake).";
     } else if (stage === "open-pr" && prBodyPath) {
       await writeFile(prBodyPath, "Fake PR body: what broke, why, and how this fixture fixed it.\n");
-      await writeFile(path.join(path.dirname(prBodyPath), "pr.json"), JSON.stringify({ number: 1, url: "https://example.invalid/pr/1" }));
-      summary = "Wrote the PR description (fake); the forge reports the pull request.";
+      summary = "Wrote the PR description (fake); the server pushes and opens the pull request.";
     } else if (stage === "review-feedback") {
       // The server's `verify` requires a commit beyond `approvedHead` for this stage.
       await commitSomething(cwd);

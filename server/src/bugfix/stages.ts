@@ -85,7 +85,8 @@ export function nextStage(task: BugTask, event: BugEvent): Transition {
         case "intake": return go("analyzing", "analyzing");
         case "analyzing": return wait("plan-review", "plan");
         case "implementing": return wait("diff-review", "diff");
-        case "opening-pr": return go("monitoring", null);   // Phase 2 starts the watcher here
+        case "opening-pr": return serverRun("creating-pr");
+        case "creating-pr": return go("monitoring", null);   // Phase 2 starts the watcher here
         case "review-feedback": return wait("diff-review", "diff", "feedback");
         case "rebase": return wait("diff-review", "diff", "rebase");
         case "pushing": return go("monitoring", null);

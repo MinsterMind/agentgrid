@@ -23,6 +23,27 @@ describe("buildOptions", () => {
   });
 });
 
+describe("buildOptions env", () => {
+  it("strips forge credentials from the env handed to the agent process", () => {
+    const ac = new AbortController(); const canUseTool = async () => ({ behavior: "allow" as const });
+    const savedEnv = { ...process.env };
+    process.env.BITBUCKET_API_TOKEN = "secret-bb";
+    process.env.GH_TOKEN = "secret-gh";
+    process.env.GITHUB_TOKEN = "secret-ghlegacy";
+    process.env.HOME = process.env.HOME ?? "/home/x";
+    try {
+      const o = buildOptions(role, agent, { canUseTool, abortController: ac });
+      expect(o.env).toBeDefined();
+      expect(o.env).not.toHaveProperty("BITBUCKET_API_TOKEN");
+      expect(o.env).not.toHaveProperty("GH_TOKEN");
+      expect(o.env).not.toHaveProperty("GITHUB_TOKEN");
+      expect(o.env?.HOME).toBe(process.env.HOME);
+    } finally {
+      process.env = savedEnv;
+    }
+  });
+});
+
 describe("buildOptions resume", () => {
   it("adds resume for adopted sessions only", () => {
     const extra = { canUseTool: async () => ({ behavior: "allow" as const }), abortController: new AbortController() };

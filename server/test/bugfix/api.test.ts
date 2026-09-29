@@ -107,8 +107,34 @@ describe("bug task routes", () => {
   });
 
   it("rejects an out-of-enum forge preset on PUT /api/integrations", async () => {
-    await request(app).put("/api/integrations").send({ forge: { preset: "bitbucket" } }).expect(400);
+    await request(app).put("/api/integrations").send({ forge: { preset: "sourcehut" } }).expect(400);
     expect((await request(app).get("/api/integrations")).body.forge).toBeUndefined();
+  });
+
+  it("accepts a bitbucket forge preset with a username on PUT /api/integrations", async () => {
+    const saved = await request(app).put("/api/integrations")
+      .send({ forge: { preset: "bitbucket", username: "me@example.com" } }).expect(200);
+    expect(saved.body.forge).toEqual({ preset: "bitbucket", username: "me@example.com" });
+    expect((await request(app).get("/api/integrations")).body.forge).toEqual({ preset: "bitbucket", username: "me@example.com" });
+  });
+
+  it("rejects a non-string forge username on PUT /api/integrations", async () => {
+    await request(app).put("/api/integrations").send({ forge: { preset: "bitbucket", username: 42 } }).expect(400);
+  });
+
+  it("rejects a blank or whitespace-only username for the bitbucket preset, naming the field", async () => {
+    // Spec §1: an error naming neither the file nor the missing key is the failure mode this
+    // work exists to remove — so this must be caught here, not surface later as intake's
+    // generic "no forge configured".
+    const missing = await request(app).put("/api/integrations").send({ forge: { preset: "bitbucket" } }).expect(400);
+    expect(missing.body.error).toMatch(/forge\.username/);
+    const blank = await request(app).put("/api/integrations").send({ forge: { preset: "bitbucket", username: "   " } }).expect(400);
+    expect(blank.body.error).toMatch(/forge\.username/);
+    expect((await request(app).get("/api/integrations")).body.forge).toBeUndefined();
+  });
+
+  it("does not require a username for the github preset", async () => {
+    await request(app).put("/api/integrations").send({ forge: { preset: "github" } }).expect(200);
   });
 
   it("rejects a malformed tracker on PUT /api/integrations, and accepts a well-formed one", async () => {
@@ -198,6 +224,7 @@ async function httpToMonitoring() {
   await finishStage();
   await until(() => realBugs.get(id).stage === "diff-review");
   await request(realApp).post(`/api/bugtasks/${id}/approve`).expect(200);
+  await realBugs.writeArtifact(id, "pr-body.md", "PR body");
   await finishStage();
   await until(() => realBugs.get(id).stage === "monitoring");
   return { ...built, id };
@@ -219,7 +246,6 @@ async function appAtMergeGate() {
     merges: [] as Array<{ number: number; method: string }>,
     state: "OPEN" as "OPEN" | "MERGED" | "CLOSED",
     authStatus: async () => ({ ok: true, message: "ok" }),
-    createPrCommand: () => "gh pr create --base 'main' --head 'bugfix/PAY-42' --title 't' --body-file '/b'",
     findPr: async () => ({ number: 7, url: "https://x/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: "abc1234abc1234abc1234abc1234abc1234abc1", lastSeenEventAt: "t" }),
     getPr: async () => ({ found: { number: 7, url: "https://x/pr/7", state: forge.state, reviewDecision: null, checks: null, mergeable: "MERGEABLE" as string | null, headSha: "abc1234abc1234abc1234abc1234abc1234abc1", lastSeenEventAt: "t" } }),
     listReviewEvents: async () => [],
