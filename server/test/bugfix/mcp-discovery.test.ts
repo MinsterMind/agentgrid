@@ -58,6 +58,16 @@ describe("discoverMcpServers", () => {
     await expect(discoverMcpServers({ home })).resolves.toEqual({ importable: [], accountOnly: [], problems: [] });
   });
 
+  it("reports a file it was meant to read but could not, distinctly from one that is absent", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agentgrid-unreadable-"));
+    await mkdir(path.join(home, ".claude.json"));      // a directory where the file should be
+    const d = await discoverMcpServers({ home });
+    expect(d.importable).toEqual([]);
+    expect(d.problems).toHaveLength(1);
+    expect(d.problems[0]).toMatch(/\.claude\.json/);
+    expect(d.problems[0]).toMatch(/could not be read/);
+  });
+
   it("prefers the more specific scope when the same name appears twice", async () => {
     const home = await fakeHome({
       mcpServers: { atlassian: { type: "http", url: "https://user-scope" } },

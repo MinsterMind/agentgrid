@@ -15,7 +15,15 @@ export interface Discovery { importable: McpServerFound[]; accountOnly: string[]
 async function readJson(file: string, problems: string[]): Promise<any | undefined> {
   let raw: string;
   try { raw = await readFile(file, "utf8"); }
-  catch { return undefined; }                       // absent is normal, not a problem
+  catch (err) {
+    // Absent is normal — most machines have no repo-scoped .mcp.json, and many have no
+    // ~/.claude at all. Anything else (EACCES, EISDIR) is a file we were meant to read and
+    // could not: saying "nothing found" there would state something false.
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      problems.push(`${file} could not be read: ${(err as Error).message}`);
+    }
+    return undefined;
+  }
   try { return JSON.parse(raw); }
   catch (err) { problems.push(`${file} could not be parsed: ${(err as Error).message}`); return undefined; }
 }
