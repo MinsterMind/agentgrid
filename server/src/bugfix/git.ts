@@ -152,4 +152,15 @@ export class GitOps {
     const args = ["push", ...(opts.force ? ["--force-with-lease"] : []), "origin", `${branch}:${branch}`];
     await this.run(dir, args);
   }
+
+  /**
+   * Would merging the base into HEAD conflict? `merge-tree` answers without touching the
+   * worktree. `this.run` resolves with stdout and rejects (via execFile's callback) on a
+   * non-zero exit — there is no `{code}` to read — so a conflict is detected as a rejection,
+   * the same convention `branchExists`/`worktreeRegistered` already use for a git call whose
+   * exit code is the only signal.
+   */
+  async wouldConflict(dir: string, baseBranch: string): Promise<boolean> {
+    return this.run(dir, ["merge-tree", "--write-tree", "--name-only", baseBranch, "HEAD"]).then(() => false, () => true);
+  }
 }

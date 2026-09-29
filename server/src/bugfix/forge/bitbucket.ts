@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import type { CreatePrContext, ForgeAdapter, MergeMethod, PrLookup, ReviewEvent } from "./types.js";
 import type { PrInfo } from "../types.js";
@@ -58,7 +59,7 @@ function reviewDecision(pr: any): string | null {
   return null;
 }
 
-function toPrInfo(pr: any, checks: string | null): PrInfo {
+function toPrInfo(pr: any, checks: string | null, mergeable: PrInfo["mergeable"]): PrInfo {
   const state = (pr.state ?? "").toUpperCase();
   const normalisedState: PrInfo["state"] =
     state === "MERGED" ? "MERGED" : state === "DECLINED" || state === "SUPERSEDED" ? "CLOSED" : "OPEN";
@@ -68,7 +69,7 @@ function toPrInfo(pr: any, checks: string | null): PrInfo {
     state: normalisedState,
     reviewDecision: reviewDecision(pr),
     checks,
-    mergeable: null,        // Task 6
+    mergeable,
     headSha: pr.source?.commit?.hash ?? null,
     lastSeenEventAt: pr.updated_on ?? new Date().toISOString(),
   };
@@ -143,6 +144,37 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
     return rollupChecks(values);
   }
 
+  /**
+   * Bitbucket's PR object carries no `mergeable`. `/conflicts` answers it, but Atlassian has
+   * said this area is changing (the diffstat "merge conflict" status is documented as going
+   * away, with a new public API to follow), so the caller can pass a local fallback: the
+   * server has the worktree and can answer with `git merge-tree` without any forge at all.
+   * Unknown is `null` — never guess MERGEABLE, because that is the answer that skips a rebase.
+   */
+  async function fetchMergeable(workspace: string, slug: string, number: number): Promise<string | null> {
+    const r = await api(`/repositories/${encodeURIComponent(workspace)}/${encodeURIComponent(slug)}/pullrequests/${number}/conflicts`);
+    if (r.kind !== "ok") return null;
+    const values = Array.isArray(r.body?.values) ? r.body.values : null;
+    if (values === null) return null;
+    return values.length > 0 ? "CONFLICTING" : "MERGEABLE";
+  }
+
+  /** The open PR for `branch`, or null when there is none or it can't be read. Shared by
+   *  `findPr` and by `createPr`'s duplicate-adoption path. */
+  async function findPrByBranch(repoDir: string, branch: string): Promise<PrInfo | null> {
+    const slug = await resolveSlug(repoDir);
+    if (!slug) return null;
+    const q = `source.branch.name="${branch}" AND state="OPEN"`;
+    const r = await api(`/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests?q=${encodeURIComponent(q)}`);
+    if (r.kind !== "ok") return null;
+    const values = Array.isArray(r.body?.values) ? r.body.values : [];
+    const pr = values[0];
+    if (!looksLikePr(pr)) return null;
+    const checks = await fetchChecks(slug.workspace, slug.slug, pr.id);
+    const mergeable = await fetchMergeable(slug.workspace, slug.slug, pr.id);
+    return toPrInfo(pr, checks, mergeable);
+  }
+
   async function lookupByNumber(repoDir: string, number: number): Promise<PrLookup> {
     const slug = await resolveSlug(repoDir);
     if (!slug) {
@@ -155,7 +187,8 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
     if (r.kind === "unavailable") return { unavailable: r.message };
     if (!looksLikePr(r.body)) return { unavailable: `Bitbucket's response for PR #${number} did not look like a pull request` };
     const checks = await fetchChecks(slug.workspace, slug.slug, number);
-    return { found: toPrInfo(r.body, checks) };
+    const mergeable = await fetchMergeable(slug.workspace, slug.slug, number);
+    return { found: toPrInfo(r.body, checks, mergeable) };
   }
 
   return {
@@ -177,21 +210,44 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
       return { ok: true, message: `Authenticated to Bitbucket as ${who} (${deps.username}).` };
     },
 
-    async createPr(_repoDir: string, _ctx: CreatePrContext): Promise<PrLookup> {
-      return { unavailable: "createPr is not yet implemented for Bitbucket" };
+    async createPr(repoDir: string, ctx: CreatePrContext): Promise<PrLookup> {
+      const slug = await resolveSlug(repoDir);
+      if (!slug) {
+        return { unavailable: `could not determine the Bitbucket repository from ${repoDir}'s origin remote` };
+      }
+      let description: string;
+      try {
+        description = await readFile(ctx.bodyFile, "utf8");
+      } catch (err) {
+        return { unavailable: `could not read the PR body from ${ctx.bodyFile}: ${err instanceof Error ? err.message : String(err)}` };
+      }
+      const body = JSON.stringify({
+        title: ctx.title,
+        source: { branch: { name: ctx.head } },
+        destination: { branch: { name: ctx.base } },
+        description,
+      });
+      const r = await api(`/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests`, { method: "POST", body });
+      if (r.kind === "no-token") return { unavailable: "BITBUCKET_API_TOKEN is not set" };
+      if (r.kind === "refused") return { unavailable: "Bitbucket refused the request (token not accepted)" };
+      if (r.kind === "missing") return { unavailable: "Bitbucket returned 404 creating the pull request" };
+      if (r.kind === "unavailable") return { unavailable: r.message };
+      if (looksLikePr(r.body)) {
+        const checks = await fetchChecks(slug.workspace, slug.slug, r.body.id);
+        const mergeable = await fetchMergeable(slug.workspace, slug.slug, r.body.id);
+        return { found: toPrInfo(r.body, checks, mergeable) };
+      }
+      // Bitbucket refuses a second PR for the same branch (400, e.g. "branch already has an
+      // open pull request"). A retried `creating-pr` must be idempotent, so adopt the
+      // existing PR instead of reporting failure.
+      const existing = await findPrByBranch(repoDir, ctx.head);
+      if (existing) return { found: existing };
+      const message = typeof r.body?.error?.message === "string" ? r.body.error.message : "Bitbucket refused to create the pull request";
+      return { unavailable: message };
     },
 
     async findPr(repoDir: string, branch: string): Promise<PrInfo | null> {
-      const slug = await resolveSlug(repoDir);
-      if (!slug) return null;
-      const q = `source.branch.name="${branch}" AND state="OPEN"`;
-      const r = await api(`/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests?q=${encodeURIComponent(q)}`);
-      if (r.kind !== "ok") return null;
-      const values = Array.isArray(r.body?.values) ? r.body.values : [];
-      const pr = values[0];
-      if (!looksLikePr(pr)) return null;
-      const checks = await fetchChecks(slug.workspace, slug.slug, pr.id);
-      return toPrInfo(pr, checks);
+      return findPrByBranch(repoDir, branch);
     },
 
     async getPr(repoDir: string, number: number): Promise<PrLookup> {
@@ -204,6 +260,10 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
       const r = await api(`/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests/${number}/activity`);
       if (r.kind !== "ok") return [];
       const values = Array.isArray(r.body?.values) ? r.body.values : [];
+      // An unparseable `since` makes `sinceMs` NaN, and every `ms > sinceMs` comparison below
+      // is then false — filtering ALL events out to `[]`, deliberately. That favours dropping
+      // events over admitting ones the caller can't place in time; it is easy to misread as a
+      // bug on a later pass, so it's called out here rather than left implicit.
       const sinceMs = Date.parse(since);
       // Bitbucket reports no bot-account signal for pull-request participants today — `type`
       // is always "user" in the documented shape. Check it anyway so a future value ("bot")
@@ -232,8 +292,30 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
         .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
     },
 
-    async merge(_repoDir: string, _number: number, _method: MergeMethod) {
-      return { ok: false, message: "merge is not yet implemented for Bitbucket" };
+    async merge(repoDir: string, number: number, method: MergeMethod) {
+      // Bitbucket's merge strategies are "merge_commit", "squash" and "fast_forward". None of
+      // those is a rebase — `fast_forward` moves the base pointer without rewriting the PR's
+      // commits, which is a different operation from a rebase merge. Silently substituting it
+      // would perform something other than what the human clicked, on the one step that can't
+      // be undone, so this is refused rather than mapped.
+      if (method === "rebase") {
+        return { ok: false, message: "Bitbucket has no rebase merge strategy; refusing rather than silently substituting a fast-forward." };
+      }
+      const slug = await resolveSlug(repoDir);
+      if (!slug) {
+        return { ok: false, message: `could not determine the Bitbucket repository from ${repoDir}'s origin remote` };
+      }
+      const merge_strategy = method === "squash" ? "squash" : "merge_commit";
+      const r = await api(`/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests/${number}/merge`,
+        { method: "POST", body: JSON.stringify({ merge_strategy, close_source_branch: true }) });
+      if (r.kind === "no-token") return { ok: false, message: "BITBUCKET_API_TOKEN is not set" };
+      if (r.kind === "refused") return { ok: false, message: "Bitbucket refused the request (token not accepted)" };
+      if (r.kind === "missing") return { ok: false, message: `Bitbucket returned 404 for PR #${number}` };
+      if (r.kind === "unavailable") return { ok: false, message: r.message };
+      const errorMessage = r.body?.error?.message;
+      if (typeof errorMessage === "string") return { ok: false, message: errorMessage };
+      if (!looksLikePr(r.body)) return { ok: false, message: "Bitbucket's response to the merge did not look like a pull request" };
+      return { ok: true, message: `merged PR #${number} (${merge_strategy})` };
     },
   };
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { bitbucketAdapter, parseRepoSlug } from "../../../src/bugfix/forge/bitbucket.js";
 
@@ -173,5 +174,77 @@ describe("review state", () => {
   it("returns [] rather than throwing when the activity feed cannot be read", async () => {
     const { fetchFn } = recorder(async () => new Response("", { status: 500 }));
     expect(await bitbucketAdapter(deps(fetchFn)).listReviewEvents("/r", 7, "2026-09-29T09:00:00Z")).toEqual([]);
+  });
+});
+
+describe("conflicts", () => {
+  it("reports CONFLICTING when the conflicts endpoint lists any", async () => {
+    const { fetchFn } = recorder(async url =>
+      url.includes("/conflicts") ? new Response(JSON.stringify({ values: [{ path: "src/a.ts" }] }), { status: 200 })
+      : url.includes("/statuses") ? new Response(JSON.stringify({ values: [] }), { status: 200 })
+      : json("pr-open.json"));
+    expect(await bitbucketAdapter(deps(fetchFn)).getPr("/r", 7)).toMatchObject({ found: { mergeable: "CONFLICTING" } });
+  });
+
+  it("leaves mergeable null when the conflicts endpoint is unavailable — never guesses MERGEABLE", async () => {
+    const { fetchFn } = recorder(async url =>
+      url.includes("/conflicts") ? new Response("", { status: 503 })
+      : url.includes("/statuses") ? new Response(JSON.stringify({ values: [] }), { status: 200 })
+      : json("pr-open.json"));
+    expect(await bitbucketAdapter(deps(fetchFn)).getPr("/r", 7)).toMatchObject({ found: { mergeable: null } });
+  });
+});
+
+describe("merge", () => {
+  it("maps squash and merge, and posts close_source_branch", async () => {
+    const { calls, fetchFn } = recorder(async () => json("pr-merged.json"));
+    const f = bitbucketAdapter(deps(fetchFn));
+    expect(await f.merge("/r", 7, "squash")).toMatchObject({ ok: true });
+    expect(JSON.parse(calls[0].body!)).toMatchObject({ merge_strategy: "squash", close_source_branch: true });
+    await f.merge("/r", 7, "merge");
+    expect(JSON.parse(calls[1].body!)).toMatchObject({ merge_strategy: "merge_commit" });
+  });
+
+  it("REFUSES rebase rather than silently fast-forwarding", async () => {
+    const { calls, fetchFn } = recorder(async () => json("pr-merged.json"));
+    const r = await bitbucketAdapter(deps(fetchFn)).merge("/r", 7, "rebase");
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/rebase/i);
+    expect(calls).toEqual([]);            // nothing was sent
+  });
+
+  it("reports the forge's reason when a merge is refused", async () => {
+    const { fetchFn } = recorder(async () => new Response(JSON.stringify({ error: { message: "pull request has conflicts" } }), { status: 400 }));
+    expect(await bitbucketAdapter(deps(fetchFn)).merge("/r", 7, "squash"))
+      .toMatchObject({ ok: false, message: expect.stringMatching(/conflicts/i) as unknown as string });
+  });
+});
+
+describe("createPr", () => {
+  it("posts the title, branches and the body read from the file", async () => {
+    const { calls, fetchFn } = recorder(async url =>
+      url.includes("/statuses") || url.includes("/conflicts") ? new Response(JSON.stringify({ values: [] }), { status: 200 })
+      : json("pr-open.json"));
+    const body = path.join(await mkdtemp(path.join(tmpdir(), "bb-")), "pr-body.md");
+    await writeFile(body, "## What broke\nA handle leak.\n");
+    const r = await bitbucketAdapter(deps(fetchFn)).createPr("/r", { title: "PAY-42: Boom", bodyFile: body, base: "main", head: "bugfix/PAY-42" });
+    const sent = JSON.parse(calls[0].body!);
+    expect(sent).toMatchObject({ title: "PAY-42: Boom", source: { branch: { name: "bugfix/PAY-42" } }, destination: { branch: { name: "main" } } });
+    expect(sent.description).toMatch(/handle leak/);
+    expect(r).toMatchObject({ found: { number: 7 } });
+  });
+
+  it("adopts an existing PR when the forge refuses a duplicate", async () => {
+    let post = 0;
+    const { fetchFn } = recorder(async (url, init) => {
+      if (init?.method === "POST") { post += 1; return new Response(JSON.stringify({ error: { message: "branch already has an open pull request" } }), { status: 400 }); }
+      if (url.includes("/statuses") || url.includes("/conflicts")) return new Response(JSON.stringify({ values: [] }), { status: 200 });
+      return new Response(JSON.stringify({ values: [JSON.parse(await fx("pr-open.json"))] }), { status: 200 });
+    });
+    const body = path.join(await mkdtemp(path.join(tmpdir(), "bb-")), "pr-body.md");
+    await writeFile(body, "b");
+    expect(await bitbucketAdapter(deps(fetchFn)).createPr("/r", { title: "t", bodyFile: body, base: "main", head: "bugfix/PAY-42" }))
+      .toMatchObject({ found: { number: 7 } });
+    expect(post).toBe(1);
   });
 });

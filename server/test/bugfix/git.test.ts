@@ -285,3 +285,31 @@ describe("rebaseState", () => {
     expect(state.conflicted).toContain("c.txt");
   });
 });
+
+describe("wouldConflict", () => {
+  it("is true for a real conflict against the base and false for a clean merge", async () => {
+    const repo = await makeRepo();
+    await writeFile(path.join(repo, "c.txt"), "base\n");
+    await run("git", ["add", "-A"], { cwd: repo });
+    await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "base"], { cwd: repo });
+    await run("git", ["checkout", "-b", "side"], { cwd: repo });
+    await writeFile(path.join(repo, "c.txt"), "side\n");
+    await run("git", ["add", "-A"], { cwd: repo });
+    await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "side"], { cwd: repo });
+    await run("git", ["checkout", "main"], { cwd: repo });
+    await writeFile(path.join(repo, "c.txt"), "main\n");
+    await run("git", ["add", "-A"], { cwd: repo });
+    await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "main"], { cwd: repo });
+    await run("git", ["checkout", "side"], { cwd: repo });
+
+    const git = new GitOps();
+    expect(await git.wouldConflict(repo, "main")).toBe(true);
+
+    const clean = await makeRepo();
+    await run("git", ["checkout", "-b", "feature"], { cwd: clean });
+    await writeFile(path.join(clean, "new.txt"), "only here\n");
+    await run("git", ["add", "-A"], { cwd: clean });
+    await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "feature"], { cwd: clean });
+    expect(await git.wouldConflict(clean, "main")).toBe(false);
+  });
+});
