@@ -107,6 +107,48 @@ describe("findPr", () => {
     expect(decodeURIComponent(calls[0].url)).toContain('source.branch.name="bugfix/PAY-42"');
     expect(decodeURIComponent(calls[0].url)).toContain('state="OPEN"');
   });
+
+  it("does not query any-state when the open query already found a row (mirrors GitHub's findPrImpl)", async () => {
+    const { calls, fetchFn } = recorder(async url =>
+      url.includes("/statuses") || url.includes("/conflicts") ? new Response(JSON.stringify({ values: [] }), { status: 200 })
+      : new Response(JSON.stringify({ values: [JSON.parse(await fx("pr-open.json"))] }), { status: 200 }));
+    await bitbucketAdapter(deps(fetchFn)).findPr("/r", "bugfix/PAY-42");
+    const listCalls = calls.filter(c => c.url.includes("/pullrequests?"));
+    expect(listCalls).toHaveLength(1);
+  });
+
+  it("falls back to any state (spec §4.2) when the open query returns no rows, and returns the merged PR", async () => {
+    let openQueried = false;
+    const { calls, fetchFn } = recorder(async url => {
+      if (url.includes("/statuses") || url.includes("/conflicts")) return new Response(JSON.stringify({ values: [] }), { status: 200 });
+      if (url.includes("/pullrequests?")) {
+        if (decodeURIComponent(url).includes('state="OPEN"')) { openQueried = true; return new Response(JSON.stringify({ values: [] }), { status: 200 }); }
+        return new Response(JSON.stringify({ values: [JSON.parse(await fx("pr-merged.json"))] }), { status: 200 });
+      }
+      throw new Error(`unexpected call to ${url}`);
+    });
+    const pr = await bitbucketAdapter(deps(fetchFn)).findPr("/r", "bugfix/PAY-42");
+    expect(openQueried).toBe(true);
+    expect(pr).toMatchObject({ number: 7, state: "MERGED" });
+    const listCalls = calls.filter(c => c.url.includes("/pullrequests?"));
+    expect(listCalls).toHaveLength(2);
+    expect(decodeURIComponent(listCalls[1].url)).toContain('source.branch.name="bugfix/PAY-42"');
+    expect(decodeURIComponent(listCalls[1].url)).not.toContain('state="OPEN"');
+  });
+
+  it("returns null when both the open and the any-state queries return no rows", async () => {
+    const { fetchFn } = recorder(async url =>
+      url.includes("/pullrequests?") ? new Response(JSON.stringify({ values: [] }), { status: 200 })
+      : new Response(JSON.stringify({ values: [] }), { status: 200 }));
+    expect(await bitbucketAdapter(deps(fetchFn)).findPr("/r", "b")).toBeNull();
+  });
+
+  it("returns null without throwing when the open-state query itself fails", async () => {
+    const { calls, fetchFn } = recorder(async () => new Response("", { status: 500 }));
+    expect(await bitbucketAdapter(deps(fetchFn)).findPr("/r", "b")).toBeNull();
+    const listCalls = calls.filter(c => c.url.includes("/pullrequests?"));
+    expect(listCalls).toHaveLength(1);   // no retry with the any-state query on a hard failure
+  });
 });
 
 describe("an unresolvable repository", () => {

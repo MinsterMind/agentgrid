@@ -78,3 +78,55 @@ const unresolvableRepoAdapters: Array<[string, () => ForgeAdapter]> = [
 describe.each(unresolvableRepoAdapters)("the %s adapter satisfies the forge contract when the repo can't be resolved to a slug", (_name, make) => {
   runContract(make, { skipAuthStatus: true });
 });
+
+/**
+ * Path 3: `findPr` must query open first, then fall back to any state (spec §4.2), for
+ * BOTH adapters — the plain "resolves.toBeNull() on failure" contract above can't see this,
+ * since a divergent adapter that only ever queries "open" still resolves to null on failure
+ * and to a PR when one is open. This pins the fallback itself, not just the failure path, so
+ * the next forge adapter can't add `findPr` without it.
+ */
+describe("findPr falls back from open to any state on every adapter", () => {
+  it("github: falls back to --state all when the open query returns no rows", async () => {
+    const calls: string[] = [];
+    const f = githubAdapter(async (cmd, args) => {
+      const k = [cmd, ...args].join(" "); calls.push(k);
+      if (k.includes("--state open")) return { stdout: "[]", code: 0 };
+      if (k.includes("--state all")) {
+        return { stdout: JSON.stringify([{ number: 9, url: "https://github.com/acme/pay/pull/9", state: "MERGED",
+          updatedAt: "2026-09-25T10:00:00Z", headRefOid: "cafe9" }]), code: 0 };
+      }
+      return { stdout: "", code: 1 };
+    });
+    const pr = await f.findPr("/repo", "b");
+    expect(pr).toMatchObject({ number: 9, state: "MERGED" });
+    expect(calls.some(c => c.includes("--state open"))).toBe(true);
+    expect(calls.some(c => c.includes("--state all"))).toBe(true);
+  });
+
+  it("bitbucket: falls back to the any-state query when the open query returns no rows", async () => {
+    const calls: string[] = [];
+    const f = bitbucketAdapter({
+      username: "me@example.com", token: () => "t",
+      gitRemoteUrl: async () => "git@bitbucket.org:acme/payments.git",
+      fetchFn: (async (url: any) => {
+        const u = decodeURIComponent(String(url)); calls.push(u);
+        if (u.includes("/statuses") || u.includes("/conflicts")) return new Response(JSON.stringify({ values: [] }), { status: 200 });
+        if (u.includes("/pullrequests?")) {
+          if (u.includes('state="OPEN"')) return new Response(JSON.stringify({ values: [] }), { status: 200 });
+          return new Response(JSON.stringify({ values: [{ id: 9, state: "MERGED", title: "t",
+            updated_on: "2026-09-25T10:00:00Z",
+            links: { html: { href: "https://bitbucket.org/acme/payments/pull-requests/9" } },
+            source: { branch: { name: "b" }, commit: { hash: "cafe9" } },
+            destination: { branch: { name: "main" } }, participants: [] }] }), { status: 200 });
+        }
+        throw new Error(`unexpected call to ${u}`);
+      }) as unknown as typeof fetch,
+    });
+    const pr = await f.findPr("/repo", "b");
+    expect(pr).toMatchObject({ number: 9, state: "MERGED" });
+    const listCalls = calls.filter(c => c.includes("/pullrequests?"));
+    expect(listCalls.some(c => c.includes('state="OPEN"'))).toBe(true);
+    expect(listCalls.some(c => !c.includes('state="OPEN"'))).toBe(true);
+  });
+});

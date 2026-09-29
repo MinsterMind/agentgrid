@@ -159,16 +159,32 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
     return values.length > 0 ? "CONFLICTING" : "MERGEABLE";
   }
 
-  /** The open PR for `branch`, or null when there is none or it can't be read. Shared by
-   *  `findPr` and by `createPr`'s duplicate-adoption path. */
+  /**
+   * The PR for `branch`: open first, then any state (spec §4.2), matching the GitHub
+   * adapter's `findPrImpl` — a branch can have both an old closed PR and a current open
+   * one, and the live one must win, but a closed/merged PR still needs to be found so a
+   * retried `createPr` can adopt it. A hard failure on either query is never retried with
+   * a second query — it degrades straight to null, same as every other findPr failure path.
+   * Shared by `findPr` and by `createPr`'s duplicate-adoption path.
+   */
   async function findPrByBranch(repoDir: string, branch: string): Promise<PrInfo | null> {
     const slug = await resolveSlug(repoDir);
     if (!slug) return null;
-    const q = `source.branch.name="${branch}" AND state="OPEN"`;
-    const r = await api(`/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests?q=${encodeURIComponent(q)}`);
-    if (r.kind !== "ok") return null;
-    const values = Array.isArray(r.body?.values) ? r.body.values : [];
-    const pr = values[0];
+    const query = async (state: "open" | "all"): Promise<{ ok: true; pr: any | null } | { ok: false }> => {
+      const q = state === "open" ? `source.branch.name="${branch}" AND state="OPEN"` : `source.branch.name="${branch}"`;
+      const r = await api(`/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests?q=${encodeURIComponent(q)}`);
+      if (r.kind !== "ok") return { ok: false };
+      const values = Array.isArray(r.body?.values) ? r.body.values : [];
+      return { ok: true, pr: values[0] ?? null };
+    };
+    const openResult = await query("open");
+    if (!openResult.ok) return null;
+    let pr = openResult.pr;
+    if (!pr) {
+      const allResult = await query("all");
+      if (!allResult.ok) return null;
+      pr = allResult.pr;
+    }
     if (!looksLikePr(pr)) return null;
     const checks = await fetchChecks(slug.workspace, slug.slug, pr.id);
     const mergeable = await fetchMergeable(slug.workspace, slug.slug, pr.id);
@@ -267,8 +283,10 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
       const sinceMs = Date.parse(since);
       // Bitbucket reports no bot-account signal for pull-request participants today — `type`
       // is always "user" in the documented shape. Check it anyway so a future value ("bot")
-      // is honoured rather than silently ignored; absent or unrecognised reads as false,
-      // never true, because a falsely-human bot could start a round the engine shouldn't act on.
+      // is honoured rather than silently ignored; absent or unrecognised reads as false
+      // (human), never true. `ReviewEvent.isBot` is a plain boolean with no way to express
+      // "unknown", and the worst case of defaulting to human is a wasted feedback round
+      // against the cap — never a bad merge, so this is the correct shared-platform default.
       const isBotAccount = (u: any): boolean => typeof u?.type === "string" && u.type.toLowerCase() === "bot";
       const out: ReviewEvent[] = [];
       for (const entry of values) {
