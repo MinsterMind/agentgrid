@@ -3,7 +3,7 @@ import request from "supertest";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createApp } from "../../src/api/app.js";
+import { createApp, type AppDeps } from "../../src/api/app.js";
 import { Store } from "../../src/store/store.js";
 import { Manager } from "../../src/runner/manager.js";
 import { IntegrationsStore } from "../../src/bugfix/integrations.js";
@@ -15,13 +15,13 @@ import { IntegrationsStore } from "../../src/bugfix/integrations.js";
  * the wrong one leaks into the other's slot. Both are fresh per call, so this suite never reads
  * or depends on the real machine's `~/.claude` or `~/.agentgrid`.
  */
-async function unwiredApp() {
+async function unwiredApp(opts: { onConfigured?: AppDeps["onConfigured"] } = {}) {
   const home = await mkdtemp(path.join(os.tmpdir(), "agentgrid-setup-"));
   const claudeHome = await mkdtemp(path.join(os.tmpdir(), "agentgrid-setup-claude-"));
   const store = new Store(home, path.resolve("roles"));
   await store.init();
   const integrations = new IntegrationsStore(home);
-  const app = createApp({ store, manager: new Manager({ store } as never), integrations, roleResolves: () => true, setupHome: () => claudeHome });
+  const app = createApp({ store, manager: new Manager({ store } as never), integrations, roleResolves: () => true, setupHome: () => claudeHome, onConfigured: opts.onConfigured });
   return { app, home, claudeHome, integrations };
 }
 
@@ -74,5 +74,22 @@ describe("the setup routes answer without an engine", () => {
     expect(res.body.discovery.importable).toContainEqual(
       expect.objectContaining({ name: "jira", origin: "user" }),
     );
+  });
+
+  // The delay is essential: without it both requests would resolve too close together to
+  // reliably race, and this test would pass even against a `maybeWire` with no memoisation.
+  it("builds the bug-fix subsystem once when two saves overlap", async () => {
+    let calls = 0;
+    const onConfigured: AppDeps["onConfigured"] = async () => {
+      calls++;
+      await new Promise(r => setTimeout(r, 5));
+      return null; // no real engine needed — only call count matters here
+    };
+    const { app } = await unwiredApp({ onConfigured });
+    await Promise.all([
+      request(app).put("/api/integrations").send({ forge: { preset: "github" } }).expect(200),
+      request(app).put("/api/integrations").send({ forge: { preset: "github" } }).expect(200),
+    ]);
+    expect(calls).toBe(1);
   });
 });

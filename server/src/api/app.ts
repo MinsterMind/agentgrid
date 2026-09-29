@@ -214,10 +214,17 @@ export function createApp(deps: AppDeps) {
    * can exist, so building one disrupts nothing. An engine that already exists is left alone —
    * rebuilding it would tear down in-flight tasks whose dispatch state is in memory.
    */
-  const maybeWire = async () => {
-    if (wired || !deps.onConfigured) return;
-    wired = (await deps.onConfigured()) ?? undefined;
-    setBugTasksSource();
+  let wiring: Promise<void> | null = null;
+  const maybeWire = (): Promise<void> => {
+    if (wired || !deps.onConfigured) return Promise.resolve();
+    // Memoised before any await: two overlapping saves must join one build, not race two.
+    // Task 5's `onConfigured` starts a PrWatcher, so a discarded second build would leave
+    // a timer polling for the life of the process with no reference left to stop it.
+    if (!wiring) wiring = (async () => {
+      wired = (await deps.onConfigured!()) ?? undefined;
+      setBugTasksSource();
+    })().finally(() => { wiring = null; });
+    return wiring;
   };
 
   /** Options for `discoverMcpServers`, shared by both call sites so they cannot drift: `home`
