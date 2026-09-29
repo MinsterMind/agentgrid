@@ -1427,7 +1427,11 @@ describe("merging", () => {
     const { engine, bugs, store, taskId } = await atMergeGate();
     (store as any).getAgent = () => { throw new Error("agent already gone"); };
     await engine.approve(taskId);
-    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    // `runServerStage` writes the cleanup message AFTER `advance({stage-done})` resolves
+    // (the transition to "done" writes `error: null` first and would clobber an earlier
+    // patch otherwise), so waiting only for `stage !== "merging"` can observe the task one
+    // line too early, with `error` still `null`. Wait for the message too.
+    await until(() => bugs.get(taskId).stage === "done" && bugs.get(taskId).error !== null, 2000);
     const t = bugs.get(taskId);
     expect(t.stage).toBe("done");
     expect(t.error).toMatch(/could not free the agent.*agent already gone/i);
@@ -1438,7 +1442,9 @@ describe("merging", () => {
     gitState.removeError = "worktree cleanup incomplete: branch -D failed";
     (store as any).getAgent = () => { throw new Error("agent already gone"); };
     await engine.approve(taskId);
-    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    // Same race as the sibling test above: wait for the cleanup message, not just the
+    // stage transition, or `error` can still be `null` when we read it.
+    await until(() => bugs.get(taskId).stage === "done" && bugs.get(taskId).error !== null, 2000);
     const t = bugs.get(taskId);
     expect(t.stage).toBe("done");
     expect(t.error).toMatch(/cleanup incomplete/i);
