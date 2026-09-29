@@ -1,8 +1,8 @@
 import type { AgentState } from "../types";
 import { usd } from "../format";
 
-export function TopBar({ counts, spend, connected, waitingCount, onCycleWaiting, onSpawn, onSessions, onFixBug }: {
-  counts: Record<AgentState, number>; spend: number; connected: boolean; waitingCount: number; onCycleWaiting: () => void; onSpawn: () => void; onSessions: () => void; onFixBug: () => void;
+export function TopBar({ counts, spend, connected, waitingCount, onCycleWaiting, onSpawn, onSessions, onFixBug, onOpenSettings }: {
+  counts: Record<AgentState, number>; spend: number; connected: boolean; waitingCount: number; onCycleWaiting: () => void; onSpawn: () => void; onSessions: () => void; onFixBug: () => void; onOpenSettings: () => void;
 }) {
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   return (
@@ -20,6 +20,7 @@ export function TopBar({ counts, spend, connected, waitingCount, onCycleWaiting,
       </div>
       <button className="btn" onClick={onFixBug}>🐞 Fix a bug</button>
       <button className="btn" onClick={onSessions}>Sessions</button>
+      <button className="btn" onClick={onOpenSettings}>⚙︎ Settings</button>
       <button className="btn p" onClick={onSpawn}>+ Spawn</button>
     </header>
   );

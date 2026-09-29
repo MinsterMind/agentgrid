@@ -7,9 +7,15 @@ const myIssues = vi.fn(async () => [{ key: "PAY-42", title: "Refresh token rotat
 const bugPreflight = vi.fn(async (_repo: string) => ({ ok: true, problems: [] as string[] }));
 const createBugTask = vi.fn(async (i: { issueRef: string; repo: string }) => ({ id: "bt1", ...i }));
 const getIntegrations = vi.fn(async () => ({ projectRepos: { PAY: "/r/payments" } }));
+const getSetup = vi.fn(async () => ({
+  ready: true, wired: true, addCommand: "",
+  checks: [] as { id: string; state: "ok" | "missing" | "broken"; detail: string; blocks: boolean }[],
+  discovery: { importable: [], accountOnly: [], problems: [] as string[] },
+}));
 vi.mock("../src/api", () => ({ api: {
   myIssues: () => myIssues(), bugPreflight: (r: string) => bugPreflight(r),
   createBugTask: (i: never) => createBugTask(i), getIntegrations: () => getIntegrations(),
+  getSetup: () => getSetup(),
   pickFolder: vi.fn(async () => ({ path: "/r/picked" })),
 } }));
 
@@ -21,7 +27,7 @@ beforeEach(() => {
 describe("BugLauncher", () => {
   it("lists my open bugs and starts one, pre-filling the remembered repo", async () => {
     const onCreated = vi.fn();
-    render(<BugLauncher onCreated={onCreated} onClose={vi.fn()} />);
+    render(<BugLauncher onCreated={onCreated} onClose={vi.fn()} onOpenSettings={vi.fn()} />);
     await waitFor(() => expect(screen.getByText(/Refresh token rotates twice/)).toBeInTheDocument());
     await userEvent.click(screen.getByRole("button", { name: /PAY-42/ }));
     expect(screen.getByLabelText("Repo")).toHaveValue("/r/payments");     // remembered for project PAY
@@ -33,7 +39,7 @@ describe("BugLauncher", () => {
   });
 
   it("accepts a pasted issue URL instead of the list", async () => {
-    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} />);
+    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} onOpenSettings={vi.fn()} />);
     await userEvent.type(screen.getByLabelText("Issue URL or key"), "https://x/browse/WEB-9");
     await userEvent.clear(screen.getByLabelText("Repo"));
     await userEvent.type(screen.getByLabelText("Repo"), "/r/web");
@@ -45,7 +51,7 @@ describe("BugLauncher", () => {
 
   it("blocks starting while preflight has problems and shows them", async () => {
     bugPreflight.mockResolvedValueOnce({ ok: false, problems: ["forge not authenticated: run gh auth login"] });
-    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} />);
+    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} onOpenSettings={vi.fn()} />);
     await userEvent.type(screen.getByLabelText("Issue URL or key"), "PAY-42");
     await userEvent.type(screen.getByLabelText("Repo"), "/r/payments");
     await waitFor(() => expect(screen.getByText(/gh auth login/)).toBeInTheDocument());
@@ -54,7 +60,7 @@ describe("BugLauncher", () => {
 
   it("disables Start before any preflight check has run for a freshly-entered repo", async () => {
     bugPreflight.mockImplementation(() => new Promise(() => {})); // never resolves within the test
-    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} />);
+    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} onOpenSettings={vi.fn()} />);
     await userEvent.type(screen.getByLabelText("Issue URL or key"), "PAY-42");
     await userEvent.type(screen.getByLabelText("Repo"), "/r/payments");
     expect(screen.getByRole("button", { name: "Start fixing" })).toBeDisabled();
@@ -62,7 +68,7 @@ describe("BugLauncher", () => {
   });
 
   it("disables Start when the repo changes after a successful preflight, until the new check resolves", async () => {
-    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} />);
+    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} onOpenSettings={vi.fn()} />);
     await userEvent.type(screen.getByLabelText("Issue URL or key"), "PAY-42");
     await userEvent.type(screen.getByLabelText("Repo"), "/r/payments");
     await waitFor(() => expect(bugPreflight).toHaveBeenCalledWith("/r/payments"));
@@ -82,7 +88,7 @@ describe("BugLauncher", () => {
   });
 
   it("keeps Start disabled for a relative repo path and never checks or starts it", async () => {
-    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} />);
+    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} onOpenSettings={vi.fn()} />);
     await userEvent.type(screen.getByLabelText("Issue URL or key"), "PAY-42");
     await userEvent.type(screen.getByLabelText("Repo"), "myrepo");
     expect(screen.getByText(/absolute repo path/i)).toBeInTheDocument();
@@ -93,7 +99,7 @@ describe("BugLauncher", () => {
 
   it("surfaces a failed issue lookup instead of silently doing nothing", async () => {
     createBugTask.mockRejectedValueOnce(new Error("tracker returned no usable JSON"));
-    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} />);
+    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} onOpenSettings={vi.fn()} />);
     await userEvent.type(screen.getByLabelText("Issue URL or key"), "PAY-42");
     await userEvent.type(screen.getByLabelText("Repo"), "/r/payments");
     await waitFor(() => expect(screen.getByRole("button", { name: "Start fixing" })).not.toBeDisabled());
@@ -106,7 +112,7 @@ describe("BugLauncher", () => {
       + "  git -C /r/payments worktree remove --force /r/payments/.worktrees/bugfix-PAY-42\n"
       + "  git -C /r/payments branch -D bugfix/PAY-42";
     createBugTask.mockRejectedValueOnce(new Error(message));
-    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} />);
+    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} onOpenSettings={vi.fn()} />);
     await userEvent.type(screen.getByLabelText("Issue URL or key"), "PAY-42");
     await userEvent.type(screen.getByLabelText("Repo"), "/r/payments");
     await waitFor(() => expect(screen.getByRole("button", { name: "Start fixing" })).not.toBeDisabled());
@@ -121,7 +127,7 @@ describe("BugLauncher", () => {
 
   it("says so, within the issue-list section, when the tracker is not connected", async () => {
     myIssues.mockRejectedValueOnce(new Error("the bug-fix workflow is not configured"));
-    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} />);
+    render(<BugLauncher onCreated={vi.fn()} onClose={vi.fn()} onOpenSettings={vi.fn()} />);
     const section = screen.getByText("My open bugs").closest(".bugs");
     expect(section).not.toBeNull();
     await waitFor(() => expect(within(section as HTMLElement).getByText(/not configured/)).toBeInTheDocument());
@@ -132,7 +138,7 @@ describe("BugLauncher", () => {
   // is a real planned behaviour) but must not be selectable, or the launcher promises a merge
   // that will never happen.
   it("does not offer auto-merge as a usable choice, since nothing implements it", () => {
-    render(<BugLauncher onCreated={() => {}} onClose={() => {}} />);
+    render(<BugLauncher onCreated={() => {}} onClose={() => {}} onOpenSettings={() => {}} />);
     const select = screen.getByLabelText(/when the PR is approved/i) as HTMLSelectElement;
     expect(select).toHaveValue("ask");
     const auto = Array.from(select.options).find(o => o.value === "auto")!;

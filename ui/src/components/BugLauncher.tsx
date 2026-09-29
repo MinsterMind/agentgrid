@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { BugTask, IssueSummary } from "../types";
+import type { BugTask, IssueSummary, SetupReport } from "../types";
 
 /** Start a bug-fix task: pick a ticket (list or URL), pick the repo, check preflight. */
-export function BugLauncher({ onCreated, onClose }: { onCreated: (task: BugTask) => void; onClose: () => void }) {
+export function BugLauncher({ onCreated, onClose, onOpenSettings }: { onCreated?: (task: BugTask) => void; onClose: () => void; onOpenSettings: () => void }) {
+  const [setup, setSetup] = useState<SetupReport | null>(null);
   const [issues, setIssues] = useState<IssueSummary[] | null>(null);
   const [issuesErr, setIssuesErr] = useState<string | null>(null);
   const [issueRef, setIssueRef] = useState("");
@@ -15,6 +16,11 @@ export function BugLauncher({ onCreated, onClose }: { onCreated: (task: BugTask)
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  useEffect(() => {
+    let live = true;
+    api.getSetup().then(r => { if (live) setSetup(r); }).catch(() => {});
+    return () => { live = false; };
+  }, []);
   useEffect(() => {
     let live = true;
     api.myIssues().then(v => { if (live) setIssues(v); }).catch(e => { if (live) setIssuesErr((e as Error).message); });
@@ -52,18 +58,34 @@ export function BugLauncher({ onCreated, onClose }: { onCreated: (task: BugTask)
 
   const start = async () => {
     setBusy(true); setErr(null);
-    try { onCreated(await api.createBugTask({ issueRef: issueRef.trim(), repo: repoTrimmed, mergePolicy })); onClose(); }
+    try { onCreated?.(await api.createBugTask({ issueRef: issueRef.trim(), repo: repoTrimmed, mergePolicy })); onClose(); }
     catch (e) { setErr((e as Error).message); }
     finally { setBusy(false); }
   };
 
   const blocked = !issueRef.trim() || !repoTrimmed || !repoValid || busy || checking || !preflight || !preflight.ok;
 
+  // Only checks that actually stop a bug fix from starting: a missing forge token, for
+  // instance, fails the forge call later with its own clear message and must not nag here
+  // while a real blocker (e.g. no tracker) is what needs fixing first.
+  const blocking = setup?.checks.filter(c => c.blocks && c.state !== "ok") ?? [];
+  const notReady = setup !== null && !setup.ready;
+
   return (
     <div className="modal" onClick={onClose}>
       <div className="dialog wide" onClick={e => e.stopPropagation()}>
         <h3>🐞 Fix a bug</h3>
 
+        {notReady ? (
+          <div className="bugs">
+            <p>The bug-fix workflow is not configured yet:</p>
+            {blocking.map(c => <div key={c.id} className="err">{c.detail}</div>)}
+            <div className="row">
+              <button className="btn p" onClick={onOpenSettings}>Open Settings</button>
+              <button className="btn" onClick={onClose}>Cancel</button>
+            </div>
+          </div>
+        ) : <>
         <div className="bugs">
           <h4>My open bugs</h4>
           {!issues && !issuesErr && <p className="hint">Loading from the tracker…</p>}
@@ -111,6 +133,7 @@ export function BugLauncher({ onCreated, onClose }: { onCreated: (task: BugTask)
           <button className="btn p" disabled={blocked} onClick={start}>{busy ? "Starting…" : "Start fixing"}</button>
           <button className="btn" onClick={onClose}>Cancel</button>
         </div>
+        </>}
       </div>
     </div>
   );
