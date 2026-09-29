@@ -15,13 +15,22 @@ import { IntegrationsStore } from "../../src/bugfix/integrations.js";
  * the wrong one leaks into the other's slot. Both are fresh per call, so this suite never reads
  * or depends on the real machine's `~/.claude` or `~/.agentgrid`.
  */
-async function unwiredApp(opts: { onConfigured?: AppDeps["onConfigured"] } = {}) {
+async function unwiredApp(extra?: { onConfigured?: AppDeps["onConfigured"]; tracker?: { listMyIssues: () => Promise<unknown[]> }; forge?: { authStatus: () => Promise<{ ok: boolean; message: string }> } } | undefined) {
   const home = await mkdtemp(path.join(os.tmpdir(), "agentgrid-setup-"));
   const claudeHome = await mkdtemp(path.join(os.tmpdir(), "agentgrid-setup-claude-"));
   const store = new Store(home, path.resolve("roles"));
   await store.init();
   const integrations = new IntegrationsStore(home);
-  const app = createApp({ store, manager: new Manager({ store } as never), integrations, roleResolves: () => true, setupHome: () => claudeHome, onConfigured: opts.onConfigured });
+  const app = createApp({
+    store,
+    manager: new Manager({ store } as never),
+    integrations,
+    roleResolves: () => true,
+    setupHome: () => claudeHome,
+    onConfigured: extra?.onConfigured,
+    ...(extra?.tracker ? { setupTracker: () => extra.tracker as never } : {}),
+    ...(extra?.forge ? { setupForge: () => extra.forge as never } : {}),
+  });
   return { app, home, claudeHome, integrations };
 }
 
@@ -91,5 +100,34 @@ describe("the setup routes answer without an engine", () => {
       request(app).put("/api/integrations").send({ forge: { preset: "github" } }).expect(200),
     ]);
     expect(calls).toBe(1);
+  });
+});
+
+describe("the setup test buttons", () => {
+  it("a tracker test with nothing configured answers ok:false, not 501", async () => {
+    const { app } = await unwiredApp();
+    const res = await request(app).post("/api/setup/test/tracker").expect(200);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.message).toMatch(/no tracker/i);
+  });
+
+  it("a forge test with nothing configured answers ok:false", async () => {
+    const { app } = await unwiredApp();
+    const res = await request(app).post("/api/setup/test/forge").expect(200);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.message).toMatch(/no forge/i);
+  });
+
+  it("a tracker test reports the provider's own error rather than a generic one", async () => {
+    const { app } = await unwiredApp({ tracker: { listMyIssues: async () => { throw new Error("MCP server atlassian is not connected"); } } });
+    const res = await request(app).post("/api/setup/test/tracker").expect(200);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.message).toMatch(/not connected/);
+  });
+
+  it("a passing tracker test names the issue count", async () => {
+    const { app } = await unwiredApp({ tracker: { listMyIssues: async () => [{ key: "A-1" }, { key: "A-2" }] } });
+    const res = await request(app).post("/api/setup/test/tracker").expect(200);
+    expect(res.body).toEqual({ ok: true, message: "2 issues assigned to you." });
   });
 });

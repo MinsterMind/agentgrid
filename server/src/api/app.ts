@@ -14,6 +14,7 @@ import type { BugFixEngine } from "../bugfix/engine.js";
 import type { BugTaskStore } from "../bugfix/store.js";
 import type { IntegrationsStore, Integrations } from "../bugfix/integrations.js";
 import type { TrackerProvider } from "../bugfix/tracker.js";
+import type { ForgeAdapter } from "../bugfix/forge/types.js";
 import { discoverMcpServers } from "../bugfix/mcp-discovery.js";
 import { buildSetupReport } from "../bugfix/setup.js";
 
@@ -35,6 +36,10 @@ export interface AppDeps {
   setupHome?: () => string | undefined;
   /** Builds the bug-fix subsystem once configuration first appears. Called at most once. */
   onConfigured?: () => Promise<AppDeps["bugs"] | null>;
+  /** The tracker to exercise from Settings' Test button, when one can be built. */
+  setupTracker?: () => TrackerProvider | null;
+  /** The forge to exercise from Settings' Test button, when one can be built. */
+  setupForge?: () => ForgeAdapter | null;
   transcript?: (assignment: Assignment, agent: Agent) => Promise<unknown[]>;
   /** Full, untruncated transcript of a session in a repo. */
   fullTranscript?: (cwd: string, sessionId: string) => Promise<unknown[]>;
@@ -258,6 +263,26 @@ export function createApp(deps: AppDeps) {
     }));
     await maybeWire();
     res.json(await setupReport());
+  }));
+
+  // A failed test is an answer, not a server error: 200 with ok:false, carrying the
+  // provider's own words. "Something went wrong" is exactly what this screen exists to end.
+  app.post("/api/setup/test/tracker", wrap(async (_req, res) => {
+    const tracker = deps.setupTracker?.() ?? wired?.tracker ?? null;
+    if (!tracker) return res.json({ ok: false, message: "no tracker is configured yet" });
+    try {
+      const issues = await tracker.listMyIssues();
+      return res.json({ ok: true, message: `${issues.length} issues assigned to you.` });
+    } catch (err) {
+      return res.json({ ok: false, message: (err as Error).message });
+    }
+  }));
+
+  app.post("/api/setup/test/forge", wrap(async (_req, res) => {
+    const forge = deps.setupForge?.() ?? null;
+    if (!forge) return res.json({ ok: false, message: "no forge is configured yet" });
+    const status = await forge.authStatus();          // adapters never throw
+    return res.json(status);
   }));
 
   app.get("/api/integrations", wrap(async (_req, res) => res.json(await integrationsStore().read())));
