@@ -198,6 +198,7 @@ async function httpToMonitoring() {
   await finishStage();
   await until(() => realBugs.get(id).stage === "diff-review");
   await request(realApp).post(`/api/bugtasks/${id}/approve`).expect(200);
+  await realBugs.writeArtifact(id, "pr-body.md", "PR body");
   await finishStage();
   await until(() => realBugs.get(id).stage === "monitoring");
   return { ...built, id };

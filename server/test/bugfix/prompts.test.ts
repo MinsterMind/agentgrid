@@ -71,6 +71,16 @@ describe("renderStagePrompt", () => {
     expect(p).not.toMatch(CHANGE_CODE);
   });
 
+  // Task 3: the server pushes and creates the pull request itself — the agent's only job in
+  // this step is writing the PR description, so the preset must instruct neither.
+  it("open-pr does not instruct pushing or creating a PR", async () => {
+    const p = await renderStagePrompt("opening-pr", task, ctx, presets);
+    expect(p).not.toMatch(GIT_PUSH);
+    expect(p).not.toMatch(PR_CREATE);
+    expect(p).toMatch(/do not push/i);
+    expect(p).toMatch(/do not create the pull request/i);
+  });
+
   it("affirmativeLines tells an instruction to merge apart from a prohibition on merging", () => {
     expect(affirmativeLines("Do not merge.", MERGE)).toEqual([]);
     expect(affirmativeLines("Don't merge yet.", MERGE)).toEqual([]);

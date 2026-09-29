@@ -239,15 +239,16 @@ describe("stage progression", () => {
     gitState.commits = 1;
     await finishStage(); await until(() => bugs.get(t.id).stage === "diff-review");
     await engine.approve(t.id);
+    await bugs.writeArtifact(t.id, "pr-body.md", `PR body.\n\nFixes ${ISSUE.url}`);
     await finishStage(); await until(() => bugs.get(t.id).stage === "monitoring");
-    expect(bugs.get(t.id).pr).toMatchObject({ number: 7, url: "https://gh/pr/7" });
-    expect(comments).toEqual([["PAY-42", expect.stringContaining("https://gh/pr/7")]]);
+    expect(bugs.get(t.id).pr).toMatchObject({ number: 7, url: "https://x/pr/7" });
+    expect(comments).toEqual([["PAY-42", expect.stringContaining("https://x/pr/7")]]);
   });
 
-  it("opening-pr fails when the forge cannot find the PR", async () => {
+  it("creating-pr fails when the forge cannot create the PR", async () => {
     // Fully independent engine (own store/bugs/manager/fake) so this test exercises the
-    // findPr()-returns-null failure path itself, not the ownership scoping that keeps a
-    // second, differently-configured engine on the *same* store from racing this one.
+    // createPr()-returns-unavailable failure path itself, not the ownership scoping that
+    // keeps a second, differently-configured engine on the *same* store from racing this one.
     const home2 = await mkdtemp(path.join(tmpdir(), "eng-home2-"));
     const store2 = new Store(home2, path.resolve("roles")); await store2.init();
     await writeFile(path.join(home2, "roles", "bugfix.md"), `---\nname: bugfix\navatar: 🐞\nmodel: claude-opus-5\n---\nYou fix bugs.`);
@@ -260,7 +261,7 @@ describe("stage progression", () => {
       manager: new Manager(store2, { queryFn: fake2.queryFn, buildOptions: (_r, a, e) => ({ cwd: a.repo, abortController: e.abortController, canUseTool: e.canUseTool } as Options) }),
       git: fakeGit(gitState2).git, integrations: new IntegrationsStore(home2),
       tracker: { listMyIssues: async () => [], fetchIssue: async () => ISSUE, comment: async () => {} },
-      forge: { ...forge, findPr: async () => null }, presetsDir: path.resolve("presets"),
+      forge: { ...forge, createPr: async () => ({ unavailable: "gh: could not create the pull request" }) }, presetsDir: path.resolve("presets"),
     });
     e2.attach();
     const finishStage2 = async () => { fake2.emit(success("done")); fake2.end(); };
@@ -271,8 +272,9 @@ describe("stage progression", () => {
     await e2.approve(t.id); gitState2.commits = 1;
     await finishStage2(); await until(() => bugs2.get(t.id).stage === "diff-review");
     await e2.approve(t.id);
+    await bugs2.writeArtifact(t.id, "pr-body.md", "PR body");
     await finishStage2(); await until(() => bugs2.get(t.id).stage === "failed");
-    expect(bugs2.get(t.id).error).toMatch(/no pull request/i);
+    expect(bugs2.get(t.id).error).toMatch(/could not create the pull request/i);
   });
 });
 
@@ -341,7 +343,7 @@ describe("concurrent gate calls are serialised per task", () => {
   });
 });
 
-describe("opening-pr requires an OPEN pull request", () => {
+describe("creating-pr requires an OPEN pull request", () => {
   async function toDiffReview(e: BugFixEngine): Promise<BugTask> {
     const t = await e.intake({ issueRef: "PAY-42", repo });
     await bugs.writeArtifact(t.id, "plan.md", "# Plan");
@@ -352,21 +354,23 @@ describe("opening-pr requires an OPEN pull request", () => {
     return t;
   }
 
-  it("fails the stage instead of advancing when findPr returns a MERGED pull request", async () => {
-    const e2 = new BugFixEngine({ ...(engine as any).deps, forge: { ...forge, findPr: async () => ({ number: 7, url: "https://gh/pr/7", state: "MERGED" as const, reviewDecision: null, checks: null, mergeable: null, headSha: "abc1234", lastSeenEventAt: "t" }) } });
+  it("fails the stage instead of advancing when the forge reports a MERGED pull request", async () => {
+    const e2 = new BugFixEngine({ ...(engine as any).deps, forge: { ...forge, createPr: async () => ({ found: { number: 7, url: "https://gh/pr/7", state: "MERGED" as const, reviewDecision: null, checks: null, mergeable: null, headSha: "abc1234", lastSeenEventAt: "t" } }) } });
     e2.attach();
     const t = await toDiffReview(e2);
     await e2.approve(t.id);
+    await bugs.writeArtifact(t.id, "pr-body.md", "PR body");
     await finishStage(); await until(() => bugs.get(t.id).stage === "failed");
     expect(bugs.get(t.id).error).toMatch(/merged/i);
     expect(bugs.get(t.id).error).toMatch(/#7/);
   });
 
-  it("fails the stage instead of advancing when findPr returns a CLOSED pull request", async () => {
-    const e2 = new BugFixEngine({ ...(engine as any).deps, forge: { ...forge, findPr: async () => ({ number: 7, url: "https://gh/pr/7", state: "CLOSED" as const, reviewDecision: null, checks: null, mergeable: null, headSha: "abc1234", lastSeenEventAt: "t" }) } });
+  it("fails the stage instead of advancing when the forge reports a CLOSED pull request", async () => {
+    const e2 = new BugFixEngine({ ...(engine as any).deps, forge: { ...forge, createPr: async () => ({ found: { number: 7, url: "https://gh/pr/7", state: "CLOSED" as const, reviewDecision: null, checks: null, mergeable: null, headSha: "abc1234", lastSeenEventAt: "t" } }) } });
     e2.attach();
     const t = await toDiffReview(e2);
     await e2.approve(t.id);
+    await bugs.writeArtifact(t.id, "pr-body.md", "PR body");
     await finishStage(); await until(() => bugs.get(t.id).stage === "failed");
     expect(bugs.get(t.id).error).toMatch(/closed/i);
     expect(bugs.get(t.id).error).toMatch(/#7/);
@@ -375,6 +379,7 @@ describe("opening-pr requires an OPEN pull request", () => {
   it("an OPEN pull request still advances to monitoring", async () => {
     const t = await toDiffReview(engine);
     await engine.approve(t.id);
+    await bugs.writeArtifact(t.id, "pr-body.md", "PR body");
     await finishStage(); await until(() => bugs.get(t.id).stage === "monitoring");
     expect(bugs.get(t.id).pr).toMatchObject({ state: "OPEN" });
   });
@@ -771,18 +776,21 @@ describe("the approved commit is pinned", () => {
     gitState.head = "1111111111111111111111111111111111111111";
     const t = await toDiffGate();
     await engine.approve(t.id);
+    await bugs.writeArtifact(t.id, "pr-body.md", "PR body");
     await finishStage(); await until(() => bugs.get(t.id).stage === "monitoring");
   });
 
   // N1: runStage's revParse check only runs BEFORE dispatch. An agent that commits inside
   // the worktree during the opening-pr run itself (and pushes) moved HEAD after that check
-  // passed — verify() must catch this too, or a PR containing unreviewed code gets recorded
-  // and the task rests at monitoring as if everything were fine.
-  it("fails opening-pr, naming both commits, when HEAD moves DURING the run (after dispatch, before verify)", async () => {
+  // passed. Task 3 moved the re-check from `verify()` into `doCreatePr` (the "creating-pr"
+  // server stage that runs right after opening-pr's own verify passes) — it now fires there,
+  // immediately before the push, rather than as part of verifying the agent's own stage.
+  it("fails, naming both commits, when HEAD moves DURING the run (after dispatch, before the push)", async () => {
     gitState.head = "1111111111111111111111111111111111111111";
     const t = await toDiffGate();
     await engine.approve(t.id);   // pre-dispatch pin check passes: HEAD is still 1111...
     gitState.head = "3333333333333333333333333333333333333333";   // agent commits+pushes mid-run
+    await bugs.writeArtifact(t.id, "pr-body.md", "PR body");
     await finishStage();
     await until(() => bugs.get(t.id).stage === "failed");
     const err = bugs.get(t.id).error ?? "";
@@ -818,6 +826,7 @@ async function onMonitoringTask() {
   gitState.commits = 1;
   await finishStage(); await until(() => bugs.get(t.id).stage === "diff-review");
   await engine.approve(t.id);
+  await bugs.writeArtifact(t.id, "pr-body.md", `PR body.\n\nFixes ${ISSUE.url}`);
   await finishStage(); await until(() => bugs.get(t.id).stage === "monitoring");
 
   const task = bugs.get(t.id);
@@ -928,6 +937,9 @@ describe("a feedback round", () => {
 
   it("clears it on a quiet tick too, and records when that tick happened", async () => {
     const { engine, bugs } = await onMonitoringTask();
+    // `doCreatePr` (Task 3) already recorded a real "now" via `patchPr` on the way to
+    // monitoring — reset it so this test's own fixed timestamp is unambiguously later.
+    await bugs.patch("bt1", { prCheckedAt: null });
     await engine.onPrFinding({ taskId: "bt1", pr: null, event: null, unavailable: "gh: could not connect" });
     expect(bugs.get("bt1").error).toMatch(/could not check/i);
     await engine.onPrChecked("bt1", "2026-09-27T10:00:00Z");
@@ -947,6 +959,8 @@ describe("a feedback round", () => {
 
   it("does not advance the poll time when the forge could not be read", async () => {
     const { engine, bugs } = await onMonitoringTask();
+    // Same reset as the test above — `doCreatePr` already set a real "now" on the way here.
+    await bugs.patch("bt1", { prCheckedAt: null });
     await engine.onPrChecked("bt1", "2026-09-27T10:00:00Z");
     await engine.onPrFinding({ taskId: "bt1", pr: bugs.get("bt1").pr, event: null, unavailable: "gh: down", checkedAt: "2026-09-27T10:05:00Z" });
     expect(bugs.get("bt1").prCheckedAt).toBe("2026-09-27T10:00:00Z");
@@ -1588,5 +1602,136 @@ describe("notifications: stage transitions the user might not be watching each e
     expect(bugs.get("bt1").error).toMatch(/closed without merging/i);
     expect(bugs.get("bt1").outcome).toBe("closed");
     expect(seen.some(e => e.task.stage === "done")).toBe(true);
+  });
+});
+
+/**
+ * Lands a fresh task at the first-round diff gate — implementing verified, gate open, no
+ * reason — with its own engine (rather than the outer `engine`/`bugs`/`fake`), so the
+ * "creating the pull request" tests below can drive it with nothing but `engine.approve()`
+ * and `until()`. Every agent stage this suite exercises (`analyzing`, `opening-pr`) is
+ * auto-completed from *inside* the fake `queryFn` itself: as soon as `Runner.consume()`
+ * actually starts pulling from the stream (which is always after the stage's own
+ * transition has been persisted, so `task.stage` below is never stale), it writes whatever
+ * artifact that stage's real agent would have written, then reports success. That keeps
+ * "write the artifact, then let the stage finish" atomic, with no separate event to race
+ * against — the risk a plain `store.on("event", ...)` listener reacting to the assignment's
+ * *creation* would run into, since nothing guarantees `queryFn` has even been called by
+ * then.
+ */
+async function atDiffGateFirstRound() {
+  const homeDir = await mkdtemp(path.join(tmpdir(), "eng-home-"));
+  const repoDir = await mkdtemp(path.join(tmpdir(), "eng-repo-"));
+  const s = new Store(homeDir, path.resolve("roles"));
+  await s.init();
+  await writeFile(path.join(homeDir, "roles", "bugfix.md"), `---\nname: bugfix\navatar: 🐞\nmodel: claude-opus-5\n---\nYou fix bugs.`);
+  await s.reloadRoles();
+  const b = new BugTaskStore(homeDir);
+  await b.init();
+
+  const gs: { commits: number; head?: string; pushes: Array<{ dir: string; branch: string; force: boolean }> } = { commits: 0, pushes: [] };
+  const { git: g } = fakeGit(gs);
+  g.push = async (dir: string, branch: string, o: { force?: boolean } = {}) => { gs.pushes.push({ dir, branch, force: !!o.force }); };
+
+  const forgeMock = {
+    name: "github",
+    created: [] as Array<{ repoDir: string; ctx: unknown }>,
+    createResult: null as null | { found: PrInfo } | { found: null } | { unavailable: string },
+    authStatus: async () => ({ ok: true, message: "ok" }),
+    createPr: async (repoDir: string, ctx: unknown) => {
+      forgeMock.created.push({ repoDir, ctx });
+      return forgeMock.createResult ?? {
+        found: { number: 7, url: "https://gh/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MEREGABLE" as any, headSha: gs.head ?? null, lastSeenEventAt: "t" },
+      };
+    },
+    findPr: async () => null,
+    getPr: async () => ({ found: null }),
+    listReviewEvents: async () => [],
+    merge: async () => ({ ok: true, message: "merged (fake)" }),
+  };
+
+  const queryFn: QueryFn = () => (async function* () {
+    const task = b.list().at(-1)!;
+    if (task.stage === "analyzing") await b.writeArtifact(task.id, "plan.md", "# Plan");
+    // Only default it in when nothing has written it yet — a test that pre-seeds
+    // `pr-body.md` itself (e.g. to simulate the agent writing nothing) must not have that
+    // override clobbered by this generic fake-agent fill-in.
+    if (task.stage === "opening-pr" && (await b.readArtifact(task.id, "pr-body.md")) === null) {
+      await b.writeArtifact(task.id, "pr-body.md", `PR body.\n\nFixes ${ISSUE.url}`);
+    }
+    yield success("done");
+  })();
+
+  const eng = new BugFixEngine({
+    store: s, bugs: b,
+    manager: new Manager(s, { queryFn, buildOptions: (_r, a, e) => ({ cwd: a.repo, abortController: e.abortController, canUseTool: e.canUseTool } as Options) }),
+    git: g, integrations: new IntegrationsStore(homeDir),
+    tracker: { listMyIssues: async () => [], fetchIssue: async () => ISSUE, comment: async () => {} },
+    forge: forgeMock as any, presetsDir: path.resolve("presets"),
+  });
+  eng.attach();
+
+  gs.head = "aaa";
+  const t = await eng.intake({ issueRef: "PAY-42", repo: repoDir });
+  await until(() => b.get(t.id).stage === "plan-review", 2000);
+  await eng.approve(t.id);
+  gs.commits = 1;
+  await until(() => b.get(t.id).stage === "diff-review", 2000);
+
+  return { engine: eng, bugs: b, gitState: gs, forge: forgeMock };
+}
+
+describe("creating the pull request", () => {
+  it("pushes the approved commit, creates the PR, and rests in monitoring", async () => {
+    const h = await atDiffGateFirstRound();          // helper: implementing verified, gate open, no reason
+    h.gitState.head = "aaa";                          // equals approvedHead
+    await h.engine.approve("bt1");
+    await until(() => h.bugs.get("bt1").stage === "monitoring", 2000);
+    const t = h.bugs.get("bt1");
+    expect(h.gitState.pushes).toEqual([{ dir: t.worktree, branch: t.branch, force: false }]);
+    expect(h.forge.created).toHaveLength(1);
+    expect(t.pr).toMatchObject({ state: "OPEN" });
+    expect(t.error).toBeNull();
+  });
+
+  it("refuses to create when the branch moved after approval", async () => {
+    const h = await atDiffGateFirstRound();
+    h.gitState.head = "zzz";                          // moved since the gate opened
+    await h.engine.approve("bt1");
+    await until(() => h.bugs.get("bt1").stage === "failed", 2000);
+    expect(h.gitState.pushes).toEqual([]);
+    expect(h.forge.created).toEqual([]);
+    expect(h.bugs.get("bt1").error).toMatch(/moved since the diff was approved/i);
+  });
+
+  it("fails the stage with the forge's message when creation is unavailable", async () => {
+    const h = await atDiffGateFirstRound();
+    h.gitState.head = "aaa";
+    h.forge.createResult = { unavailable: "bitbucket: 503 service unavailable" };
+    await h.engine.approve("bt1");
+    await until(() => h.bugs.get("bt1").stage === "failed", 2000);
+    expect(h.bugs.get("bt1").error).toMatch(/503 service unavailable/);
+  });
+
+  it("is idempotent on retry: a PR that already exists is adopted, not duplicated", async () => {
+    const h = await atDiffGateFirstRound();
+    h.gitState.head = "aaa";
+    h.forge.createResult = { unavailable: "network blip" };
+    await h.engine.approve("bt1");
+    await until(() => h.bugs.get("bt1").stage === "failed", 2000);
+    h.forge.createResult = null;                      // the adapter now adopts the existing PR
+    await h.engine.retry("bt1");
+    await until(() => h.bugs.get("bt1").stage === "monitoring", 2000);
+    expect(h.bugs.get("bt1").pr).toMatchObject({ state: "OPEN" });
+  });
+
+  it("verifies opening-pr by the PR body alone — no forge call", async () => {
+    const h = await atDiffGateFirstRound();
+    h.gitState.head = "aaa";
+    h.bugs.writeArtifact("bt1", "pr-body.md", "");     // agent wrote nothing
+    await h.engine.approve("bt1");
+    await until(() => h.bugs.get("bt1").stage === "failed", 2000);
+    expect(h.bugs.get("bt1").error).toMatch(/pr-body\.md/i);
+    expect(h.forge.created).toEqual([]);
   });
 });
