@@ -73,7 +73,10 @@ export function buildSetupReport(input: {
 
   const forge = cfg?.forge;
   if (!forge?.preset) {
-    checks.push({ id: "forge", state: "missing", blocks: true, detail: "No forge configured.", fix: { kind: "field", value: "forge.preset" } });
+    checks.push({ id: "forge", state: "missing", blocks: true,
+      detail: "No forge configured. Set forge.preset in ~/.agentgrid/integrations.json to \"github\" or \"bitbucket\" " +
+        "— it is the code host AgentGrid opens pull requests against.",
+      fix: { kind: "field", value: "forge.preset" } });
   } else {
     checks.push({ id: "forge", state: "ok", blocks: true, detail: `Forge: ${forge.preset}.` });
     if (forge.preset === "bitbucket") {
@@ -81,7 +84,8 @@ export function buildSetupReport(input: {
       checks.push(named
         ? { id: "forge-username", state: "ok", blocks: true, detail: `Bitbucket account: ${forge.username!.trim()}.` }
         : { id: "forge-username", state: "missing", blocks: true,
-            detail: "Bitbucket needs your Atlassian account email to authenticate.",
+            detail: "Bitbucket needs your Atlassian account email to authenticate. " +
+              "Set forge.username in ~/.agentgrid/integrations.json.",
             fix: { kind: "field", value: "forge.username" } });
       // Presence only — the value is never read into the report.
       checks.push(env.BITBUCKET_API_TOKEN?.trim()

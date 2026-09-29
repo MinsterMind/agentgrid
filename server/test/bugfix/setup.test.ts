@@ -69,6 +69,17 @@ describe("buildSetupReport", () => {
     expect(JSON.stringify(r)).not.toContain("Authorization");
   });
 
+  it("names the field and the valid presets when no forge is configured", () => {
+    const r = buildSetupReport({ ...base, cfg: { projectRepos: {} } });
+    const forge = find(r, "forge");
+    expect(forge.state).toBe("missing");
+    expect(forge.blocks).toBe(true);
+    expect(forge.detail).toMatch(/forge\.preset/);
+    expect(forge.detail).toMatch(/github/);
+    expect(forge.detail).toMatch(/bitbucket/);
+    expect(forge.fix).toEqual({ kind: "field", value: "forge.preset" });
+  });
+
   it("reports a role that does not resolve", () => {
     const r = buildSetupReport({ ...base, cfg: { projectRepos: {} }, roleResolves: false });
     expect(find(r, "role").state).toBe("missing");
