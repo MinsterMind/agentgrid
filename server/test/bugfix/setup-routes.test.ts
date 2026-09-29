@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import request from "supertest";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -7,6 +7,14 @@ import { createApp, type AppDeps } from "../../src/api/app.js";
 import { Store } from "../../src/store/store.js";
 import { Manager } from "../../src/runner/manager.js";
 import { IntegrationsStore } from "../../src/bugfix/integrations.js";
+
+/**
+ * A minimal wired bugs object for testing live-wiring behavior. Returns null to pass the type
+ * check — the tests that use this never call into the engine/store/integrations/tracker.
+ */
+function fakeWiredBugs(): AppDeps["bugs"] {
+  return { engine: null as never, store: null as never, integrations: null as never, tracker: null as never };
+}
 
 /**
  * An app with NO bug-fix engine — the case the old API could not express. `agentgrid-setup-`
@@ -85,20 +93,47 @@ describe("the setup routes answer without an engine", () => {
     );
   });
 
-  // The delay is essential: without it both requests would resolve too close together to
-  // reliably race, and this test would pass even against a `maybeWire` with no memoisation.
-  it("builds the bug-fix subsystem once when two saves overlap", async () => {
+  // Memoisation works when two saves genuinely overlap. Without the gate, timing variations under
+  // load can cause serialisation, and the second save will legitimately call onConfigured again
+  // (because the first returned null, never setting wired). This test forces genuine overlap to
+  // verify the memo works.
+  it("joins one build when two saves genuinely overlap", async () => {
     let calls = 0;
-    const onConfigured: AppDeps["onConfigured"] = async () => {
-      calls++;
-      await new Promise(r => setTimeout(r, 5));
-      return null; // no real engine needed — only call count matters here
-    };
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    // onConfigured parks on a gate the test controls, so the window is not a guess:
+    // the second save cannot serialise behind the first, whatever the machine is doing.
+    const onConfigured: AppDeps["onConfigured"] = async () => { calls++; await gate; return null; };
     const { app } = await unwiredApp({ onConfigured });
-    await Promise.all([
-      request(app).put("/api/integrations").send({ forge: { preset: "github" } }).expect(200),
-      request(app).put("/api/integrations").send({ forge: { preset: "github" } }).expect(200),
-    ]);
+
+    let firstResolve: any, secondResolve: any;
+    const firstDone = new Promise(r => { firstResolve = r; });
+    const secondDone = new Promise(r => { secondResolve = r; });
+
+    // Start both requests in quick succession using .end() to queue them concurrently
+    request(app).put("/api/integrations").send({ forge: { preset: "github" } })
+      .end((err, res) => { if (err) throw err; firstResolve(res); });
+    request(app).put("/api/integrations").send({ forge: { preset: "github" } })
+      .end((err, res) => { if (err) throw err; secondResolve(res); });
+
+    // Wait until at least one has entered onConfigured
+    await vi.waitFor(() => expect(calls).toBeGreaterThanOrEqual(1));
+    release();
+
+    const [firstRes, secondRes] = await Promise.all([firstDone, secondDone]);
+    expect(firstRes.status).toBe(200);
+    expect(secondRes.status).toBe(200);
+    expect(calls).toBe(1);
+  });
+
+  // Once the subsystem is wired (onConfigured returns non-null), the wired short-circuit
+  // guarantees no later save can trigger a rebuild. This holds regardless of timing.
+  it("never rebuilds once the subsystem is wired", async () => {
+    let calls = 0;
+    const onConfigured: AppDeps["onConfigured"] = async () => { calls++; return fakeWiredBugs(); };
+    const { app } = await unwiredApp({ onConfigured });
+    await request(app).put("/api/integrations").send({ forge: { preset: "github" } }).expect(200);
+    await request(app).put("/api/integrations").send({ forge: { preset: "bitbucket", username: "me@example.com" } }).expect(200);
     expect(calls).toBe(1);
   });
 });
