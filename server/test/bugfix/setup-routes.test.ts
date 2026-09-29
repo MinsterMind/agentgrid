@@ -23,7 +23,7 @@ function fakeWiredBugs(): AppDeps["bugs"] {
  * the wrong one leaks into the other's slot. Both are fresh per call, so this suite never reads
  * or depends on the real machine's `~/.claude` or `~/.agentgrid`.
  */
-async function unwiredApp(extra?: { onConfigured?: AppDeps["onConfigured"]; tracker?: { listMyIssues: () => Promise<unknown[]> }; forge?: { authStatus: () => Promise<{ ok: boolean; message: string }> } } | undefined) {
+async function unwiredApp(extra?: { onConfigured?: AppDeps["onConfigured"]; onConfigSaved?: AppDeps["onConfigSaved"]; tracker?: { listMyIssues: () => Promise<unknown[]> }; forge?: { authStatus: () => Promise<{ ok: boolean; message: string }> } } | undefined) {
   const home = await mkdtemp(path.join(os.tmpdir(), "agentgrid-setup-"));
   const claudeHome = await mkdtemp(path.join(os.tmpdir(), "agentgrid-setup-claude-"));
   const store = new Store(home, path.resolve("roles"));
@@ -36,6 +36,7 @@ async function unwiredApp(extra?: { onConfigured?: AppDeps["onConfigured"]; trac
     roleResolves: () => true,
     setupHome: () => claudeHome,
     onConfigured: extra?.onConfigured,
+    onConfigSaved: extra?.onConfigSaved,
     ...(extra?.tracker ? { setupTracker: () => extra.tracker as never } : {}),
     ...(extra?.forge ? { setupForge: () => extra.forge as never } : {}),
   });
@@ -137,31 +138,23 @@ describe("the setup routes answer without an engine", () => {
     expect(calls).toBe(1);
   });
 
-  // onConfigSaved must keep config-derived helpers (setupForge, setupRepo) fresh. On a wired
-  // server, maybeWire short-circuits and never rebuilds, so the Test button must report the
-  // configuration the user just saved, not the one the engine booted with. This test verifies
-  // that onConfigSaved is called after each save, before the response is sent.
-  it("calls onConfigSaved after each config write, keeping helpers fresh", async () => {
-    const savedConfigs: any[] = [];
-
-    const { app, integrations } = await unwiredApp({
-      onConfigured: async () => fakeWiredBugs(),
+  // onConfigSaved must be called after every write, even on a wired server when maybeWire
+  // short-circuits. This is the only state where the bug appears: the host needs to know the
+  // config changed so config-derived helpers like setupForge report the current state, not stale.
+  it("reports every saved config to the host, even once the engine is wired", async () => {
+    const saved: Array<Record<string, unknown>> = [];
+    const { app } = await unwiredApp({
+      onConfigured: async () => fakeWiredBugs(),          // becomes wired on the first save
+      onConfigSaved: cfg => { saved.push(cfg as never); },
     });
 
-    // Note: createApp is called from unwiredApp, which doesn't pass onConfigSaved.
-    // We need to test onConfigSaved is passed to createApp in start.ts.
-    // Instead, verify by checking the integrations.json was written correctly:
-
-    // Boot with github config and become wired
     await request(app).put("/api/integrations").send({ forge: { preset: "github" } }).expect(200);
-    let saved = await integrations.read();
-    expect(saved.forge?.preset).toBe("github");
-
-    // Change to bitbucket
     await request(app).put("/api/integrations").send({ forge: { preset: "bitbucket", username: "me@example.com" } }).expect(200);
-    saved = await integrations.read();
-    expect(saved.forge?.preset).toBe("bitbucket");
-    expect(saved.forge?.username).toBe("me@example.com");
+
+    // The second save is the one that matters: `maybeWire` short-circuits there, so before the
+    // fix nothing told the host the config had changed and `setupForge` kept building github.
+    expect(saved).toHaveLength(2);
+    expect((saved[1] as any).forge).toEqual({ preset: "bitbucket", username: "me@example.com" });
   });
 });
 
