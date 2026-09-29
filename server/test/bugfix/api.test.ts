@@ -122,6 +122,21 @@ describe("bug task routes", () => {
     await request(app).put("/api/integrations").send({ forge: { preset: "bitbucket", username: 42 } }).expect(400);
   });
 
+  it("rejects a blank or whitespace-only username for the bitbucket preset, naming the field", async () => {
+    // Spec §1: an error naming neither the file nor the missing key is the failure mode this
+    // work exists to remove — so this must be caught here, not surface later as intake's
+    // generic "no forge configured".
+    const missing = await request(app).put("/api/integrations").send({ forge: { preset: "bitbucket" } }).expect(400);
+    expect(missing.body.error).toMatch(/forge\.username/);
+    const blank = await request(app).put("/api/integrations").send({ forge: { preset: "bitbucket", username: "   " } }).expect(400);
+    expect(blank.body.error).toMatch(/forge\.username/);
+    expect((await request(app).get("/api/integrations")).body.forge).toBeUndefined();
+  });
+
+  it("does not require a username for the github preset", async () => {
+    await request(app).put("/api/integrations").send({ forge: { preset: "github" } }).expect(200);
+  });
+
   it("rejects a malformed tracker on PUT /api/integrations, and accepts a well-formed one", async () => {
     await request(app).put("/api/integrations").send({ tracker: "garbage" }).expect(400);
     await request(app).put("/api/integrations").send({ tracker: 42 }).expect(400);
@@ -231,7 +246,6 @@ async function appAtMergeGate() {
     merges: [] as Array<{ number: number; method: string }>,
     state: "OPEN" as "OPEN" | "MERGED" | "CLOSED",
     authStatus: async () => ({ ok: true, message: "ok" }),
-    createPrCommand: () => "gh pr create --base 'main' --head 'bugfix/PAY-42' --title 't' --body-file '/b'",
     findPr: async () => ({ number: 7, url: "https://x/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: "abc1234abc1234abc1234abc1234abc1234abc1", lastSeenEventAt: "t" }),
     getPr: async () => ({ found: { number: 7, url: "https://x/pr/7", state: forge.state, reviewDecision: null, checks: null, mergeable: "MERGEABLE" as string | null, headSha: "abc1234abc1234abc1234abc1234abc1234abc1", lastSeenEventAt: "t" } }),
     listReviewEvents: async () => [],

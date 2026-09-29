@@ -277,6 +277,14 @@ export function createApp(deps: AppDeps) {
       if (forge.username !== undefined && typeof forge.username !== "string") {
         throw new BadRequest("forge.username must be a string");
       }
+      // Bitbucket has no other way to authenticate (Basic auth needs the Atlassian email).
+      // A blank/whitespace username would otherwise sail through here, and `makeForge`
+      // would then just treat the whole forge as unconfigured — leaving the user with
+      // intake's generic "no forge configured", naming neither `forge.username` nor
+      // integrations.json. Reject it here instead, naming the field, per spec §1.
+      if (forge.preset === "bitbucket" && (typeof forge.username !== "string" || !forge.username.trim())) {
+        throw new BadRequest("forge.username is required for the bitbucket preset (your Atlassian account email)");
+      }
       patch.forge = forge;
     }
     res.json(await bugs().integrations.write(patch as never));
