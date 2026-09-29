@@ -103,7 +103,12 @@ export function buildSetupReport(input: {
         fix: { kind: "action", value: "reinstall" } });
 
   return {
-    ready: checks.every(c => !c.blocks || c.state === "ok"),
+    // `ready` answers "can a bug fix be started right now?", which is what `wired` means:
+    // the engine's existence is what the API guard tests. The checks describe the *config* —
+    // what the user edits and what the next boot reads — so they decide only before anything
+    // is wired. A config deleted or corrupted under a running server leaves the workflow
+    // working, and reporting it unavailable would be false.
+    ready: wired || checks.every(c => !c.blocks || c.state === "ok"),
     wired,
     checks,
     // Only the shape the UI needs: a definition can carry credentials and never leaves the server.

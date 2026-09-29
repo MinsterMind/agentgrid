@@ -85,4 +85,18 @@ describe("buildSetupReport", () => {
     expect(find(r, "role").state).toBe("missing");
     expect(find(r, "role").blocks).toBe(true);
   });
+
+  // Fake mode reaches exactly this: the engine is wired from a canned tracker/forge, not from
+  // config, so `cfg` is empty even though a bug fix can genuinely start. The same combination
+  // also covers a config deleted or corrupted out from under a running server — the engine it
+  // already built keeps working. Capability (`ready`) and configuration (the checks) are
+  // reported separately: `ready` must not be masked by the missing config, and the checks must
+  // not be masked by `ready` — an operator editing the file still needs to see what's missing.
+  it("is ready once wired, even with no config on disk — but still reports what is missing", () => {
+    const r = buildSetupReport({ ...base, cfg: null, cfgExists: false, wired: true });
+    expect(r.ready).toBe(true);
+    expect(find(r, "config-file").state).toBe("missing");
+    expect(find(r, "tracker").state).toBe("missing");
+    expect(find(r, "forge").state).toBe("missing");
+  });
 });
