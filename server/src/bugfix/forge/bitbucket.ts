@@ -18,7 +18,10 @@ export interface BitbucketDeps {
 
 /** `git@bitbucket.org:ws/slug.git`, `https://user@bitbucket.org/ws/slug.git`, `ssh://git@bitbucket.org/ws/slug`. */
 export function parseRepoSlug(remoteUrl: string): { workspace: string; slug: string } | null {
-  const m = /bitbucket\.org[:/]+([^/]+)\/([^/]+?)(?:\.git)?$/.exec(remoteUrl.trim());
+  // Host-anchored: `(?<![\w.-])` refuses a match where "bitbucket.org" is merely a substring
+  // of a longer label (e.g. `evilbitbucket.org:acme/payments.git`), which would otherwise
+  // parse as a valid slug.
+  const m = /(?<![\w.-])bitbucket\.org[:/]+([^/]+)\/([^/]+?)(?:\.git)?$/.exec(remoteUrl.trim());
   return m ? { workspace: m[1], slug: m[2] } : null;
 }
 
@@ -134,7 +137,7 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
 
   /** The check rollup for one PR, from its commit-status endpoint. Never throws; unreadable reads as null (unknown), not success. */
   async function fetchChecks(workspace: string, slug: string, number: number): Promise<string | null> {
-    const r = await api(`/repositories/${workspace}/${slug}/pullrequests/${number}/statuses`);
+    const r = await api(`/repositories/${encodeURIComponent(workspace)}/${encodeURIComponent(slug)}/pullrequests/${number}/statuses`);
     if (r.kind !== "ok") return null;
     const values = Array.isArray(r.body?.values) ? r.body.values : [];
     return rollupChecks(values);
@@ -145,7 +148,7 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
     if (!slug) {
       return { unavailable: `could not determine the Bitbucket repository from ${repoDir}'s origin remote` };
     }
-    const r = await api(`/repositories/${slug.workspace}/${slug.slug}/pullrequests/${number}`);
+    const r = await api(`/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests/${number}`);
     if (r.kind === "no-token") return { unavailable: "BITBUCKET_API_TOKEN is not set" };
     if (r.kind === "refused") return { unavailable: "Bitbucket refused the request (token not accepted)" };
     if (r.kind === "missing") return { found: null };
@@ -163,13 +166,13 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
       if (!token) {
         return { ok: false, message: "BITBUCKET_API_TOKEN is not set in the server's environment. Export it and restart the server." };
       }
-      const r = await api("/user");
       // "no-token" can't recur here: `token` above is truthy, and `api()` only reports
-      // "no-token" when the getter returns falsy.
+      // "no-token" when the getter returns falsy. Asserted away rather than left as a
+      // runtime branch that can never execute.
+      const r = await api("/user") as Exclude<ApiResult, { kind: "no-token" }>;
       if (r.kind === "refused") return { ok: false, message: "Bitbucket refused the token (401/403) — it was not accepted." };
       if (r.kind === "missing") return { ok: false, message: "Bitbucket returned 404 for /user." };
       if (r.kind === "unavailable") return { ok: false, message: r.message };
-      if (r.kind === "no-token") return { ok: false, message: "BITBUCKET_API_TOKEN is not set in the server's environment. Export it and restart the server." };
       const who = r.body?.display_name ?? r.body?.nickname ?? deps.username;
       return { ok: true, message: `Authenticated to Bitbucket as ${who} (${deps.username}).` };
     },
@@ -182,7 +185,7 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
       const slug = await resolveSlug(repoDir);
       if (!slug) return null;
       const q = `source.branch.name="${branch}" AND state="OPEN"`;
-      const r = await api(`/repositories/${slug.workspace}/${slug.slug}/pullrequests?q=${encodeURIComponent(q)}`);
+      const r = await api(`/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests?q=${encodeURIComponent(q)}`);
       if (r.kind !== "ok") return null;
       const values = Array.isArray(r.body?.values) ? r.body.values : [];
       const pr = values[0];
