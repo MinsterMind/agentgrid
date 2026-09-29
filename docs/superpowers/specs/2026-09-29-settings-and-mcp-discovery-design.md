@@ -162,8 +162,14 @@ forever — the previous `…/v1/sse` endpoint stopped being supported after
 
 ## 7. Writes, and when they take effect
 
-Saving goes through the existing `PUT /api/integrations`, which creates
-the file when absent. That alone closes the reported gap.
+Saving goes through `PUT /api/integrations`, which creates the file when
+absent. **That route must first be moved out from behind the engine
+guard.** Today both `GET` and `PUT /api/integrations` call `bugs()`, so
+on an unconfigured machine the config cannot be read or written through
+the API at all — it answers 501. This is the structural cause of the
+dead end, deeper than "no Settings screen": `integrations` becomes a
+top-level `AppDeps` field rather than living inside `deps.bugs`, and the
+two integrations routes join `GET /api/setup` outside the guard.
 
 **Live wiring, once.** If the engine is currently null, the server builds
 the tracker, forge, engine and watcher on save and the feature becomes
