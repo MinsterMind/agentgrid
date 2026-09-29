@@ -3,14 +3,8 @@ import { githubAdapter } from "../../../src/bugfix/forge/github.js";
 import { bitbucketAdapter } from "../../../src/bugfix/forge/bitbucket.js";
 import type { ForgeAdapter } from "../../../src/bugfix/forge/types.js";
 
-/** Every adapter must satisfy these, whatever it talks to. */
-const adapters: Array<[string, () => ForgeAdapter]> = [
-  ["github", () => githubAdapter(async () => ({ stdout: "", code: 1, stderr: "boom" }))],
-  ["bitbucket", () => bitbucketAdapter({ username: "me@example.com", token: () => "t",
-    fetchFn: (async () => { throw new TypeError("network down"); }) as unknown as typeof fetch })],
-];
-
-describe.each(adapters)("the %s adapter satisfies the forge contract", (_name, make) => {
+/** The five assertions every adapter must satisfy, whatever failure mode put it there. */
+function runContract(make: () => ForgeAdapter) {
   it("getPr never throws and reports unavailability rather than absence", async () => {
     const r = await make().getPr("/r", 7);
     expect(r).toHaveProperty("unavailable");
@@ -27,4 +21,44 @@ describe.each(adapters)("the %s adapter satisfies the forge contract", (_name, m
   it("authStatus never throws and reports ok:false", async () => {
     await expect(make().authStatus()).resolves.toMatchObject({ ok: false });
   });
+}
+
+/**
+ * Path 1: the network itself is down. Every call must reach the failing transport and
+ * degrade gracefully rather than throw. The Bitbucket adapter resolves `workspace/slug`
+ * from the repo's git remote *before* it ever calls the network, so `gitRemoteUrl` is
+ * given a URL that parses cleanly here — otherwise every method would bail out at slug
+ * resolution and the injected `fetchFn` would never run, which would defeat the point of
+ * this test (see the correction below).
+ */
+const networkDownAdapters: Array<[string, () => ForgeAdapter]> = [
+  ["github", () => githubAdapter(async () => ({ stdout: "", code: 1, stderr: "boom" }))],
+  ["bitbucket", () => bitbucketAdapter({
+    username: "me@example.com", token: () => "t",
+    gitRemoteUrl: async () => "git@bitbucket.org:acme/payments.git",
+    fetchFn: (async () => { throw new TypeError("network down"); }) as unknown as typeof fetch,
+  })],
+];
+
+describe.each(networkDownAdapters)("the %s adapter satisfies the forge contract when the network is down", (_name, make) => {
+  runContract(make);
+});
+
+/**
+ * Path 2: the network is fine but the repo can't be resolved to a forge slug at all (no
+ * git remote, or a remote that isn't a bitbucket.org URL). This is real, distinct
+ * behaviour from a network failure — it must be covered too, not traded for path 1's
+ * coverage. Only Bitbucket has a slug-resolution step of its own; `gh` resolves the
+ * owner/repo implicitly from `repoDir` and has no equivalent failure mode to isolate.
+ */
+const unresolvableRepoAdapters: Array<[string, () => ForgeAdapter]> = [
+  ["bitbucket", () => bitbucketAdapter({
+    username: "me@example.com", token: () => "t",
+    gitRemoteUrl: async () => null,
+    fetchFn: (async () => { throw new TypeError("must not be called: no slug was resolved"); }) as unknown as typeof fetch,
+  })],
+];
+
+describe.each(unresolvableRepoAdapters)("the %s adapter satisfies the forge contract when the repo can't be resolved to a slug", (_name, make) => {
+  runContract(make);
 });
