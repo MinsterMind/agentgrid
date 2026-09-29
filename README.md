@@ -67,9 +67,33 @@ npm run serve            # → http://127.0.0.1:4800
 8. **Transcript** (side panel) shows the agent's full session — every prompt, reply, tool call and result, live while it works — the same conversation you'd see in the terminal.
 9. **Live sessions are on the grid by default.** Any Claude Code session running on the machine (terminal or background) shows up as a dashed *ghost tile* with its status; **Pull in** turns it into an agent bound to that session: for a session open in a terminal it closes it there (Claude Code saves the conversation) and opens it in the grid's Terminal tab; background sessions are attached.
 10. **Sessions** (top bar) lists every Claude Code session on the machine — filter by name/repo/id, **rename** (✎, stored in Claude Code itself), or **pull in by session id** for anything older than the list — live terminal and background sessions with their status, plus recent history. **Adopt** a past session to put it on the grid: that agent then *continues that conversation* with every prompt you assign (🔗 on the tile). Background sessions get **Attach in Terminal**.
-11. **🐞 Fix a bug** (top bar) turns a tracked ticket into a merged PR, gated at every step: AgentGrid pulls the issue from your tracker, an agent analyses it and writes a plan you approve, implements the fix in a private git worktree, shows you the diff, and opens the pull request — pausing for your click before anything leaves your machine. From there it keeps watching: if a reviewer asks for changes, or your branch conflicts with the base, AgentGrid opens a new diff-review gate with the agent's fix — approving it pushes exactly the commit you reviewed, no more, no less. Once the PR is approved, a merge gate lets you pick the merge method and click Merge; AgentGrid confirms the merge really landed, tears down the worktree, and frees the agent for its next task. The finished card (merged, or closed without merging) stays up until you dismiss it. Configure your tracker (any MCP-based tracker: Jira, Linear, …) and forge (GitHub today) under Settings → Integrations.
+11. **🐞 Fix a bug** (top bar) turns a tracked ticket into a merged PR, gated at every step: AgentGrid pulls the issue from your tracker, an agent analyses it and writes a plan you approve, and implements the fix in a private git worktree, showing you the diff. Approving the diff hands off to the server, which pushes exactly the commit you reviewed and opens the pull request itself — no agent ever holds a forge credential. From there it keeps watching: if a reviewer asks for changes, or your branch conflicts with the base, AgentGrid opens a new diff-review gate with the agent's fix — approving it pushes exactly the commit you reviewed, no more, no less. Once the PR is approved, a merge gate lets you pick the merge method and click Merge; AgentGrid confirms the merge really landed, tears down the worktree, and frees the agent for its next task. The finished card (merged, or closed without merging) stays up until you dismiss it. Configure your tracker (any MCP-based tracker: Jira, Linear, …) and forge (GitHub or Bitbucket Cloud) under Settings → Integrations.
 
 Everything lives in `~/.agentgrid/` as plain files — roles, agents, assignments, and each agent's memory.
+
+### Bug-fix forge: GitHub or Bitbucket Cloud
+
+The bug-fix flow's forge is configured in `~/.agentgrid/integrations.json`, alongside your tracker and the project→repo memory. For GitHub it's `"forge": { "preset": "github" }`, using the `gh` CLI's own auth (`gh auth login`) — nothing else to set up.
+
+For **Bitbucket Cloud**, add:
+
+```json
+{
+  "forge": { "preset": "bitbucket", "username": "<your Atlassian account email>" }
+}
+```
+
+and export an API token in the same shell the desktop app is launched from:
+
+```bash
+export BITBUCKET_API_TOKEN="<an API token for that Atlassian account>"
+```
+
+Create the token from your Atlassian account's API token settings (not a Bitbucket app password — this is the newer, account-level API token). AgentGrid never writes this token to disk, never logs it and never puts it in a prompt or an agent's own environment — it is read straight from `process.env.BITBUCKET_API_TOKEN` on every call, so rotating it is just exporting a new value. **Do not put the token in `integrations.json` or any other config file** — it belongs in the shell only.
+
+The desktop app inherits your **login shell's** environment at launch, not whatever shell happens to be open in a terminal at the time. If you export the token after the app is already running (or in a shell the app wasn't launched from), it won't see it — **quit and restart the desktop app** after exporting it, and make sure the export is in a profile file (`.zprofile`, `.bash_profile`, etc.) that your login shell actually loads, not just a one-off `export` in an interactive terminal.
+
+**Bitbucket has no `rebase` merge method.** The merge gate's "rebase" option is a GitHub-only strategy; against Bitbucket it is refused rather than silently substituted with something else (Bitbucket's `fast_forward` strategy moves the base pointer without rewriting commits, which is not the same operation as a rebase merge). Pick squash or merge instead.
 
 ## Concepts
 
