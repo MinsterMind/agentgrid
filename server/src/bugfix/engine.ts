@@ -481,6 +481,22 @@ export class BugFixEngine {
   }
 
   /**
+   * Re-check the approved-commit pin immediately before an irreversible outward action — the
+   * diff gate may have been open for a long time, and anything that moved HEAD since is
+   * unreviewed. Shared by `doCreatePr` and `doPush`, which differ only in what they're about
+   * to do next; `action` supplies that trailing clause so each keeps its own message.
+   * Returns the current HEAD so a caller that needs it (`doPush`, to compare against the PR's
+   * post-push headSha) doesn't have to re-read it.
+   */
+  private async assertPinned(task: BugTask, action: string): Promise<string> {
+    const head = await this.deps.git.revParse(task.worktree);
+    if (head !== task.approvedHead) {
+      throw new Error(`the branch moved since the diff was approved: approved ${task.approvedHead}, HEAD is now ${head}. Review the new diff (request changes, then approve again) before ${action}.`);
+    }
+    return head;
+  }
+
+  /**
    * Push the approved commit and create the pull request. Server work for the same reason
    * `doPush` and `doMerge` are: it is deterministic, it is outward-facing, and doing it here
    * keeps every forge credential away from an agent. The pin is re-checked immediately
@@ -489,10 +505,7 @@ export class BugFixEngine {
   private async doCreatePr(task: BugTask): Promise<void> {
     const { git, forge, bugs, tracker } = this.deps;
     if (!forge) throw new Error("no forge adapter: cannot create a pull request");
-    const head = await git.revParse(task.worktree);
-    if (head !== task.approvedHead) {
-      throw new Error(`the branch moved since the diff was approved: approved ${task.approvedHead}, HEAD is now ${head}. Review the new diff (request changes, then approve again) before opening a pull request.`);
-    }
+    await this.assertPinned(task, "opening a pull request");
     await git.push(task.worktree, task.branch);
     const body = path.join(bugs.dir(task.id), "pr-body.md");
     const created = await forge.createPr(task.sourceRepo, {
@@ -510,12 +523,7 @@ export class BugFixEngine {
    *  not an agent: no tokens, no improvisation, just the exact commit the human approved. */
   private async doPush(task: BugTask): Promise<void> {
     const { git, forge, bugs } = this.deps;
-    // Re-check the pin against the commit the human approved. The gate could have opened
-    // minutes ago; anything that moved HEAD since is unreviewed.
-    const head = await git.revParse(task.worktree);
-    if (head !== task.approvedHead) {
-      throw new Error(`the branch moved since the diff was approved: approved ${task.approvedHead}, HEAD is now ${head}. Review the new diff (request changes, then approve again) before pushing.`);
-    }
+    const head = await this.assertPinned(task, "pushing");
     // The gate that recorded which round this was is already gone by the time this runs —
     // the transition into "pushing" clears it (`gate: null`) — so read it from the task's own
     // history instead: the most recent entry naming an agent stage. "rebase" means force (a

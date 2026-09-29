@@ -1728,7 +1728,7 @@ describe("creating the pull request", () => {
   it("verifies opening-pr by the PR body alone — no forge call", async () => {
     const h = await atDiffGateFirstRound();
     h.gitState.head = "aaa";
-    h.bugs.writeArtifact("bt1", "pr-body.md", "");     // agent wrote nothing
+    await h.bugs.writeArtifact("bt1", "pr-body.md", "");     // agent wrote nothing
     await h.engine.approve("bt1");
     await until(() => h.bugs.get("bt1").stage === "failed", 2000);
     expect(h.bugs.get("bt1").error).toMatch(/pr-body\.md/i);
