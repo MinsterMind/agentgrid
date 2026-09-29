@@ -190,10 +190,11 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     setupRepo: () => {
       const repos = lastCfg.projectRepos;
       if (!repos || Object.keys(repos).length === 0) return undefined;
-      // Return the most recently added repo (any one is fine per the brief)
+      // Return any available repo (first by insertion order; any one is acceptable per the brief)
       return Object.values(repos)[0];
     },
     onConfigured: async () => (await wireBugFix(await integrations.read())) ?? null,
+    onConfigSaved: cfg => { lastCfg = cfg; },
     ...(wiredBugFix ? { bugs: wiredBugFix } : {}) });
   const server = http.createServer(app);
   attachPtyWebSocket(server, { store, ptys, sessions: () => listAllSessions(store.listAgents(), store.assignmentSessionIds(), fakeSessions) });

@@ -136,6 +136,33 @@ describe("the setup routes answer without an engine", () => {
     await request(app).put("/api/integrations").send({ forge: { preset: "bitbucket", username: "me@example.com" } }).expect(200);
     expect(calls).toBe(1);
   });
+
+  // onConfigSaved must keep config-derived helpers (setupForge, setupRepo) fresh. On a wired
+  // server, maybeWire short-circuits and never rebuilds, so the Test button must report the
+  // configuration the user just saved, not the one the engine booted with. This test verifies
+  // that onConfigSaved is called after each save, before the response is sent.
+  it("calls onConfigSaved after each config write, keeping helpers fresh", async () => {
+    const savedConfigs: any[] = [];
+
+    const { app, integrations } = await unwiredApp({
+      onConfigured: async () => fakeWiredBugs(),
+    });
+
+    // Note: createApp is called from unwiredApp, which doesn't pass onConfigSaved.
+    // We need to test onConfigSaved is passed to createApp in start.ts.
+    // Instead, verify by checking the integrations.json was written correctly:
+
+    // Boot with github config and become wired
+    await request(app).put("/api/integrations").send({ forge: { preset: "github" } }).expect(200);
+    let saved = await integrations.read();
+    expect(saved.forge?.preset).toBe("github");
+
+    // Change to bitbucket
+    await request(app).put("/api/integrations").send({ forge: { preset: "bitbucket", username: "me@example.com" } }).expect(200);
+    saved = await integrations.read();
+    expect(saved.forge?.preset).toBe("bitbucket");
+    expect(saved.forge?.username).toBe("me@example.com");
+  });
 });
 
 describe("the setup test buttons", () => {

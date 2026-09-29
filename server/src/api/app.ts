@@ -36,6 +36,10 @@ export interface AppDeps {
   setupHome?: () => string | undefined;
   /** Builds the bug-fix subsystem once configuration first appears. Called at most once. */
   onConfigured?: () => Promise<AppDeps["bugs"] | null>;
+  /** Called after any successful write to integrations.json, wired or not. Lets the host keep
+   *  config-derived helpers (setupForge, setupRepo) honest: a diagnostic must never report a
+   *  configuration the user has already replaced. */
+  onConfigSaved?: (cfg: Integrations) => void;
   /** The tracker to exercise from Settings' Test button, when one can be built. */
   setupTracker?: () => TrackerProvider | null;
   /** The forge to exercise from Settings' Test button, when one can be built. */
@@ -257,10 +261,11 @@ export function createApp(deps: AppDeps) {
     const discovery = await discoverMcpServers(scanOptions());
     const server = discovery.importable.find(s => s.name === name);
     if (!server) throw new BadRequest(`no importable MCP server named "${name}" was found in your Claude Code configuration`);
-    await integrationsStore().write(cur => ({
+    const saved = await integrationsStore().write(cur => ({
       tracker: { preset: cur.tracker?.preset ?? "mcp", toolPrefix: `mcp__${server.name}`,
                  mcpServers: { [server.name]: server.definition } },
     }));
+    deps.onConfigSaved?.(saved);
     await maybeWire();
     res.json(await setupReport());
   }));
@@ -390,6 +395,7 @@ export function createApp(deps: AppDeps) {
       patch.forge = forge;
     }
     const saved = await integrationsStore().write(patch as never);
+    deps.onConfigSaved?.(saved);
     await maybeWire();
     res.json(saved);
   }));
