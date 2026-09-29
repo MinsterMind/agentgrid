@@ -47,11 +47,28 @@ describe("SettingsDialog", () => {
   });
 
   it("says a restart is needed only when an engine is already running", async () => {
-    vi.spyOn(api, "getSetup").mockResolvedValue(report({ wired: true, ready: true, checks: [] }));
+    // Distinct before/after values: if `save()` ever read `wired` from the *refreshed*
+    // report instead of the one captured before the request, this would say "live" instead —
+    // the assertion below would fail, not just pass by coincidence.
+    vi.spyOn(api, "getSetup")
+      .mockResolvedValueOnce(report({ wired: true, ready: true, checks: [] }))   // before the save: already wired
+      .mockResolvedValue(report({ wired: false, ready: true, checks: [] }));     // after: (hypothetically) not wired
     vi.spyOn(api, "putIntegrations").mockResolvedValue({ projectRepos: {} });
     render(<SettingsDialog onClose={() => {}} />);
     await userEvent.click(await screen.findByRole("button", { name: /save/i }));
     await waitFor(() => expect(screen.getByText(/restart/i)).toBeTruthy());
+    expect(screen.queryByText(/now available/i)).toBeNull();
+  });
+
+  it("says the workflow is live when the save is what wired it", async () => {
+    vi.spyOn(api, "getSetup")
+      .mockResolvedValueOnce(report({ wired: false }))                                    // before the save: nothing wired yet
+      .mockResolvedValue(report({ wired: true, ready: true, checks: [] }));                // after: this save wired it
+    vi.spyOn(api, "putIntegrations").mockResolvedValue({ projectRepos: {} });
+    render(<SettingsDialog onClose={() => {}} />);
+    await userEvent.click(await screen.findByRole("button", { name: /save/i }));
+    await waitFor(() => expect(screen.getByText(/now available/i)).toBeTruthy());
+    expect(screen.queryByText(/restart/i)).toBeNull();
   });
 
   it("omits rebase from the merge methods for bitbucket", async () => {
@@ -59,5 +76,17 @@ describe("SettingsDialog", () => {
     render(<SettingsDialog onClose={() => {}} />);
     await screen.findByText(/Forge: bitbucket/);
     expect(screen.queryByText(/rebase/i)).toBeNull();
+  });
+
+  it("surfaces a blocking check that has no dedicated section, e.g. a corrupt config file", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report({
+      checks: [
+        { id: "config-file", state: "broken", blocks: true,
+          detail: "~/.agentgrid/integrations.json could not be read: Unexpected token } in JSON at position 42" },
+        { id: "tracker", state: "missing", detail: "No tracker configured.", blocks: true },
+      ],
+    }));
+    render(<SettingsDialog onClose={() => {}} />);
+    expect(await screen.findByText(/could not be read/)).toBeTruthy();
   });
 });

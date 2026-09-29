@@ -62,6 +62,13 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
 
   const check = (id: string) => report?.checks.find(c => c.id === id);
 
+  // Rendered bespoke below (Tracker/Forge sections); everything else the server reports —
+  // today that's "config-file" and "role", both `blocks: true` — is rendered generically here,
+  // so a check id added later, or a failure mode the sections don't have a dedicated spot for,
+  // shows up on its own rather than silently making `ready: false` unexplained.
+  const SHOWN = new Set(["tracker", "forge", "forge-username", "forge-token"]);
+  const other = report?.checks.filter(c => !SHOWN.has(c.id) && c.state !== "ok") ?? [];
+
   const save = () => run(async () => {
     // `wired` BEFORE the save decides the message: a first-time save wires the engine live,
     // while changing an already-running config needs a restart (nothing is rebuilt under
@@ -79,7 +86,14 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       <div className="dialog settings" onClick={e => e.stopPropagation()}>
         <h3>⚙︎ Settings — Integrations</h3>
         {err && <div className="err">{err}</div>}
-        {!report ? <div className="hint">Loading…</div> : <>
+        {!report ? (err ? null : <div className="hint">Loading…</div>) : <>
+          {other.length > 0 && (
+            <section>
+              <h4>Other problems</h4>
+              {other.map(c => <CheckRow key={c.id} check={c} />)}
+            </section>
+          )}
+
           <section>
             <h4>Tracker</h4>
             {check("tracker") && <CheckRow check={check("tracker")!} />}
@@ -140,7 +154,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           )}
 
           <div className="row">
-            <button className="btn primary" disabled={busy} onClick={() => void save()}>Save</button>
+            <button className="btn p" disabled={busy} onClick={() => void save()}>Save</button>
             <button className="btn" onClick={onClose}>Close</button>
           </div>
           {saved === "restart" && <div className="hint">Saved. A server restart is required for this to take effect.</div>}
