@@ -2,6 +2,7 @@ import { query, type Options } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import type { BuildOptions, QueryFn } from "./runner.js";
+import { stripForgeSecrets } from "../env.js";
 
 /**
  * The `claude` CLI on PATH, resolved through symlinks. Preferring it over the SDK's bundled
@@ -37,6 +38,11 @@ export const buildOptions: BuildOptions = (role, agent, extra) => {
     agents: { [role.name]: { description: `AgentGrid role ${role.name}`, prompt: role.prompt, model: role.model } },
     canUseTool: extra.canUseTool,
     abortController: extra.abortController,
+    // `env` REPLACES the subprocess environment rather than merging with process.env
+    // (see the SDK's Options.env doc), so this both keeps the agent's environment
+    // otherwise normal AND is where forge credentials get stripped before an agent
+    // process ever starts — see env.ts.
+    env: stripForgeSecrets(process.env),
   };
   if (role.maxBudgetUsd !== undefined) o.maxBudgetUsd = role.maxBudgetUsd;
   if (agent.resumeSessionId) o.resume = agent.resumeSessionId;

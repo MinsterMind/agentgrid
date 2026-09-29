@@ -85,4 +85,9 @@ describe("cleanEnv", () => {
     const env = cleanEnv({ PATH: "/bin", CLAUDE_CODE_CHILD_SESSION: "1", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli", CLAUDE_PID: "1", CLAUDE_EFFORT: "low", CLAUDE_CODE_BRIDGE_SESSION_ID: "x", HOME: "/h" });
     expect(env).toEqual({ PATH: "/bin", HOME: "/h", TERM: "xterm-256color", COLORTERM: "truecolor" });
   });
+
+  it("strips forge credentials from the embedded terminal's environment", () => {
+    const env = cleanEnv({ PATH: "/bin", HOME: "/h", BITBUCKET_API_TOKEN: "secret-bb", GH_TOKEN: "secret-gh", GITHUB_TOKEN: "secret-ghlegacy" });
+    expect(env).toEqual({ PATH: "/bin", HOME: "/h", TERM: "xterm-256color", COLORTERM: "truecolor" });
+  });
 });
