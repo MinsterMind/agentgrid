@@ -1641,7 +1641,7 @@ async function atDiffGateFirstRound() {
     createPr: async (repoDir: string, ctx: unknown) => {
       forgeMock.created.push({ repoDir, ctx });
       return forgeMock.createResult ?? {
-        found: { number: 7, url: "https://gh/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MEREGABLE" as any, headSha: gs.head ?? null, lastSeenEventAt: "t" },
+        found: { number: 7, url: "https://gh/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: gs.head ?? null, lastSeenEventAt: "t" },
       };
     },
     findPr: async () => null,
