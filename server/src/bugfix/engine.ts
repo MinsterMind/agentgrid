@@ -388,9 +388,9 @@ export class BugFixEngine {
     const ctx = {
       artifactsDir: dir, planPath: path.join(dir, "plan.md"), prBodyPath: path.join(dir, "pr-body.md"),
       note: this.pendingNote.get(task.id),
-      createPrCommand: stage === "opening-pr" && forge
-        ? forge.createPrCommand({ title: `${task.issue.key}: ${task.issue.title}`, bodyFile: path.join(dir, "pr-body.md"), base: task.baseBranch, head: task.branch })
-        : undefined,
+      // `forge.createPrCommand` no longer exists — PR creation is now server-side
+      // (`forge.createPr`, Task 1). Task 3 owns wiring `opening-pr` onto it; until then
+      // this stage runs without a create-PR command injected into the agent's prompt.
     };
     if (stage === "opening-pr") {
       // Guard the only stage that touches the outside world.

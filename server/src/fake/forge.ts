@@ -27,7 +27,7 @@ export function fakeForge(script: ScriptedStep[] = []): ForgeAdapter {
   return {
     name: "fake",
     authStatus: async () => ({ ok: true, message: "fake forge" }),
-    createPrCommand: () => "echo 'fake pr created'",
+    createPr: async () => ({ found: { ...pr } }),
     findPr: async () => ({ ...pr }),
     getPr: async () => { calls += 1; apply(); return { found: { ...pr } } as PrLookup; },
     listReviewEvents: async (_r, _n, since) => events.filter(e => e.at > since),

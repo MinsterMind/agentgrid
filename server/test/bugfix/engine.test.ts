@@ -65,7 +65,7 @@ const forge = {
   state: "OPEN" as "OPEN" | "MERGED" | "CLOSED",
   stateAfterMerge: "MERGED" as "OPEN" | "MERGED" | "CLOSED",
   authStatus: async () => ({ ok: true, message: "ok" }),
-  createPrCommand: () => "gh pr create --base 'main' --head 'bugfix/PAY-42' --title 't' --body-file '/b'",
+  createPr: async () => ({ found: { number: 7, url: "https://x/pr/7", state: forge.state, reviewDecision: null, checks: null, mergeable: "MERGEABLE" as string | null, headSha: "abc1234", lastSeenEventAt: "t" } }),
   findPr: async () => ({ number: 7, url: "https://gh/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: "abc1234", lastSeenEventAt: "t" }),
   getPr: async () => ({ found: { number: 7, url: "https://x/pr/7", state: forge.state, reviewDecision: null, checks: null, mergeable: "MERGEABLE" as string | null, headSha: "abc1234", lastSeenEventAt: "t" } }),
   listReviewEvents: async () => [],
@@ -999,7 +999,7 @@ async function atFeedbackDiffGate(opts: { reason?: "feedback" | "rebase" } = {})
     name: "github",
     prHead: gs.head,
     authStatus: async () => ({ ok: true, message: "ok" }),
-    createPrCommand: () => "gh pr create --base 'main' --head 'bugfix/PAY-42' --title 't' --body-file '/b'",
+    createPr: async () => ({ found: { number: 7, url: "https://gh/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: forge.prHead, lastSeenEventAt: "t" } }),
     findPr: async () => ({ number: 7, url: "https://gh/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: forge.prHead, lastSeenEventAt: "t" }),
     getPr: async () => ({ found: { number: 7, url: "https://gh/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: forge.prHead, lastSeenEventAt: "t" } }),
     listReviewEvents: async () => [],
@@ -1145,7 +1145,7 @@ async function atMergeGate() {
     afterResult: null as null | { unavailable: string } | { found: null },
     getPrCalls: 0,
     authStatus: async () => ({ ok: true, message: "ok" }),
-    createPrCommand: () => "gh pr create --base 'main' --head 'bugfix/PAY-42' --title 't' --body-file '/b'",
+    createPr: async () => ({ found: { number: 7, url: "https://x/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: gitState.head, lastSeenEventAt: "t" } }),
     findPr: async () => ({ number: 7, url: "https://x/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: gitState.head, lastSeenEventAt: "t" }),
     getPr: async () => {
       mergeForge.getPrCalls++;

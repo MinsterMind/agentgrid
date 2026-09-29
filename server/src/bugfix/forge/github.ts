@@ -1,4 +1,3 @@
-import { shellQuote } from "../../shell.js";
 import type { CreatePrContext, ForgeAdapter, MergeMethod, PrInfo, ReviewEvent, Runner } from "./types.js";
 
 const FIELDS = "number,url,state,isDraft,reviewDecision,mergeable,updatedAt,statusCheckRollup,headRefOid";
@@ -54,6 +53,38 @@ function toPrInfo(pr: any): PrInfo {
   };
 }
 
+/**
+ * `gh`'s default ordering isn't a reliability guarantee: a branch can have both an old
+ * closed PR and a current open one. Prefer the live PR; only fall back to --state all
+ * (picking up a merged/closed PR) once the open query ran cleanly and simply found none.
+ * A hard failure (non-zero exit, unparseable JSON) is never retried with a second query —
+ * it degrades straight to null, same as every other findPr failure path.
+ *
+ * Extracted to a local function (rather than a `this.findPr` call from `createPr`) so the
+ * adapter's methods don't depend on being invoked as `adapter.method()` — a plain object
+ * literal with method shorthand would work either way, but a free function reads clearly
+ * and needs no such assumption.
+ */
+async function findPrImpl(run: Runner, repoDir: string, branch: string): Promise<PrInfo | null> {
+  const query = async (state: "open" | "all"): Promise<{ ok: true; pr: any | null } | { ok: false }> => {
+    const r = await run("gh", ["pr", "list", "--head", branch, "--state", state, "--limit", "1", "--json", FIELDS], repoDir);
+    if (r.code !== 0) return { ok: false };
+    let rows: any[] = [];
+    try { rows = JSON.parse(r.stdout || "[]"); } catch { return { ok: false }; }
+    return { ok: true, pr: rows[0] ?? null };
+  };
+  const openResult = await query("open");
+  if (!openResult.ok) return null;
+  let pr = openResult.pr;
+  if (!pr) {
+    const allResult = await query("all");
+    if (!allResult.ok) return null;
+    pr = allResult.pr;
+  }
+  if (!pr) return null;
+  return toPrInfo(pr);
+}
+
 export function githubAdapter(run: Runner): ForgeAdapter {
   return {
     name: "github",
@@ -61,32 +92,24 @@ export function githubAdapter(run: Runner): ForgeAdapter {
       const r = await run("gh", ["auth", "status"]);
       return { ok: r.code === 0, message: r.stdout.trim() || "gh auth status failed" };
     },
-    createPrCommand(ctx: CreatePrContext) {
-      return `gh pr create --base ${shellQuote(ctx.base)} --head ${shellQuote(ctx.head)} --title ${shellQuote(ctx.title)} --body-file ${shellQuote(ctx.bodyFile)}`;
+    async createPr(repoDir: string, ctx: CreatePrContext) {
+      const r = await run("gh", ["pr", "create", "--base", ctx.base, "--head", ctx.head,
+        "--title", ctx.title, "--body-file", ctx.bodyFile], repoDir);
+      const message = ((r.stderr ?? r.stdout) ?? "").trim() || `gh exited ${r.code}`;
+      // A duplicate is not a failure: a retry after a crash mid-creation must converge —
+      // adopt the PR that already exists for this branch instead of failing.
+      if (r.code !== 0 && !/already exists/i.test(message)) {
+        return { unavailable: message };
+      }
+      // Verify rather than trust the exit code: read the PR back by branch.
+      const pr = await findPrImpl(run, repoDir, ctx.head);
+      if (pr) return { found: pr };
+      // The create call itself failed (even if with an "already exists" message) and no PR
+      // could be found for the branch: surface the original failure, not a synthetic one.
+      return { unavailable: r.code !== 0 ? message : "the pull request was not found after creating it" };
     },
     async findPr(repoDir: string, branch: string): Promise<PrInfo | null> {
-      // `gh`'s default ordering isn't a reliability guarantee: a branch can have both an old
-      // closed PR and a current open one. Prefer the live PR; only fall back to --state all
-      // (picking up a merged/closed PR) once the open query ran cleanly and simply found none.
-      // A hard failure (non-zero exit, unparseable JSON) is never retried with a second query —
-      // it degrades straight to null, same as every other findPr failure path.
-      const query = async (state: "open" | "all"): Promise<{ ok: true; pr: any | null } | { ok: false }> => {
-        const r = await run("gh", ["pr", "list", "--head", branch, "--state", state, "--limit", "1", "--json", FIELDS], repoDir);
-        if (r.code !== 0) return { ok: false };
-        let rows: any[] = [];
-        try { rows = JSON.parse(r.stdout || "[]"); } catch { return { ok: false }; }
-        return { ok: true, pr: rows[0] ?? null };
-      };
-      const openResult = await query("open");
-      if (!openResult.ok) return null;
-      let pr = openResult.pr;
-      if (!pr) {
-        const allResult = await query("all");
-        if (!allResult.ok) return null;
-        pr = allResult.pr;
-      }
-      if (!pr) return null;
-      return toPrInfo(pr);
+      return findPrImpl(run, repoDir, branch);
     },
 
     async getPr(repoDir: string, number: number) {

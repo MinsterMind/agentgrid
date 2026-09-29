@@ -25,8 +25,13 @@ export interface MergeResult { ok: boolean; message: string }
 export interface ForgeAdapter {
   readonly name: string;
   authStatus(): Promise<{ ok: boolean; message: string }>;
-  /** Command string handed to the agent during `opening-pr`. */
-  createPrCommand(ctx: CreatePrContext): string;
+  /**
+   * Create the pull request. Server work: no agent ever holds a forge credential.
+   * Never throws — `{unavailable}` carries the forge's own message. When the forge
+   * refuses because a PR already exists for this branch, adopt that PR rather than
+   * failing: a retried `creating-pr` must be idempotent.
+   */
+  createPr(repoDir: string, ctx: CreatePrContext): Promise<PrLookup>;
   /** The server's own check that the PR exists — never trust the agent's claim. */
   findPr(repoDir: string, branch: string): Promise<PrInfo | null>;
   /** By number — what the watcher ticks on. Never throws. */
