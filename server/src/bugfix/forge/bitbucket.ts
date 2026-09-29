@@ -42,6 +42,19 @@ function rollupChecks(statuses: Array<{ state?: string }> | undefined): string |
   return "SUCCESS";
 }
 
+/**
+ * Bitbucket has no `reviewDecision`: it has per-reviewer state on `participants`. Fold it
+ * with one rule — ANY outstanding "changes requested" outranks ANY number of approvals.
+ * The alternative is merging over an unresolved objection, which is the one direction that
+ * cannot be walked back.
+ */
+function reviewDecision(pr: any): string | null {
+  const parts: any[] = Array.isArray(pr?.participants) ? pr.participants : [];
+  if (parts.some(p => String(p?.state ?? "").toLowerCase() === "changes_requested")) return "CHANGES_REQUESTED";
+  if (parts.some(p => p?.approved === true)) return "APPROVED";
+  return null;
+}
+
 function toPrInfo(pr: any, checks: string | null): PrInfo {
   const state = (pr.state ?? "").toUpperCase();
   const normalisedState: PrInfo["state"] =
@@ -50,7 +63,7 @@ function toPrInfo(pr: any, checks: string | null): PrInfo {
     number: pr.id,
     url: pr.links?.html?.href ?? "",
     state: normalisedState,
-    reviewDecision: null,   // Task 5
+    reviewDecision: reviewDecision(pr),
     checks,
     mergeable: null,        // Task 6
     headSha: pr.source?.commit?.hash ?? null,
@@ -182,8 +195,38 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
       return lookupByNumber(repoDir, number);
     },
 
-    async listReviewEvents(_repoDir: string, _number: number, _since: string): Promise<ReviewEvent[]> {
-      return []; // Task 5
+    async listReviewEvents(repoDir: string, number: number, since: string): Promise<ReviewEvent[]> {
+      const slug = await resolveSlug(repoDir);
+      if (!slug) return [];
+      const r = await api(`/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests/${number}/activity`);
+      if (r.kind !== "ok") return [];
+      const values = Array.isArray(r.body?.values) ? r.body.values : [];
+      const sinceMs = Date.parse(since);
+      // Bitbucket reports no bot-account signal for pull-request participants today — `type`
+      // is always "user" in the documented shape. Check it anyway so a future value ("bot")
+      // is honoured rather than silently ignored; absent or unrecognised reads as false,
+      // never true, because a falsely-human bot could start a round the engine shouldn't act on.
+      const isBotAccount = (u: any): boolean => typeof u?.type === "string" && u.type.toLowerCase() === "bot";
+      const out: ReviewEvent[] = [];
+      for (const entry of values) {
+        if (entry?.comment) {
+          const c = entry.comment;
+          out.push({ kind: "comment", state: "", author: c.user?.nickname ?? c.user?.display_name ?? "",
+            isBot: isBotAccount(c.user), body: c.content?.raw ?? "", at: c.created_on ?? "" });
+        } else if (entry?.changes_requested) {
+          const cr = entry.changes_requested;
+          out.push({ kind: "review", state: "CHANGES_REQUESTED", author: cr.user?.nickname ?? cr.user?.display_name ?? "",
+            isBot: isBotAccount(cr.user), body: cr.content?.raw ?? "", at: cr.date ?? "" });
+        } else if (entry?.approval) {
+          const a = entry.approval;
+          out.push({ kind: "review", state: "APPROVED", author: a.user?.nickname ?? a.user?.display_name ?? "",
+            isBot: isBotAccount(a.user), body: a.content?.raw ?? "", at: a.date ?? "" });
+        }
+        // `update`, `merge` and anything else are not review events; dropped.
+      }
+      return out
+        .filter(e => { const ms = Date.parse(e.at); return Number.isFinite(ms) && ms > sinceMs; })
+        .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
     },
 
     async merge(_repoDir: string, _number: number, _method: MergeMethod) {

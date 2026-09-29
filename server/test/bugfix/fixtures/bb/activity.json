@@ -1,0 +1,6 @@
+{"pagelen":50,"values":[
+  {"update":{"date":"2026-09-29T09:45:00.000000+00:00","state":"OPEN","author":{"nickname":"bob","type":"user"}}},
+  {"changes_requested":{"date":"2026-09-29T09:30:00.000000+00:00","user":{"nickname":"carol","type":"user"},"pullrequest":{"id":7}}},
+  {"comment":{"id":1,"created_on":"2026-09-29T08:00:00.000000+00:00","content":{"raw":"first pass looks fine"},"user":{"nickname":"alice","type":"user"}}},
+  {"comment":{"id":2,"created_on":"2026-09-29T09:15:00.000000+00:00","content":{"raw":"this leaks a handle on the retry path"},"user":{"nickname":"alice","type":"user"}}}
+]}

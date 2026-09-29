@@ -134,3 +134,44 @@ describe("an unresolvable repository", () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+describe("review state", () => {
+  it("an outstanding changes-requested beats any number of approvals", async () => {
+    const pr = { ...JSON.parse(await fx("pr-open.json")), participants: [
+      { user: { nickname: "alice" }, approved: true,  state: "approved" },
+      { user: { nickname: "bob" },   approved: true,  state: "approved" },
+      { user: { nickname: "carol" }, approved: false, state: "changes_requested" }] };
+    const { fetchFn } = recorder(async url =>
+      url.includes("/statuses") || url.includes("/conflicts") ? new Response(JSON.stringify({ values: [] }), { status: 200 })
+      : new Response(JSON.stringify(pr), { status: 200 }));
+    expect(await bitbucketAdapter(deps(fetchFn)).getPr("/r", 7))
+      .toMatchObject({ found: { reviewDecision: "CHANGES_REQUESTED" } });
+  });
+
+  it("reports APPROVED only when someone approved and nobody is objecting", async () => {
+    const approved = { ...JSON.parse(await fx("pr-open.json")), participants: [
+      { user: { nickname: "alice" }, approved: true, state: "approved" }] };
+    const none = { ...JSON.parse(await fx("pr-open.json")), participants: [
+      { user: { nickname: "alice" }, approved: false, state: null }] };
+    const mk = (body: unknown) => recorder(async url =>
+      url.includes("/statuses") || url.includes("/conflicts") ? new Response(JSON.stringify({ values: [] }), { status: 200 })
+      : new Response(JSON.stringify(body), { status: 200 })).fetchFn;
+    expect(await bitbucketAdapter(deps(mk(approved))).getPr("/r", 7)).toMatchObject({ found: { reviewDecision: "APPROVED" } });
+    expect(await bitbucketAdapter(deps(mk(none))).getPr("/r", 7)).toMatchObject({ found: { reviewDecision: null } });
+  });
+
+  it("normalises activity into review and comment events, oldest first, strictly after `since`", async () => {
+    const { fetchFn } = recorder(async () => json("activity.json"));
+    const events = await bitbucketAdapter(deps(fetchFn)).listReviewEvents("/r", 7, "2026-09-29T09:00:00Z");
+    expect(events.map(e => [e.kind, e.state, e.author, e.isBot])).toEqual([
+      ["comment", "", "alice", false],
+      ["review", "CHANGES_REQUESTED", "carol", false],
+    ]);
+    expect(events[0].body).toMatch(/leaks a handle/);
+  });
+
+  it("returns [] rather than throwing when the activity feed cannot be read", async () => {
+    const { fetchFn } = recorder(async () => new Response("", { status: 500 }));
+    expect(await bitbucketAdapter(deps(fetchFn)).listReviewEvents("/r", 7, "2026-09-29T09:00:00Z")).toEqual([]);
+  });
+});
