@@ -48,7 +48,7 @@ describe("SettingsDialog", () => {
 
   it("says a restart is needed only when an engine is already running", async () => {
     vi.spyOn(api, "getSetup").mockResolvedValue(report({ wired: true, ready: true, checks: [] }));
-    vi.spyOn(api, "saveIntegrations").mockResolvedValue({ projectRepos: {} });
+    vi.spyOn(api, "putIntegrations").mockResolvedValue({ projectRepos: {} });
     render(<SettingsDialog onClose={() => {}} />);
     await userEvent.click(await screen.findByRole("button", { name: /save/i }));
     await waitFor(() => expect(screen.getByText(/restart/i)).toBeTruthy());

@@ -69,7 +69,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     const wasWired = report?.wired ?? false;
     const body: Record<string, unknown> = { forge: { preset, ...(preset === "bitbucket" ? { username } : {}) } };
     if (pasted !== null) body.tracker = JSON.parse(pasted);
-    await api.saveIntegrations(body as never);
+    await api.putIntegrations(body as never);
     await load();
     setSaved(wasWired ? "restart" : "live");
   });
