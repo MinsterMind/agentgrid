@@ -12,14 +12,25 @@ import os from "node:os";
 import type { Agent, Assignment, Decision, SessionInfo } from "../types.js";
 import type { BugFixEngine } from "../bugfix/engine.js";
 import type { BugTaskStore } from "../bugfix/store.js";
-import type { IntegrationsStore } from "../bugfix/integrations.js";
+import type { IntegrationsStore, Integrations } from "../bugfix/integrations.js";
 import type { TrackerProvider } from "../bugfix/tracker.js";
+import { discoverMcpServers } from "../bugfix/mcp-discovery.js";
+import { buildSetupReport } from "../bugfix/setup.js";
 
 export interface AppDeps {
   store: Store;
   manager: Manager;
   /** Bug-fix workflow; absent when the feature is not configured (routes answer 501). */
   bugs?: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider };
+  /** The config store, needed with or without an engine: an unconfigured machine must still
+   *  be able to read and write its own integrations.json. */
+  integrations?: IntegrationsStore;
+  /** Whether the bugfix role resolves (from the app's defaults or ~/.agentgrid/roles). */
+  roleResolves?: () => boolean;
+  /** A repo whose `.mcp.json` is worth scanning, when one is known. */
+  setupRepo?: () => string | undefined;
+  /** Builds the bug-fix subsystem once configuration first appears. Called at most once. */
+  onConfigured?: () => Promise<AppDeps["bugs"] | null>;
   transcript?: (assignment: Assignment, agent: Agent) => Promise<unknown[]>;
   /** Full, untruncated transcript of a session in a repo. */
   fullTranscript?: (cwd: string, sessionId: string) => Promise<unknown[]>;
@@ -181,8 +192,56 @@ export function createApp(deps: AppDeps) {
   }));
 
   class NotWired extends Error { status = 501; }
-  const bugs = () => { if (!deps.bugs) throw new NotWired("the bug-fix workflow is not configured"); return deps.bugs; };
-  if (deps.bugs) store.bugTasks = () => deps.bugs!.store.list();
+  // The engine may arrive mid-process, once configuration first appears (see `maybeWire`).
+  let wired = deps.bugs;
+  const bugs = () => { if (!wired) throw new NotWired("the bug-fix workflow is not configured"); return wired; };
+  const setBugTasksSource = () => { if (wired) store.bugTasks = () => wired!.store.list(); };
+  setBugTasksSource();
+
+  /** The config store is reachable with or without an engine; the engine's copy is the same object. */
+  const integrationsStore = () => {
+    const s = deps.integrations ?? wired?.integrations;
+    if (!s) throw new NotWired("no configuration store");
+    return s;
+  };
+
+  /**
+   * One absent→present transition per process, never a re-wire: with no engine, no bug task
+   * can exist, so building one disrupts nothing. An engine that already exists is left alone —
+   * rebuilding it would tear down in-flight tasks whose dispatch state is in memory.
+   */
+  const maybeWire = async () => {
+    if (wired || !deps.onConfigured) return;
+    wired = (await deps.onConfigured()) ?? undefined;
+    setBugTasksSource();
+  };
+
+  const setupReport = async () => {
+    const store_ = integrationsStore();
+    let cfg: Integrations | null = null; let cfgError: string | undefined;
+    try { cfg = await store_.read(); } catch (err) { cfgError = (err as Error).message; }
+    const cfgExists = await store_.exists();
+    const discovery = await discoverMcpServers({ ...(deps.setupRepo?.() ? { repo: deps.setupRepo()! } : {}) });
+    return buildSetupReport({ cfg, ...(cfgError ? { cfgError } : {}), cfgExists, discovery,
+      env: process.env, wired: !!wired, roleResolves: deps.roleResolves?.() ?? true });
+  };
+
+  app.get("/api/setup", wrap(async (_req, res) => res.json(await setupReport())));
+
+  app.post("/api/setup/import", wrap(async (req, res) => {
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+    const discovery = await discoverMcpServers({ ...(deps.setupRepo?.() ? { repo: deps.setupRepo()! } : {}) });
+    const server = discovery.importable.find(s => s.name === name);
+    if (!server) throw new BadRequest(`no importable MCP server named "${name}" was found in your Claude Code configuration`);
+    await integrationsStore().write(cur => ({
+      tracker: { preset: cur.tracker?.preset ?? "mcp", toolPrefix: `mcp__${server.name}`,
+                 mcpServers: { [server.name]: server.definition } },
+    }));
+    await maybeWire();
+    res.json(await setupReport());
+  }));
+
+  app.get("/api/integrations", wrap(async (_req, res) => res.json(await integrationsStore().read())));
 
   const MERGE_POLICIES = ["ask", "auto"] as const;
   const MERGE_METHODS = ["squash", "merge", "rebase"] as const;
@@ -240,7 +299,6 @@ export function createApp(deps: AppDeps) {
     if (typeof repo !== "string" || !path.isAbsolute(repo)) throw new BadRequest("an absolute repo path is required");
     res.json(await bugs().engine.preflight(repo));
   }));
-  app.get("/api/integrations", wrap(async (_req, res) => res.json(await bugs().integrations.read())));
   app.put("/api/integrations", wrap(async (req, res) => {
     const body = req.body ?? {};
     // Only the two known top-level fields are accepted; anything else in the body is
@@ -287,7 +345,9 @@ export function createApp(deps: AppDeps) {
       }
       patch.forge = forge;
     }
-    res.json(await bugs().integrations.write(patch as never));
+    const saved = await integrationsStore().write(patch as never);
+    await maybeWire();
+    res.json(saved);
   }));
 
   app.use("/api", (_req, res) => res.status(404).json({ error: "not found" }));

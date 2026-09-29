@@ -295,3 +295,10 @@ describe("approve honours a merge method, address-comments, and dismiss", () => 
     await request(bare).delete("/api/bugtasks/bt1").expect(501);
   });
 });
+
+it("GET /api/setup reports ready once tracker, forge and role are in place", async () => {
+  const m = await appAtMergeGate();            // the existing fully-wired harness
+  const res = await request(m.app).get("/api/setup").expect(200);
+  expect(res.body.wired).toBe(true);
+  expect(res.body.checks.find((c: { id: string }) => c.id === "tracker").state).toBe("ok");
+});

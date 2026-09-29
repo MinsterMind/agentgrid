@@ -79,6 +79,12 @@ export class IntegrationsStore {
     });
   }
 
+  /** Whether the file is actually there — distinct from `read()`'s empty-on-missing result,
+   *  which cannot tell "no file yet" from "a file with nothing in it". */
+  async exists(): Promise<boolean> {
+    return readFile(this.file, "utf8").then(() => true, () => false);
+  }
+
   async rememberRepo(project: string, repo: string): Promise<void> {
     await this.write(cur => ({ projectRepos: { ...cur.projectRepos, [project]: repo } }));
   }
