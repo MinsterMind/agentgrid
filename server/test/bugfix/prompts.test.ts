@@ -13,7 +13,6 @@ const task: BugTask = {
   mergePolicy: "ask", mergeMethod: "squash", pr: null, costUsd: 0, history: [], error: null, createdAt: "", updatedAt: "",
 };
 const ctx = { artifactsDir: "/home/.agentgrid/bugtasks/bt1", planPath: "/home/.agentgrid/bugtasks/bt1/plan.md", prBodyPath: "/home/.agentgrid/bugtasks/bt1/pr-body.md" };
-const prCmd = "gh pr create --base 'main' --head 'bugfix/PAY-42' --title 't' --body-file '/b'";
 
 // Substantive phrases a stage prompt must not contain (checked case-insensitively, not against exact
 // sentences, so a future reword of a preset can't quietly reintroduce a leak of another stage's job).
@@ -65,37 +64,17 @@ describe("renderStagePrompt", () => {
     expect(p).not.toMatch(PR_CREATE);
   });
 
-  it("open-pr hands over the exact create command and the body file", async () => {
-    const p = await renderStagePrompt("opening-pr", task, { ...ctx, createPrCommand: prCmd }, presets);
-    expect(p).toContain("gh pr create --base 'main'");
-    expect(p).toContain("/home/.agentgrid/bugtasks/bt1/pr-body.md");
-    expect(p).toContain("git push");
-  });
-
   it("open-pr prohibits merging (rather than omitting the word) and does not instruct changing code", async () => {
-    const p = await renderStagePrompt("opening-pr", task, { ...ctx, createPrCommand: prCmd }, presets);
-    const withoutCommand = p.replace(prCmd, "");
-    expect(withoutCommand).toMatch(/do not merge/i); // the explicit prohibition must survive
-    expect(affirmativeLines(withoutCommand, MERGE)).toEqual([]); // but no line instructs merging
-    expect(withoutCommand).not.toMatch(CHANGE_CODE);
+    const p = await renderStagePrompt("opening-pr", task, ctx, presets);
+    expect(p).toMatch(/do not merge/i); // the explicit prohibition must survive
+    expect(affirmativeLines(p, MERGE)).toEqual([]); // but no line instructs merging
+    expect(p).not.toMatch(CHANGE_CODE);
   });
 
   it("affirmativeLines tells an instruction to merge apart from a prohibition on merging", () => {
     expect(affirmativeLines("Do not merge.", MERGE)).toEqual([]);
     expect(affirmativeLines("Don't merge yet.", MERGE)).toEqual([]);
     expect(affirmativeLines("Then merge it now.", MERGE)).toEqual(["Then merge it now."]);
-  });
-
-  it("open-pr throws when ctx.createPrCommand is missing or empty, naming the stage and the field", async () => {
-    await expect(renderStagePrompt("opening-pr", task, ctx, presets)).rejects.toThrow(/opening-pr/i);
-    await expect(renderStagePrompt("opening-pr", task, ctx, presets)).rejects.toThrow(/createPrCommand/i);
-    await expect(renderStagePrompt("opening-pr", task, { ...ctx, createPrCommand: "" }, presets)).rejects.toThrow(/createPrCommand/i);
-    await expect(renderStagePrompt("opening-pr", task, { ...ctx, createPrCommand: "   " }, presets)).rejects.toThrow(/createPrCommand/i);
-  });
-
-  it("analyze and implement render fine without a createPrCommand", async () => {
-    await expect(renderStagePrompt("analyzing", task, ctx, presets)).resolves.toBeTypeOf("string");
-    await expect(renderStagePrompt("implementing", task, ctx, presets)).resolves.toBeTypeOf("string");
   });
 
   it("a reviewer note from 'request changes' is carried into the next run", async () => {

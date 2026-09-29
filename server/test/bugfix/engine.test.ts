@@ -239,7 +239,6 @@ describe("stage progression", () => {
     gitState.commits = 1;
     await finishStage(); await until(() => bugs.get(t.id).stage === "diff-review");
     await engine.approve(t.id);
-    expect(fake.calls.at(-1)!.prompt).toContain("gh pr create");
     await finishStage(); await until(() => bugs.get(t.id).stage === "monitoring");
     expect(bugs.get(t.id).pr).toMatchObject({ number: 7, url: "https://gh/pr/7" });
     expect(comments).toEqual([["PAY-42", expect.stringContaining("https://gh/pr/7")]]);

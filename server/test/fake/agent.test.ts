@@ -31,8 +31,7 @@ describe("detectStage, against the real stage presets", () => {
   });
 
   it("recognises the open-pr prompt and finds the PR body path", async () => {
-    const prompt = await renderStagePrompt("opening-pr", { ...task, stage: "opening-pr" },
-      { ...ctx, createPrCommand: "gh pr create --base main" }, presets);
+    const prompt = await renderStagePrompt("opening-pr", { ...task, stage: "opening-pr" }, ctx, presets);
     expect(detectStage(prompt)).toEqual({ stage: "open-pr", prBodyPath: "/a/bt1/pr-body.md" });
   });
 
