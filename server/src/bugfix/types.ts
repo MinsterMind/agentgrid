@@ -1,6 +1,6 @@
 export type BugStage =
   | "intake" | "analyzing" | "plan-review" | "implementing" | "diff-review"
-  | "opening-pr" | "monitoring" | "review-feedback" | "rebase" | "pushing"
+  | "opening-pr" | "creating-pr" | "monitoring" | "review-feedback" | "rebase" | "pushing"
   | "approved" | "merging" | "done" | "cancelled" | "failed";
 
 /** A gate's kind is what the card renders. There is no "rebase" gate: a rebase round lands at the
@@ -130,7 +130,7 @@ export const AGENT_STAGES: BugStage[] = ["analyzing", "implementing", "opening-p
 export const GATE_STAGES: BugStage[] = ["plan-review", "diff-review", "approved"];
 /** Stages the ENGINE performs itself — no assignment, no agent, no tokens. They still
  *  report stage-done/stage-failed, so failure and retry work exactly as for agent stages. */
-export const SERVER_STAGES: BugStage[] = ["pushing", "merging"];
+export const SERVER_STAGES: BugStage[] = ["pushing", "creating-pr", "merging"];
 /** Resting stages the watcher polls. Never an agent stage: two things driving one task is
  *  the bug class Phase 1 spent its Criticals on. */
 export const WATCHED_STAGES: BugStage[] = ["monitoring", "approved"];

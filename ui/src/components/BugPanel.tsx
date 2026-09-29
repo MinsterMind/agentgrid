@@ -260,8 +260,10 @@ export function BugPanel({ task, onChanged, onTranscript }: { task: BugTask; onC
         </div>
       )}
 
-      {(task.stage === "pushing" || task.stage === "merging") && (
-        <p className="hint" data-testid="gate-server-stage">{task.stage === "pushing" ? "Pushing…" : "Merging…"}</p>
+      {(task.stage === "pushing" || task.stage === "creating-pr" || task.stage === "merging") && (
+        <p className="hint" data-testid="gate-server-stage">
+          {task.stage === "pushing" ? "Pushing…" : task.stage === "creating-pr" ? "Creating PR…" : "Merging…"}
+        </p>
       )}
 
       {task.stage === "done" && (() => {
