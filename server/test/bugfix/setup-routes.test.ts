@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import request from "supertest";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createApp } from "../../src/api/app.js";
@@ -8,14 +8,21 @@ import { Store } from "../../src/store/store.js";
 import { Manager } from "../../src/runner/manager.js";
 import { IntegrationsStore } from "../../src/bugfix/integrations.js";
 
-/** An app with NO bug-fix engine — the case the old API could not express. */
+/**
+ * An app with NO bug-fix engine — the case the old API could not express. `agentgrid-setup-`
+ * (the `~/.agentgrid` home) and `claudeHome` (the `~/.claude` home `discoverMcpServers` scans)
+ * are deliberately separate temp directories: conflating them would hide a wiring bug where
+ * the wrong one leaks into the other's slot. Both are fresh per call, so this suite never reads
+ * or depends on the real machine's `~/.claude` or `~/.agentgrid`.
+ */
 async function unwiredApp() {
   const home = await mkdtemp(path.join(os.tmpdir(), "agentgrid-setup-"));
+  const claudeHome = await mkdtemp(path.join(os.tmpdir(), "agentgrid-setup-claude-"));
   const store = new Store(home, path.resolve("roles"));
   await store.init();
   const integrations = new IntegrationsStore(home);
-  const app = createApp({ store, manager: new Manager({ store } as never), integrations, roleResolves: () => true });
-  return { app, home, integrations };
+  const app = createApp({ store, manager: new Manager({ store } as never), integrations, roleResolves: () => true, setupHome: () => claudeHome });
+  return { app, home, claudeHome, integrations };
 }
 
 describe("the setup routes answer without an engine", () => {
@@ -50,5 +57,22 @@ describe("the setup routes answer without an engine", () => {
     const { app } = await unwiredApp();
     const res = await request(app).post("/api/setup/import").send({ name: "nope" }).expect(400);
     expect(res.body.error).toMatch(/nope/);
+  });
+
+  // Pins `setupHome`'s wiring: without it, `discoverMcpServers` silently falls back to
+  // `os.homedir()`, and this test would instead report on whatever the real machine running
+  // the suite happens to have in its real `~/.claude` — passing or failing for reasons nobody
+  // could reproduce. Regressing that fallback would make this test flicker with the real home's
+  // actual MCP configuration instead of failing outright, so it also documents why the
+  // injection exists.
+  it("GET /api/setup scans the injected home, not the real one", async () => {
+    const { app, claudeHome } = await unwiredApp();
+    await writeFile(path.join(claudeHome, ".claude.json"), JSON.stringify({
+      mcpServers: { jira: { command: "npx", args: ["jira-mcp"] } },
+    }));
+    const res = await request(app).get("/api/setup").expect(200);
+    expect(res.body.discovery.importable).toContainEqual(
+      expect.objectContaining({ name: "jira", origin: "user" }),
+    );
   });
 });

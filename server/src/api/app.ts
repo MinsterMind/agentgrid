@@ -29,6 +29,10 @@ export interface AppDeps {
   roleResolves?: () => boolean;
   /** A repo whose `.mcp.json` is worth scanning, when one is known. */
   setupRepo?: () => string | undefined;
+  /** The home directory to scan for Claude Code's MCP configuration. Defaults to the real
+   *  one in production; tests pass a temporary home so the suite never depends on the
+   *  machine it runs on. */
+  setupHome?: () => string | undefined;
   /** Builds the bug-fix subsystem once configuration first appears. Called at most once. */
   onConfigured?: () => Promise<AppDeps["bugs"] | null>;
   transcript?: (assignment: Assignment, agent: Agent) => Promise<unknown[]>;
@@ -216,12 +220,20 @@ export function createApp(deps: AppDeps) {
     setBugTasksSource();
   };
 
+  /** Options for `discoverMcpServers`, shared by both call sites so they cannot drift: `home`
+   *  defaults to the real one in production, but tests inject a temporary one via `setupHome`
+   *  so the suite never depends on the machine it runs on. */
+  const scanOptions = () => ({
+    ...(deps.setupHome?.() ? { home: deps.setupHome()! } : {}),
+    ...(deps.setupRepo?.() ? { repo: deps.setupRepo()! } : {}),
+  });
+
   const setupReport = async () => {
     const store_ = integrationsStore();
     let cfg: Integrations | null = null; let cfgError: string | undefined;
     try { cfg = await store_.read(); } catch (err) { cfgError = (err as Error).message; }
     const cfgExists = await store_.exists();
-    const discovery = await discoverMcpServers({ ...(deps.setupRepo?.() ? { repo: deps.setupRepo()! } : {}) });
+    const discovery = await discoverMcpServers(scanOptions());
     return buildSetupReport({ cfg, ...(cfgError ? { cfgError } : {}), cfgExists, discovery,
       env: process.env, wired: !!wired, roleResolves: deps.roleResolves?.() ?? true });
   };
@@ -230,7 +242,7 @@ export function createApp(deps: AppDeps) {
 
   app.post("/api/setup/import", wrap(async (req, res) => {
     const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
-    const discovery = await discoverMcpServers({ ...(deps.setupRepo?.() ? { repo: deps.setupRepo()! } : {}) });
+    const discovery = await discoverMcpServers(scanOptions());
     const server = discovery.importable.find(s => s.name === name);
     if (!server) throw new BadRequest(`no importable MCP server named "${name}" was found in your Claude Code configuration`);
     await integrationsStore().write(cur => ({

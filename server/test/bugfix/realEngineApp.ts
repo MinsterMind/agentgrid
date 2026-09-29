@@ -80,6 +80,10 @@ export async function createBugFixTestApp() {
   const app = createApp({
     store, manager,
     bugs: { engine, store: bugs, integrations, tracker: { listMyIssues: async () => [], fetchIssue: async () => ISSUE, comment: async () => {} } },
+    // Keeps GET /api/setup's MCP scan inside this harness's own temp home instead of the real
+    // machine's ~/.claude — this dir has no .claude.json/.claude/settings.json, so the scan
+    // just comes back empty, which is all the tests that reach this route need.
+    setupHome: () => home,
   });
 
   return {
