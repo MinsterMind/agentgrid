@@ -250,6 +250,15 @@ describe("createPr", () => {
     expect(r).toMatchObject({ unavailable: expect.stringMatching(/already exists/i) as unknown as string });
   });
 
+  it("reads the failure text from stdout when a runner puts it there and stderr is empty, rather than the useless generic message", async () => {
+    // `??` only falls through on null/undefined, not on "" — a runner that captures a
+    // failure's text on stdout with stderr as "" must still surface that text, not
+    // `gh exited 1`.
+    const f = githubAdapter(async () => ({ stdout: "fatal: branch has no upstream", code: 1, stderr: "" }));
+    const r = await f.createPr("/r", ctx);
+    expect(r).toMatchObject({ unavailable: "fatal: branch has no upstream" });
+  });
+
   it("adopts an existing PR rather than failing, when one is already open for the branch", async () => {
     // gh refuses a duplicate; the server should then find the PR that already exists.
     let call = 0;

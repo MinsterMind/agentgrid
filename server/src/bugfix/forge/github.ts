@@ -95,7 +95,7 @@ export function githubAdapter(run: Runner): ForgeAdapter {
     async createPr(repoDir: string, ctx: CreatePrContext) {
       const r = await run("gh", ["pr", "create", "--base", ctx.base, "--head", ctx.head,
         "--title", ctx.title, "--body-file", ctx.bodyFile], repoDir);
-      const message = ((r.stderr ?? r.stdout) ?? "").trim() || `gh exited ${r.code}`;
+      const message = r.stderr?.trim() || r.stdout?.trim() || `gh exited ${r.code}`;
       // A duplicate is not a failure: a retry after a crash mid-creation must converge —
       // adopt the PR that already exists for this branch instead of failing.
       if (r.code !== 0 && !/already exists/i.test(message)) {
