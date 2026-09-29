@@ -114,7 +114,13 @@ interface Check {
   absent **from the server process**, which is the diagnostic that
   matters because the desktop app imports the login shell at launch; and
   a token the forge refuses.
-- **role** — the `bugfix` role exists under `~/.agentgrid/roles`.
+- **role** — the `bugfix` role resolves. It ships as
+  `server/roles/bugfix.md` and is loaded from the app's defaults, so it
+  normally resolves even when `~/.agentgrid/roles` does not contain it;
+  the check verifies resolution, not the user directory. (The engine's
+  existing `preflight` message says "missing from `~/.agentgrid/roles`",
+  which is misleading for exactly this reason — worth correcting while
+  here.)
 
 The token check is a boolean presence test on `process.env`. The value is
 never returned, never logged, never sent to the UI.
