@@ -75,7 +75,7 @@ Everything lives in `~/.agentgrid/` as plain files — roles, agents, assignment
 
 The bug-fix flow's forge is configured in `~/.agentgrid/integrations.json`, alongside your tracker and the project→repo memory. For GitHub it's `"forge": { "preset": "github" }`, using the `gh` CLI's own auth (`gh auth login`) — nothing else to set up.
 
-For **Bitbucket Cloud**, add:
+For **Bitbucket Cloud**, add (or merge in) this `forge` field:
 
 ```json
 {
