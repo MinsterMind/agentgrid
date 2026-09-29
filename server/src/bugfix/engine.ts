@@ -501,6 +501,13 @@ export class BugFixEngine {
    * `doPush` and `doMerge` are: it is deterministic, it is outward-facing, and doing it here
    * keeps every forge credential away from an agent. The pin is re-checked immediately
    * before the push — the diff gate may have been open for a long time.
+   *
+   * This stage does NOT redo the branch/commits-ahead/approved-HEAD checks that guarded the
+   * old "opening-pr" agent stage (`runStage`'s `stage === "opening-pr"` block) — those guards
+   * ran once, before this task was ever dispatched into "creating-pr", and nothing between
+   * there and here can move HEAD again (no agent runs in between). `assertPinned` below is
+   * the one check that still needs to be live here, because it alone can still be violated —
+   * the diff gate may have sat open for a long time before approval reached this stage.
    */
   private async doCreatePr(task: BugTask): Promise<void> {
     const { git, forge, bugs, tracker } = this.deps;
