@@ -312,4 +312,35 @@ describe("wouldConflict", () => {
     await run("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "feature"], { cwd: clean });
     expect(await git.wouldConflict(clean, "main")).toBe(false);
   });
+
+  it("reports unknown (null), not conflicting, when the command fails with an exit code other than 1", async () => {
+    // A missing base ref, a missing object, or (on git < 2.38) an unrecognised --write-tree
+    // flag can all fail this command outright with a non-1 exit — none of them mean the
+    // merge would conflict, so this must not collapse to `true` the way a bare "reject means
+    // conflict" implementation would.
+    const failing = new GitOps(async () => {
+      const e = new Error("usage: git merge-tree ...") as Error & { code?: number | string };
+      e.code = 129;
+      throw e;
+    });
+    expect(await failing.wouldConflict("/r", "main")).toBeNull();
+  });
+
+  it("reports unknown (null) rather than conflicting on a spawn failure (e.g. git missing)", async () => {
+    const failing = new GitOps(async () => {
+      const e = new Error("spawn git ENOENT") as Error & { code?: number | string };
+      e.code = "ENOENT";
+      throw e;
+    });
+    expect(await failing.wouldConflict("/r", "main")).toBeNull();
+  });
+
+  it("still reports conflicting (true) when the injected runner rejects with exit code 1", async () => {
+    const conflicting = new GitOps(async () => {
+      const e = new Error("CONFLICT (content): Merge conflict in c.txt") as Error & { code?: number | string };
+      e.code = 1;
+      throw e;
+    });
+    expect(await conflicting.wouldConflict("/r", "main")).toBe(true);
+  });
 });
