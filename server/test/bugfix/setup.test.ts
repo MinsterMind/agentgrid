@@ -1,0 +1,77 @@
+import { describe, it, expect } from "vitest";
+import { buildSetupReport } from "../../src/bugfix/setup.js";
+import type { Integrations } from "../../src/bugfix/integrations.js";
+
+const noDiscovery = { importable: [], accountOnly: [], problems: [] };
+const base = { discovery: noDiscovery, env: {} as NodeJS.ProcessEnv, wired: false, roleResolves: true, cfgExists: true };
+const find = (r: ReturnType<typeof buildSetupReport>, id: string) => r.checks.find(c => c.id === id)!;
+
+describe("buildSetupReport", () => {
+  it("reports a missing config file as the first blocking problem", () => {
+    const r = buildSetupReport({ ...base, cfg: null, cfgExists: false });
+    expect(find(r, "config-file").state).toBe("missing");
+    expect(find(r, "config-file").detail).toMatch(/integrations\.json/);
+    expect(find(r, "config-file").blocks).toBe(true);
+    expect(r.ready).toBe(false);
+  });
+
+  it("reports a corrupt config file as broken, carrying the parse error", () => {
+    const r = buildSetupReport({ ...base, cfg: null, cfgError: "Unexpected token }" });
+    expect(find(r, "config-file").state).toBe("broken");
+    expect(find(r, "config-file").detail).toMatch(/Unexpected token \}/);
+  });
+
+  it("a configured tracker and github forge with a resolving role is ready", () => {
+    const cfg: Integrations = { tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: { atlassian: {} } }, forge: { preset: "github" }, projectRepos: {} };
+    const r = buildSetupReport({ ...base, cfg });
+    expect(r.ready).toBe(true);
+    expect(r.checks.filter(c => c.blocks && c.state !== "ok")).toEqual([]);
+  });
+
+  it("a bitbucket forge with no token reports the variable, and does not block", () => {
+    const cfg: Integrations = { tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: {} }, forge: { preset: "bitbucket", username: "me@example.com" }, projectRepos: {} };
+    const r = buildSetupReport({ ...base, cfg });
+    const token = find(r, "forge-token");
+    expect(token.state).toBe("missing");
+    expect(token.detail).toMatch(/BITBUCKET_API_TOKEN/);
+    expect(token.fix).toEqual({ kind: "env", value: "BITBUCKET_API_TOKEN" });
+    expect(token.blocks).toBe(false);   // the workflow can start; the forge call is what fails
+  });
+
+  it("sees the token when it is in the environment", () => {
+    const cfg: Integrations = { tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: {} }, forge: { preset: "bitbucket", username: "me@example.com" }, projectRepos: {} };
+    const r = buildSetupReport({ ...base, cfg, env: { BITBUCKET_API_TOKEN: "secret" } as NodeJS.ProcessEnv });
+    expect(find(r, "forge-token").state).toBe("ok");
+    expect(JSON.stringify(r)).not.toContain("secret");
+  });
+
+  it("a bitbucket forge with a blank username names the field and blocks", () => {
+    const cfg: Integrations = { tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: {} }, forge: { preset: "bitbucket", username: "   " }, projectRepos: {} };
+    const r = buildSetupReport({ ...base, cfg });
+    expect(find(r, "forge-username").state).toBe("missing");
+    expect(find(r, "forge-username").fix).toEqual({ kind: "field", value: "forge.username" });
+    expect(find(r, "forge-username").blocks).toBe(true);
+  });
+
+  it("offers an import when a server was discovered, and the add command when only an account connector was", () => {
+    const withLocal = buildSetupReport({ ...base, cfg: { projectRepos: {} }, discovery: { importable: [{ name: "atlassian", definition: { type: "http", url: "https://mcp.atlassian.com/v1/mcp" }, origin: "user" }], accountOnly: [], problems: [] } });
+    expect(find(withLocal, "tracker").fix).toEqual({ kind: "action", value: "import:atlassian" });
+    expect(withLocal.discovery.importable[0]).toEqual({ name: "atlassian", type: "http", url: "https://mcp.atlassian.com/v1/mcp", origin: "user" });
+
+    const accountOnly = buildSetupReport({ ...base, cfg: { projectRepos: {} }, discovery: { importable: [], accountOnly: ["claude.ai Claude Docs"], problems: [] } });
+    expect(find(accountOnly, "tracker").fix!.kind).toBe("command");
+    expect(find(accountOnly, "tracker").fix!.value).toMatch(/^claude mcp add --transport http /);
+  });
+
+  it("never returns an imported definition's contents", () => {
+    const r = buildSetupReport({ ...base, cfg: { projectRepos: {} }, discovery: { importable: [{ name: "x", definition: { type: "http", url: "https://e.invalid", headers: { Authorization: "Bearer hunter2" } }, origin: "user" }], accountOnly: [], problems: [] } });
+    expect(JSON.stringify(r)).not.toContain("hunter2");
+    expect(JSON.stringify(r)).not.toContain("Authorization");
+  });
+
+  it("reports a role that does not resolve", () => {
+    const r = buildSetupReport({ ...base, cfg: { projectRepos: {} }, roleResolves: false });
+    expect(find(r, "role").state).toBe("missing");
+    expect(find(r, "role").blocks).toBe(true);
+  });
+});
