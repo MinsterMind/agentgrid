@@ -47,9 +47,12 @@ not a real MCP server, which is beside the point: it was loaded from config.
 project- and repo-scoped rows §5 lists would be listed and then fail at the
 first call.
 
-(Whether user scope — `~/.claude.json` → `mcpServers` — loads under `"user"`
-is unverified: this machine defines none. It is the documented meaning of the
-source, and the Test button surfaces a failure immediately.)
+(Whether user scope — `~/.claude.json` → `mcpServers` — loads at all is
+**unverified, and not covered by any documented setting source**: this machine
+defines none, and the SDK documents `'user'` as `~/.claude/settings.json` —
+which is the scanner's separate **`settings`** origin, not its `user` origin.
+`~/.claude.json` is the CLI's own config file, not a filesystem settings
+source. The Test button is the check.)
 
 The consequence: **AgentGrid never needed a copy.** It needs one string, and
 the setting sources that make the string resolvable.
@@ -91,9 +94,33 @@ row showing where it comes from:
 | account connector (`claudeAiMcpEverConnected`) | *linked to your Claude account* | derived per §2 |
 | user scope (`~/.claude.json` → `mcpServers`) | *configured in Claude Code* | `mcp__<name>` |
 | project scope (`projects[].mcpServers`) | *configured for `<dir>`* | `mcp__<name>` |
-| repo (`<repo>/.mcp.json`) | *configured in this repo* | `mcp__<name>` |
+| repo (`<repo>/.mcp.json`) | *configured for `<dir>`* | `mcp__<name>` |
 
-The action per row is **Use this**: it writes `toolPrefix` and nothing else.
+**Which of these is reliably reachable at call time.** `mcpTracker` runs its
+query at `process.cwd()` — the directory AgentGrid's *server process* was
+launched from, never the ticket's repo — with
+`settingSources: ["user", "project"]`. So:
+
+- **account connector** — reachable. Verified (§2).
+- **`settings` (`~/.claude/settings.json`)** — reachable: this is what the SDK's
+  `'user'` source actually means.
+- **`user` (`~/.claude.json` → `mcpServers`)** — not covered by any documented
+  setting source; unverified either way. Test is the check.
+- **`project` (`~/.claude.json` → `projects[dir].mcpServers`) and `repo`
+  (`<repo>/.mcp.json`)** — resolved relative to cwd, so they load only when
+  AgentGrid was launched from that directory.
+
+The last two are listed anyway, because a user who *does* launch from there can
+use them, and hiding them would trade one untruth for another. Their row says
+so: *"configured for `<dir>` — only resolves while running AgentGrid from that
+directory"*. Making them work from anywhere means storing the origin directory
+and running the tracker query there; that is a design change, out of scope here
+(§10) and recorded as a risk (§11).
+
+The action per row is **Use this**: it writes `preset`, `toolPrefix` and any
+`hints` already stored (the write replaces `tracker` wholesale, which is what
+sheds a 0.4.0 `mcpServers`, so anything not re-sent is destroyed). It never
+writes a definition.
 There is no Import, no copying, and nothing is read out of a definition beyond
 its name.
 
@@ -163,7 +190,14 @@ protects a `mcpServers` field that a pre-0.5.0 config may still contain.
 - **Live (opt-in, manual):** the §2 probe, re-run against the user's real
   `claude.ai Atlassian` connector before this is called done — §2 is verified
   for `Claude Docs`, not for Atlassian.
-- Nothing in CI reads a real `~/.claude` or makes a model call.
+- Nothing in CI makes a model call. **"Nothing in CI reads a real `~/.claude`"
+  is not yet met:** `server/test/bugfix/api.test.ts` builds an app without a
+  `setupHome` override, so its `GET /api/setup` calls run discovery against the
+  real `~/.claude` and `~/.claude.json` of whoever runs the suite. The suite
+  never asserts on what it finds there, so it does not fail on a populated
+  machine — but it does read those files. Closing it is the `setupHome`
+  override already listed out of scope (§10); until then this constraint holds
+  for the rest of the suite only.
 
 ## 10. Out of scope
 
@@ -179,3 +213,4 @@ that would stop the server unit suite reading the real `~/.claude`.
 | A connector missing from `claudeAiMcpEverConnected` is invisible | Refresh reads a session's authoritative `mcp_servers` |
 | Claude Code changes the connector prefix convention | The prefix is stored, not recomputed per call; a wrong one fails visibly at Test with the provider's own error |
 | Dropping `mcpServers` breaks a user relying on a definition AgentGrid held that Claude Code does not | Verified impossible for account connectors; for local servers the definition lives in Claude Code's own config, which is where the agent reads it from |
+| **A `project`- or `repo`-scoped row is listed but does not resolve at call time.** `mcpTracker` queries at `process.cwd()` — the directory the *server* was launched from — and the SDK resolves `'project'` relative to cwd. Picking such a row saves cleanly and then fails at the first tracker call | Not hidden and not silently fixed: the row's own label states the condition (*"only resolves while running AgentGrid from that directory"*), §5 records which origins are reliably reachable, and **Test** surfaces the failure before a bug fix is ever started. The real fix — storing the origin directory and running the tracker query there — is a design change, deliberately not attempted as a patch |

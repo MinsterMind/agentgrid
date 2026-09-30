@@ -4,9 +4,14 @@ import userEvent from "@testing-library/user-event";
 import { SettingsDialog } from "./SettingsDialog";
 import { api } from "../api";
 
+const ADD_COMMAND = "claude mcp add --transport http atlassian https://mcp.atlassian.com/v1/mcp";
+// The `fix` on the tracker check is what the server really sends in the nothing-discovered case
+// (`setup.ts`: `fix: { kind: "command", value: DEFAULT_ADD_COMMAND }`). Omitting it here is how
+// M4's duplicate add-command row survived review — the fixture rendered only one of the two.
 const report = (over: Partial<import("../types").SetupReport> = {}): import("../types").SetupReport => ({
-  ready: false, wired: false, addCommand: "claude mcp add --transport http atlassian https://mcp.atlassian.com/v1/mcp",
-  checks: [{ id: "tracker", state: "missing", detail: "No tracker configured.", blocks: true }],
+  ready: false, wired: false, addCommand: ADD_COMMAND,
+  checks: [{ id: "tracker", state: "missing", detail: "No tracker configured.", blocks: true,
+             fix: { kind: "command", value: ADD_COMMAND } }],
   discovery: { servers: [], problems: [] }, ...over,
 });
 
@@ -28,9 +33,13 @@ describe("SettingsDialog", () => {
     vi.spyOn(api, "getSetup").mockResolvedValue(report({ discovery: { problems: [], servers: [
       { name: "claude.ai Atlassian", toolPrefix: "mcp__claude_ai_Atlassian", origin: "account" },
     ] } }));
+    vi.spyOn(api, "getIntegrations").mockResolvedValue({ projectRepos: {} });
     const put = vi.spyOn(api, "putIntegrations").mockResolvedValue({ projectRepos: {} });
     render(<SettingsDialog onClose={() => {}} />);
-    await userEvent.click(await screen.findByRole("button", { name: /use this/i }));
+    // "Use this" waits for the saved config: it has to re-send `hints` and the saved preset,
+    // and it cannot preserve what it has not been told (I3).
+    await waitFor(() => expect((screen.getByRole("button", { name: /use this/i }) as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(screen.getByRole("button", { name: /use this/i }));
     expect(put).toHaveBeenCalledWith(expect.objectContaining({
       tracker: expect.objectContaining({ toolPrefix: "mcp__claude_ai_Atlassian" }),
     }));
@@ -38,10 +47,95 @@ describe("SettingsDialog", () => {
     expect(sent.tracker.mcpServers).toBeUndefined();
   });
 
-  it("still shows the add command when Claude Code has nothing", async () => {
+  // M4: the check's own `fix` already renders the command with a Copy button, so the dialog
+  // must not render a second copy of it beside the list.
+  it("shows the add command exactly once when Claude Code has nothing", async () => {
     vi.spyOn(api, "getSetup").mockResolvedValue(report({ discovery: { servers: [], problems: [] } }));
     render(<SettingsDialog onClose={() => {}} />);
     expect(await screen.findByText(/^claude mcp add --transport http/)).toBeTruthy();
+    expect(screen.getAllByText(/^claude mcp add --transport http/)).toHaveLength(1);
+  });
+
+  // M5: `action` is a server vocabulary the UI used to drop on the floor — `Fix` rendered
+  // `command`/`env`/`field` and returned null for everything else, so a check whose only remedy
+  // is "press a button here" showed no remedy at all.
+  it("renders an action fix rather than dropping it", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report({
+      checks: [{ id: "config-file", state: "missing", blocks: true,
+                 detail: "~/.agentgrid/integrations.json does not exist yet. Saving here creates it.",
+                 fix: { kind: "action", value: "save" } }],
+    }));
+    render(<SettingsDialog onClose={() => {}} />);
+    // A function matcher, because the hint emphasises the button name (`<b>Save</b>`) and the
+    // default matcher only sees an element's direct text nodes.
+    expect(await screen.findByText((_t, el) =>
+      el?.className === "hint" && /press save below to create it/i.test(el.textContent ?? ""))).toBeTruthy();
+  });
+
+  // I1: a project- or repo-scoped server loads only when Claude Code resolves it relative to the
+  // working directory, and AgentGrid's tracker calls run in the directory the *server* was
+  // launched from (`tracker.ts`: `cwd: process.cwd()`), never the ticket's repo. The row stays —
+  // someone launching from there can use it — but it must not read as "click and you're done".
+  it("says a directory-scoped server only resolves when AgentGrid runs from that directory", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report({ discovery: { problems: [], servers: [
+      { name: "claude.ai Atlassian", toolPrefix: "mcp__claude_ai_Atlassian", origin: "account" },
+      { name: "jira", toolPrefix: "mcp__jira", origin: "project", originDetail: "/Users/x/repo" },
+      { name: "repo-jira", toolPrefix: "mcp__repo_jira", origin: "repo", originDetail: "/Users/x/other" },
+    ] } }));
+    render(<SettingsDialog onClose={() => {}} />);
+    expect(await screen.findByText(/\/Users\/x\/repo\b.*only.*running AgentGrid from/i)).toBeTruthy();
+    expect(screen.getByText(/\/Users\/x\/other\b.*only.*running AgentGrid from/i)).toBeTruthy();
+    // The reachable origins carry no such caveat.
+    expect(screen.getByText(/linked to your Claude account/i).textContent).not.toMatch(/running AgentGrid from/i);
+  });
+
+  // I3: `hints` is a live TrackerConfig field injected into every tracker prompt, invisible in
+  // the UI, and `PUT` replaces `tracker` wholesale — so "Use this" used to destroy a hand-set
+  // `hints` and reset a hand-set `preset` to the first option, silently, on one click.
+  it("Use this keeps a hand-set preset and hints instead of destroying them", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report({ discovery: { problems: [], servers: [
+      { name: "claude.ai Atlassian", toolPrefix: "mcp__claude_ai_Atlassian", origin: "account" },
+    ] } }));
+    vi.spyOn(api, "getIntegrations").mockResolvedValue({ projectRepos: {},
+      tracker: { preset: "linear", toolPrefix: "mcp__old", hints: "Bugs live in PAY" } });
+    const put = vi.spyOn(api, "putIntegrations").mockResolvedValue({ projectRepos: {} });
+    render(<SettingsDialog onClose={() => {}} />);
+    // Wait for the saved tracker to land, or this would assert against the unseeded state.
+    await waitFor(() => expect((screen.getAllByRole("combobox")[0] as HTMLSelectElement).value).toBe("linear"));
+    await userEvent.click(screen.getByRole("button", { name: /use this/i }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    expect((put.mock.calls[0][0] as { tracker?: unknown }).tracker)
+      .toEqual({ preset: "linear", toolPrefix: "mcp__claude_ai_Atlassian", hints: "Bugs live in PAY" });
+  });
+
+  it("Use this sends no hints when none is stored", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report({ discovery: { problems: [], servers: [
+      { name: "claude.ai Atlassian", toolPrefix: "mcp__claude_ai_Atlassian", origin: "account" },
+    ] } }));
+    vi.spyOn(api, "getIntegrations").mockResolvedValue({ projectRepos: {} });
+    const put = vi.spyOn(api, "putIntegrations").mockResolvedValue({ projectRepos: {} });
+    render(<SettingsDialog onClose={() => {}} />);
+    await waitFor(() => expect((screen.getByRole("button", { name: /use this/i }) as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(screen.getByRole("button", { name: /use this/i }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    expect((put.mock.calls[0][0] as { tracker?: unknown }).tracker)
+      .toEqual({ preset: "jira", toolPrefix: "mcp__claude_ai_Atlassian" });
+  });
+
+  // M7: the hand-entry box is the documented remedy for the deferred Refresh. Opening it and
+  // pressing Save with it empty used to throw out of `JSON.parse` and abort the whole save —
+  // the forge included — with only a parser message to show for it.
+  it("an empty hand-entry box does not abort the save", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report());
+    vi.spyOn(api, "getIntegrations").mockResolvedValue({ projectRepos: {} });
+    const put = vi.spyOn(api, "putIntegrations").mockResolvedValue({ projectRepos: {} });
+    render(<SettingsDialog onClose={() => {}} />);
+    await userEvent.click(await screen.findByRole("button", { name: /enter a tracker by hand/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    const sent = put.mock.calls[0][0] as { tracker?: unknown; forge?: unknown };
+    expect(sent.tracker).toBeUndefined();
+    expect(sent.forge).toEqual({ preset: "github" });
   });
 
   it("reports a failed test with the provider's own words", async () => {

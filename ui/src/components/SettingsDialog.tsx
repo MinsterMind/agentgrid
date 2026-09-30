@@ -1,16 +1,35 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { Check, McpServerFound, SetupReport } from "../types";
+import type { Check, FixAction, McpServerFound, SetupReport } from "../types";
 
 // Populated from `GET /api/integrations` alongside the setup report; no route exists to edit
 // a single entry (`PUT /api/integrations` only accepts `tracker`/`forge`), so this stays
 // read-only rather than offering an action the server has nowhere to send.
 type ProjectRepos = Record<string, string>;
 
-/** A check's remedy, rendered by kind. The UI never authors advice — it renders what the
- *  server derived, so there is no second list of instructions to keep in sync. */
+/** The remedy for an `action` fix: the one kind whose `value` names something to do *here*
+ *  rather than something to copy. The named actions are matched exhaustively (the `never`
+ *  below), so a new one added to `FixAction` on the server is a compile error until it is
+ *  rendered here — which is what M5 was about: `action` used to render nothing at all. */
+function ActionFix({ value }: { value: FixAction }) {
+  if (value.startsWith("use:")) return <div className="hint">Pick a server below and press <b>Use this</b>.</div>;
+  const named = value as Exclude<FixAction, `use:${string}`>;
+  switch (named) {
+    case "save": return <div className="hint">Press <b>Save</b> below to create it.</div>;
+    case "fix-or-remove-config": return <div className="hint">Fix or remove that file, then press <b>Detect</b>.</div>;
+    case "reinstall": return <div className="hint">Reinstall AgentGrid, or put a <code>bugfix</code> role under <code>~/.agentgrid/roles</code>.</div>;
+  }
+  const exhaustive: never = named;
+  return exhaustive;
+}
+
+/** A check's remedy, rendered by kind. The UI never authors the *diagnosis* — that is the
+ *  check's `detail`, straight from the server — and for `command`/`env`/`field` it renders the
+ *  server's own value too. `action` is the one kind whose value names a control rather than a
+ *  string, so the mapping from action to control necessarily lives here. */
 function Fix({ check }: { check: Check }) {
   if (!check.fix) return null;
+  if (check.fix.kind === "action") return <ActionFix value={check.fix.value} />;
   const { kind, value } = check.fix;
   if (kind === "command") return (
     <div className="row">
@@ -19,8 +38,7 @@ function Fix({ check }: { check: Check }) {
     </div>
   );
   if (kind === "env") return <div className="hint">Export <code>{value}</code> in your login shell, then restart AgentGrid.</div>;
-  if (kind === "field") return <div className="hint">Set <code>{value}</code> below.</div>;
-  return null;
+  return <div className="hint">Set <code>{value}</code> below.</div>;
 }
 
 function CheckRow({ check }: { check: Check }) {
@@ -36,19 +54,28 @@ function CheckRow({ check }: { check: Check }) {
 
 /** Plain-language origin for a discovered server, in the user's own vocabulary rather than
  *  Claude Code's scope names — nobody configuring a bug tracker thinks in terms of "settings"
- *  vs. "user" scope. */
+ *  vs. "user" scope.
+ *
+ *  I1: the two directory-scoped origins carry a caveat, because picking one is *not* enough on
+ *  its own. Claude Code resolves a project- or repo-scoped server relative to the working
+ *  directory, and AgentGrid's tracker calls run in the directory its server process was
+ *  launched from (`tracker.ts`: `cwd: process.cwd()`) — never the ticket's repo. The rows stay
+ *  listed, because someone who does launch AgentGrid from that directory can use them; what
+ *  they must not do is read as "click and you're done". */
 function originLabel(s: McpServerFound): string {
   switch (s.origin) {
     case "account": return "linked to your Claude account";
     case "user": return "configured in Claude Code";
     case "settings": return "configured in Claude Code";
     case "project":
-    case "repo": return `configured for ${s.originDetail}`;
+    case "repo": return `configured for ${s.originDetail} — only resolves while running AgentGrid from that directory`;
   }
 }
 
 // The only tracker preset that ships a prompt file today (`presets/tracker/jira.md`). A row's
 // "Use this" needs *some* preset to send — this is the one the server can actually resolve.
+// A preset saved by hand that is not in this list is still offered as what is saved, the same
+// way the forge select does it, so seeding from the config can never silently change it.
 const TRACKER_PRESETS = ["jira"];
 
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
@@ -66,13 +93,21 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   // the sentence, as this branch already did once to the sibling check, and it silently breaks.
   const [presetOverride, setPresetOverride] = useState<string | undefined>(undefined);
   const [username, setUsername] = useState("");
-  // The saved forge, straight from `GET /api/integrations` (`forge` survives that route's
-  // redaction — only `tracker.mcpServers` is stripped). `loaded` distinguishes "no forge is
-  // saved" from "we have not been told yet", which decides whether Save may send one at all.
+  // The saved forge, straight from `GET /api/integrations`. That route redacts to an allow-list
+  // — `projectRepos`, the whole `forge`, and `tracker`'s `preset`/`toolPrefix`/`hints` — so a
+  // credential a pre-0.5.0 config still holds under `tracker.mcpServers` never reaches here
+  // (M6). `loaded` distinguishes "no forge is saved" from "we have not been told yet", which
+  // decides whether Save may send one at all.
   const [savedForge, setSavedForge] = useState<{ preset: string; username?: string } | undefined>(undefined);
   const [forgeLoaded, setForgeLoaded] = useState(false);
   const [pasted, setPasted] = useState<string | null>(null);
   const [trackerPreset, setTrackerPreset] = useState(TRACKER_PRESETS[0]);
+  // `hints` is prompt text the user can only set by editing the file. It is never shown here,
+  // but it must be carried back on every tracker write: `PUT` replaces `tracker` wholesale, so
+  // a "Use this" that did not re-send it destroyed it silently (I3).
+  const [trackerHints, setTrackerHints] = useState<string | undefined>(undefined);
+  // "Use this" cannot preserve what it has not been told, so it waits for the config to land.
+  const [integrationsLoaded, setIntegrationsLoaded] = useState(false);
   const [saved, setSaved] = useState<"live" | "restart" | null>(null);
   const [projectRepos, setProjectRepos] = useState<ProjectRepos>({});
 
@@ -86,7 +121,16 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       // saves for an unrelated reason re-sends their own username rather than an empty string.
       if (i.forge?.username) setUsername(i.forge.username);
       setForgeLoaded(true);
-    }).catch(() => {});
+      // Same reasoning for the tracker: a preset set by hand must not be reset to the first
+      // option, and `hints` must survive a click on "Use this".
+      if (i.tracker?.preset) setTrackerPreset(i.tracker.preset);
+      setTrackerHints(i.tracker?.hints);
+      // A failed read still releases the button rather than disabling it forever, and cannot
+      // cost anyone their `hints`: this GET fails only when the server is down (the PUT behind
+      // "Use this" fails too) or when integrations.json is unreadable or corrupt, and
+      // `IntegrationsStore.write` refuses to merge onto a base it could not read. There is no
+      // case where the read fails and the write then succeeds over data we could not see.
+    }).catch(() => {}).finally(() => setIntegrationsLoaded(true));
   }, []);
 
   // A preset the select cannot offer (gitlab, custom — Phase 2) is still shown as what is
@@ -119,7 +163,10 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     const wasWired = report?.wired ?? false;
     const body: Record<string, unknown> = {};
     if (forgeDirty) body.forge = { preset, ...(preset === "bitbucket" ? { username } : {}) };
-    if (pasted !== null) body.tracker = JSON.parse(pasted);
+    // An opened-but-empty box is "I changed my mind", not "save an empty tracker": parsing it
+    // unconditionally threw out of `JSON.parse` and aborted the whole save, the forge included
+    // (M7). The server refuses a tracker naming neither preset nor toolPrefix in any case.
+    if (pasted !== null && pasted.trim()) body.tracker = JSON.parse(pasted);
     await api.putIntegrations(body as never);
     await load();
     setSaved(wasWired ? "restart" : "live");
@@ -145,6 +192,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             {report.discovery.servers.length > 0 && (
               <div className="row">
                 <label>Tracker type <select value={trackerPreset} onChange={e => setTrackerPreset(e.target.value)}>
+                  {!TRACKER_PRESETS.includes(trackerPreset) && <option value={trackerPreset}>{trackerPreset} (saved)</option>}
                   {TRACKER_PRESETS.map(p => <option key={p} value={p}>{p}</option>)}
                 </select></label>
               </div>
@@ -152,18 +200,20 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             {report.discovery.servers.map(s => (
               <div key={s.name} className="row">
                 <span>{s.name} <span className="hint">({originLabel(s)})</span></span>
-                <button className="btn p" disabled={busy} onClick={() => void run(async () => {
-                  await api.putIntegrations({ tracker: { preset: trackerPreset, toolPrefix: s.toolPrefix } });
+                {/* `hints` goes back exactly as it came: `PUT` replaces `tracker` wholesale
+                    (deliberately — that is what sheds a 0.4.0 `mcpServers`), so anything not
+                    re-sent here is destroyed. */}
+                <button className="btn p" disabled={busy || !integrationsLoaded} onClick={() => void run(async () => {
+                  await api.putIntegrations({ tracker: { preset: trackerPreset, toolPrefix: s.toolPrefix,
+                    ...(trackerHints !== undefined ? { hints: trackerHints } : {}) } });
                   await load();
                 })}>Use this</button>
               </div>
             ))}
-            {report.discovery.servers.length === 0 && (
-              <div className="row">
-                <code className="cmd">{report.addCommand}</code>
-                <button className="btn" onClick={() => void navigator.clipboard?.writeText(report.addCommand)}>Copy</button>
-              </div>
-            )}
+            {/* No add-command row here: when nothing is discovered the "tracker" check itself
+                carries `fix: { kind: "command", value: DEFAULT_ADD_COMMAND }`, and `CheckRow`
+                above renders it with its own Copy button. Rendering it again put the same
+                command on screen twice (M4). */}
             <div className="row">
               <button className="btn" disabled={busy} onClick={() => void run(load)}>Detect</button>
               <button className="btn" disabled={busy} onClick={() => void run(async () => setTrackerTest(await api.testTracker()))}>Test</button>

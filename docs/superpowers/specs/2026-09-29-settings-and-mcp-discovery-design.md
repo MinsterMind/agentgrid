@@ -1,7 +1,15 @@
 # The Settings Screen and MCP Discovery — Design Spec
 
 **Date:** 2026-09-29
-**Status:** Approved design, pre-implementation
+**Status:** ⚠️ **Superseded in part — shipped as 0.4.0, then partly replaced by 0.5.0.**
+§4 (Discovery) and §6.1 (Tracker) are **no longer true of the code**: 0.5.0 removed
+the import of an MCP server definition into `~/.agentgrid/integrations.json`
+entirely. `TrackerConfig.mcpServers` is gone, `POST /api/setup/import` is gone,
+and discovery now returns names, origins and tool prefixes with no definition at
+all. Read
+[`2026-09-30-use-claudes-own-mcp-design.md`](2026-09-30-use-claudes-own-mcp-design.md)
+for what those two sections were replaced with. The rest of this spec
+(the setup report, the checks, the forge sections) still describes the code.
 **Builds on:** `2026-09-29-bitbucket-and-settings-design.md`, whose §6 this replaces
 **Ships in:** 0.4.0
 
@@ -55,6 +63,9 @@ than discovers"): it now discovers what is discoverable and instructs
 where it cannot.
 
 ## 4. Discovery
+
+> ⚠️ **Superseded by `2026-09-30-use-claudes-own-mcp-design.md` §§2, 5-7.**
+> Discovery no longer returns a definition, and nothing is imported.
 
 `server/src/bugfix/mcp-discovery.ts` — read-only, no subprocess, no
 network.
@@ -131,6 +142,11 @@ of instructions to keep in sync. `blocks` drives the Fix-a-bug summary,
 so a missing token does not nag while a tracker is still absent.
 
 ## 6. The two surfaces
+
+> ⚠️ **The Tracker part below (6.1) is superseded by
+> `2026-09-30-use-claudes-own-mcp-design.md` §5.** There is no Import, and an
+> account-level connector is exactly as usable as a local one. The forge part
+> and the check rendering still describe the code.
 
 `ui/src/components/SettingsDialog.tsx`, following the existing
 `SpawnDialog`/`BugLauncher` pattern, opened from a **⚙︎ Settings** button
