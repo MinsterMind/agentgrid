@@ -79,57 +79,33 @@ describe("the setup routes answer without an engine", () => {
     await request(app).get("/api/bugtasks").expect(501);
   });
 
-  it("POST /api/setup/import refuses a name that was not discovered", async () => {
+  // The import route is gone: an account connector needs no definition to be usable — naming
+  // its tool prefix in `allowedTools` is what connects it (spec §2) — so there is nothing left
+  // to import. `POST /api/setup/import` no longer exists at all, not even as a 400.
+  it("no longer offers an import route", async () => {
     const { app } = await unwiredApp();
-    const res = await request(app).post("/api/setup/import").send({ name: "nope" }).expect(400);
-    expect(res.body.error).toMatch(/nope/);
+    await request(app).post("/api/setup/import").send({ name: "whatever" }).expect(404);
   });
 
-  // C1: the headline journey (Detect → Import → start a bug fix) writes a tracker preset that
-  // has to actually resolve to a prompt file, or the very next tracker call is a bare ENOENT
-  // while Settings reports green. This is the missing success-path test for the import route,
-  // and it also closes the deferred item about that route's untested `onConfigSaved` call.
-  it("importing a discovered server writes a tracker preset that resolves, reports it ok, and tells the host", async () => {
-    const saved: Array<Record<string, unknown>> = [];
-    const { app, claudeHome, integrations } = await unwiredApp({
-      onConfigSaved: cfg => { saved.push(cfg as never); },
-      // Only "jira" has a prompt file in this stand-in for `presets/tracker/`, same as the real
-      // shipped directory — proving the written preset is the one that actually resolves.
-      trackerPresetResolves: (preset: string) => preset === "jira",
-    });
-    await writeFile(path.join(claudeHome, ".claude.json"), JSON.stringify({
-      mcpServers: { atlassian: { type: "http", url: "https://mcp.atlassian.com/v1/mcp" } },
-    }));
-
-    const res = await request(app).post("/api/setup/import").send({ name: "atlassian" }).expect(200);
-
-    const written = await integrations.read();
-    // No definition to copy any more — task 1 removed it from McpServerFound and task 2 removed
-    // `mcpServers` from TrackerConfig. A tool prefix is the whole of what gets stored.
-    expect(written.tracker).toEqual({
-      preset: "jira", toolPrefix: "mcp__atlassian",
-    });
-    const trackerCheck = res.body.checks.find((c: { id: string }) => c.id === "tracker");
-    expect(trackerCheck).toMatchObject({ state: "ok" });
-    expect(saved).toHaveLength(1);
-    expect((saved[0] as any).tracker.preset).toBe("jira");
-  });
-
-  // Pins `setupHome`'s wiring: without it, `discoverMcpServers` silently falls back to
-  // `os.homedir()`, and this test would instead report on whatever the real machine running
-  // the suite happens to have in its real `~/.claude` — passing or failing for reasons nobody
-  // could reproduce. Regressing that fallback would make this test flicker with the real home's
-  // actual MCP configuration instead of failing outright, so it also documents why the
-  // injection exists.
-  it("GET /api/setup scans the injected home, not the real one", async () => {
+  it("reports every server Claude Code knows, with its prefix, and no definitions", async () => {
     const { app, claudeHome } = await unwiredApp();
     await writeFile(path.join(claudeHome, ".claude.json"), JSON.stringify({
-      mcpServers: { jira: { command: "npx", args: ["jira-mcp"] } },
+      mcpServers: { jira: { command: "npx", headers: { Authorization: "Bearer sk-secret" } } },
+      claudeAiMcpEverConnected: ["claude.ai Atlassian"],
     }));
     const res = await request(app).get("/api/setup").expect(200);
-    expect(res.body.discovery.importable).toContainEqual(
-      expect.objectContaining({ name: "jira", origin: "user" }),
-    );
+    expect(res.body.discovery.servers).toEqual(expect.arrayContaining([
+      { name: "claude.ai Atlassian", toolPrefix: "mcp__claude_ai_Atlassian", origin: "account" },
+      { name: "jira", toolPrefix: "mcp__jira", origin: "user" },
+    ]));
+    expect(JSON.stringify(res.body)).not.toContain("sk-secret");
+  });
+
+  it("accepts a tracker that is only a preset and a prefix", async () => {
+    const { app, integrations } = await unwiredApp();
+    await request(app).put("/api/integrations")
+      .send({ tracker: { preset: "jira", toolPrefix: "mcp__claude_ai_Atlassian" } }).expect(200);
+    expect((await integrations.read()).tracker).toEqual({ preset: "jira", toolPrefix: "mcp__claude_ai_Atlassian" });
   });
 
   // Memoisation works when two saves genuinely overlap. Without the gate, timing variations under

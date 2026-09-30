@@ -254,9 +254,9 @@ export function createApp(deps: AppDeps) {
    */
   const tryWire = (): Promise<void> => maybeWire().catch(() => {});
 
-  /** Options for `discoverMcpServers`, shared by both call sites so they cannot drift: `home`
-   *  defaults to the real one in production, but tests inject a temporary one via `setupHome`
-   *  so the suite never depends on the machine it runs on. */
+  /** Options for `discoverMcpServers`: `home` defaults to the real one in production, but
+   *  tests inject a temporary one via `setupHome` so the suite never depends on the machine
+   *  it runs on. */
   const scanOptions = () => ({
     ...(deps.setupHome?.() ? { home: deps.setupHome()! } : {}),
     ...(deps.setupRepo?.() ? { repo: deps.setupRepo()! } : {}),
@@ -282,26 +282,6 @@ export function createApp(deps: AppDeps) {
   // engine that already exists — `maybeWire` is memoised and absent→present-once, so this is
   // just "try once more before answering" rather than a second wiring path.
   app.get("/api/setup", wrap(async (_req, res) => { await tryWire(); res.json(await setupReport()); }));
-
-  app.post("/api/setup/import", wrap(async (req, res) => {
-    const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
-    const discovery = await discoverMcpServers(scanOptions());
-    // Stub (task 1, for task 3 to redesign): "importable" here is every non-account server —
-    // task 1 removed `definition` from McpServerFound, and task 2 removed `mcpServers` from
-    // TrackerConfig, so there is no longer anything to copy at all. Task 3 owns redesigning
-    // this route now that a tool prefix alone is what actually connects a server (spec §2).
-    const server = discovery.servers.find(s => s.name === name && s.origin !== "account");
-    if (!server) throw new BadRequest(`no importable MCP server named "${name}" was found in your Claude Code configuration`);
-    // "jira" is the only preset shipped today (`presets/tracker/jira.md`); defaulting a fresh
-    // import to anything else (the old default was "mcp") writes a preset with no prompt file,
-    // and every tracker call then fails with ENOENT the moment the engine is wired.
-    const saved = await integrationsStore().write(cur => ({
-      tracker: { preset: cur.tracker?.preset ?? "jira", toolPrefix: server.toolPrefix },
-    }));
-    deps.onConfigSaved?.(saved);
-    await tryWire();
-    res.json(await setupReport());
-  }));
 
   // A failed test is an answer, not a server error: 200 with ok:false, carrying the
   // provider's own words. "Something went wrong" is exactly what this screen exists to end.

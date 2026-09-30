@@ -53,14 +53,20 @@ describe("buildSetupReport", () => {
     expect(find(r, "forge-username").blocks).toBe(true);
   });
 
-  it("offers an import when a server was discovered, and the add command when only an account connector was", () => {
+  // An account connector is exactly as usable as a local one — naming its tool prefix is what
+  // connects it (spec §2) — so the fix offered is the same "use:<prefix>" action regardless of
+  // origin. Only with nothing discovered at all does the fix fall back to `claude mcp add`.
+  it("offers to use a discovered server as the fix, whatever its origin", () => {
     const withLocal = buildSetupReport({ ...base, cfg: { projectRepos: {} }, discovery: { servers: [{ name: "atlassian", toolPrefix: "mcp__atlassian", origin: "user" }], problems: [] } });
-    expect(find(withLocal, "tracker").fix).toEqual({ kind: "action", value: "import:atlassian" });
-    expect(withLocal.discovery.importable[0]).toEqual({ name: "atlassian", origin: "user" });
+    expect(find(withLocal, "tracker").fix).toEqual({ kind: "action", value: "use:mcp__atlassian" });
+    expect(withLocal.discovery.servers).toEqual([{ name: "atlassian", toolPrefix: "mcp__atlassian", origin: "user" }]);
 
     const accountOnly = buildSetupReport({ ...base, cfg: { projectRepos: {} }, discovery: { servers: [{ name: "claude.ai Claude Docs", toolPrefix: "mcp__claude_ai_Claude_Docs", origin: "account" }], problems: [] } });
-    expect(find(accountOnly, "tracker").fix!.kind).toBe("command");
-    expect(find(accountOnly, "tracker").fix!.value).toMatch(/^claude mcp add --transport http /);
+    expect(find(accountOnly, "tracker").fix).toEqual({ kind: "action", value: "use:mcp__claude_ai_Claude_Docs" });
+
+    const none = buildSetupReport({ ...base, cfg: { projectRepos: {} }, discovery: { servers: [], problems: [] } });
+    expect(find(none, "tracker").fix!.kind).toBe("command");
+    expect(find(none, "tracker").fix!.value).toMatch(/^claude mcp add --transport http /);
   });
 
   // A definition can no longer even be constructed here — McpServerFound carries no such field
