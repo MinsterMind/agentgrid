@@ -13,7 +13,7 @@ describe("BugLauncher when setup is incomplete", () => {
         { id: "tracker", state: "missing", detail: "No tracker configured.", blocks: true },
         { id: "forge-token", state: "missing", detail: "BITBUCKET_API_TOKEN is not visible to the server process.", blocks: false },
       ],
-      discovery: { importable: [], accountOnly: [], problems: [] },
+      discovery: { servers: [], problems: [] },
     });
     render(<BugLauncher onClose={() => {}} onOpenSettings={() => {}} />);
     expect(await screen.findByText(/No tracker configured/)).toBeTruthy();

@@ -68,7 +68,6 @@ export const api = {
   getIntegrations: () => call<Integrations>("GET", "/api/integrations"),
   putIntegrations: (patch: Partial<Integrations>) => call<Integrations>("PUT", "/api/integrations", patch),
   getSetup: () => call<SetupReport>("GET", "/api/setup"),
-  importMcpServer: (name: string) => call<SetupReport>("POST", "/api/setup/import", { name }),
   testTracker: () => call<{ ok: boolean; message: string }>("POST", "/api/setup/test/tracker"),
   testForge: () => call<{ ok: boolean; message: string }>("POST", "/api/setup/test/forge"),
 };

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { Check, SetupReport } from "../types";
+import type { Check, McpServerFound, SetupReport } from "../types";
 
 // Populated from `GET /api/integrations` alongside the setup report; no route exists to edit
 // a single entry (`PUT /api/integrations` only accepts `tracker`/`forge`), so this stays
@@ -34,6 +34,23 @@ function CheckRow({ check }: { check: Check }) {
   );
 }
 
+/** Plain-language origin for a discovered server, in the user's own vocabulary rather than
+ *  Claude Code's scope names — nobody configuring a bug tracker thinks in terms of "settings"
+ *  vs. "user" scope. */
+function originLabel(s: McpServerFound): string {
+  switch (s.origin) {
+    case "account": return "linked to your Claude account";
+    case "user": return "configured in Claude Code";
+    case "settings": return "configured in Claude Code";
+    case "project":
+    case "repo": return `configured for ${s.originDetail}`;
+  }
+}
+
+// The only tracker preset that ships a prompt file today (`presets/tracker/jira.md`). A row's
+// "Use this" needs *some* preset to send — this is the one the server can actually resolve.
+const TRACKER_PRESETS = ["jira"];
+
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [report, setReport] = useState<SetupReport | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -55,6 +72,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [savedForge, setSavedForge] = useState<{ preset: string; username?: string } | undefined>(undefined);
   const [forgeLoaded, setForgeLoaded] = useState(false);
   const [pasted, setPasted] = useState<string | null>(null);
+  const [trackerPreset, setTrackerPreset] = useState(TRACKER_PRESETS[0]);
   const [saved, setSaved] = useState<"live" | "restart" | null>(null);
   const [projectRepos, setProjectRepos] = useState<ProjectRepos>({});
 
@@ -123,14 +141,27 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           <section>
             <h4>Tracker</h4>
             {check("tracker") && <CheckRow check={check("tracker")!} />}
-            {report.discovery.importable.map(s => (
+            {report.discovery.servers.length > 0 && (
+              <div className="row">
+                <label>Tracker type <select value={trackerPreset} onChange={e => setTrackerPreset(e.target.value)}>
+                  {TRACKER_PRESETS.map(p => <option key={p} value={p}>{p}</option>)}
+                </select></label>
+              </div>
+            )}
+            {report.discovery.servers.map(s => (
               <div key={s.name} className="row">
-                <span>{s.name} <span className="hint">({s.type ?? "?"}{s.url ? ` · ${s.url}` : ""} · {s.origin}{s.originDetail ? ` · ${s.originDetail}` : ""})</span></span>
-                <button className="btn" disabled={busy} onClick={() => void run(async () => setReport(await api.importMcpServer(s.name)))}>Import</button>
+                <span>{s.name} <span className="hint">({originLabel(s)})</span></span>
+                <button className="btn p" disabled={busy} onClick={() => void run(async () => {
+                  await api.putIntegrations({ tracker: { preset: trackerPreset, toolPrefix: s.toolPrefix } });
+                  await load();
+                })}>Use this</button>
               </div>
             ))}
-            {report.discovery.accountOnly.length > 0 && (
-              <div className="hint">Linked to your Claude account: {report.discovery.accountOnly.join(", ")}.</div>
+            {report.discovery.servers.length === 0 && (
+              <div className="row">
+                <code className="cmd">{report.addCommand}</code>
+                <button className="btn" onClick={() => void navigator.clipboard?.writeText(report.addCommand)}>Copy</button>
+              </div>
             )}
             <div className="row">
               <button className="btn" disabled={busy} onClick={() => void run(load)}>Detect</button>

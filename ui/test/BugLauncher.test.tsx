@@ -10,7 +10,7 @@ const getIntegrations = vi.fn(async () => ({ projectRepos: { PAY: "/r/payments" 
 const getSetup = vi.fn(async () => ({
   ready: true, wired: true, addCommand: "",
   checks: [] as { id: string; state: "ok" | "missing" | "broken"; detail: string; blocks: boolean }[],
-  discovery: { importable: [], accountOnly: [], problems: [] as string[] },
+  discovery: { servers: [], problems: [] as string[] },
 }));
 vi.mock("../src/api", () => ({ api: {
   myIssues: () => myIssues(), bugPreflight: (r: string) => bugPreflight(r),
