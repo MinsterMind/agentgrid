@@ -104,11 +104,10 @@ describe("the setup routes answer without an engine", () => {
     const res = await request(app).post("/api/setup/import").send({ name: "atlassian" }).expect(200);
 
     const written = await integrations.read();
-    // No definition to copy any more (task 1 removed it from McpServerFound) — `mcpServers` is
-    // stubbed empty here; task 3 owns deciding what, if anything, replaces it.
+    // No definition to copy any more — task 1 removed it from McpServerFound and task 2 removed
+    // `mcpServers` from TrackerConfig. A tool prefix is the whole of what gets stored.
     expect(written.tracker).toEqual({
       preset: "jira", toolPrefix: "mcp__atlassian",
-      mcpServers: {},
     });
     const trackerCheck = res.body.checks.find((c: { id: string }) => c.id === "tracker");
     expect(trackerCheck).toMatchObject({ state: "ok" });

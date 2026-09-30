@@ -29,7 +29,7 @@ describe("first-time setup takes effect without a restart", () => {
       await request(running.url).get("/api/bugtasks").expect(501);   // nothing wired yet
 
       await request(running.url).put("/api/integrations")
-        .send({ tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: {} } }).expect(200);
+        .send({ tracker: { preset: "jira", toolPrefix: "mcp__atlassian" } }).expect(200);
 
       const after = await request(running.url).get("/api/setup").expect(200);
       expect(after.body.wired).toBe(true);
@@ -39,7 +39,7 @@ describe("first-time setup takes effect without a restart", () => {
       const first = running.bugEngineForTest?.();
       expect(first).toBeDefined();
       await request(running.url).put("/api/integrations")
-        .send({ tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: {} } }).expect(200);
+        .send({ tracker: { preset: "jira", toolPrefix: "mcp__atlassian" } }).expect(200);
       expect(running.bugEngineForTest?.()).toBe(first);
     } finally { await running.close(); }
   });

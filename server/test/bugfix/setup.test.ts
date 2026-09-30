@@ -22,14 +22,14 @@ describe("buildSetupReport", () => {
   });
 
   it("a configured tracker and github forge with a resolving role is ready", () => {
-    const cfg: Integrations = { tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: { atlassian: {} } }, forge: { preset: "github" }, projectRepos: {} };
+    const cfg: Integrations = { tracker: { preset: "jira", toolPrefix: "mcp__atlassian" }, forge: { preset: "github" }, projectRepos: {} };
     const r = buildSetupReport({ ...base, cfg });
     expect(r.ready).toBe(true);
     expect(r.checks.filter(c => c.blocks && c.state !== "ok")).toEqual([]);
   });
 
   it("a bitbucket forge with no token reports the variable, and does not block", () => {
-    const cfg: Integrations = { tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: {} }, forge: { preset: "bitbucket", username: "me@example.com" }, projectRepos: {} };
+    const cfg: Integrations = { tracker: { preset: "jira", toolPrefix: "mcp__atlassian" }, forge: { preset: "bitbucket", username: "me@example.com" }, projectRepos: {} };
     const r = buildSetupReport({ ...base, cfg });
     const token = find(r, "forge-token");
     expect(token.state).toBe("missing");
@@ -39,14 +39,14 @@ describe("buildSetupReport", () => {
   });
 
   it("sees the token when it is in the environment", () => {
-    const cfg: Integrations = { tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: {} }, forge: { preset: "bitbucket", username: "me@example.com" }, projectRepos: {} };
+    const cfg: Integrations = { tracker: { preset: "jira", toolPrefix: "mcp__atlassian" }, forge: { preset: "bitbucket", username: "me@example.com" }, projectRepos: {} };
     const r = buildSetupReport({ ...base, cfg, env: { BITBUCKET_API_TOKEN: "secret" } as NodeJS.ProcessEnv });
     expect(find(r, "forge-token").state).toBe("ok");
     expect(JSON.stringify(r)).not.toContain("secret");
   });
 
   it("a bitbucket forge with a blank username names the field and blocks", () => {
-    const cfg: Integrations = { tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: {} }, forge: { preset: "bitbucket", username: "   " }, projectRepos: {} };
+    const cfg: Integrations = { tracker: { preset: "jira", toolPrefix: "mcp__atlassian" }, forge: { preset: "bitbucket", username: "   " }, projectRepos: {} };
     const r = buildSetupReport({ ...base, cfg });
     expect(find(r, "forge-username").state).toBe("missing");
     expect(find(r, "forge-username").fix).toEqual({ kind: "field", value: "forge.username" });
@@ -86,7 +86,7 @@ describe("buildSetupReport", () => {
   // with no prompt file (the old default, "mcp", among them) sailed through Settings green and
   // only surfaced as an ENOENT the moment a bug fix actually asked the tracker something.
   it("reports a tracker preset that has no prompt file as broken, not ok, and is not ready", () => {
-    const cfg: Integrations = { tracker: { preset: "mcp", toolPrefix: "mcp__atlassian", mcpServers: {} }, forge: { preset: "github" }, projectRepos: {} };
+    const cfg: Integrations = { tracker: { preset: "mcp", toolPrefix: "mcp__atlassian" }, forge: { preset: "github" }, projectRepos: {} };
     const r = buildSetupReport({ ...base, cfg, trackerPresetResolves: (preset: string) => preset === "jira" });
     const tracker = find(r, "tracker");
     expect(tracker.state).toBe("broken");
@@ -97,14 +97,14 @@ describe("buildSetupReport", () => {
   });
 
   it("a tracker preset that does resolve still reports ok", () => {
-    const cfg: Integrations = { tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: {} }, forge: { preset: "github" }, projectRepos: {} };
+    const cfg: Integrations = { tracker: { preset: "jira", toolPrefix: "mcp__atlassian" }, forge: { preset: "github" }, projectRepos: {} };
     const r = buildSetupReport({ ...base, cfg, trackerPresetResolves: (preset: string) => preset === "jira" });
     expect(find(r, "tracker").state).toBe("ok");
     expect(r.ready).toBe(true);
   });
 
   it("without a resolver, the tracker check falls back to what it always tested (toolPrefix alone)", () => {
-    const cfg: Integrations = { tracker: { preset: "mcp", toolPrefix: "mcp__atlassian", mcpServers: {} }, forge: { preset: "github" }, projectRepos: {} };
+    const cfg: Integrations = { tracker: { preset: "mcp", toolPrefix: "mcp__atlassian" }, forge: { preset: "github" }, projectRepos: {} };
     const r = buildSetupReport({ ...base, cfg });
     expect(find(r, "tracker").state).toBe("ok");
   });

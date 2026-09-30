@@ -3,7 +3,7 @@ import path from "node:path";
 import { Conflict } from "../store/store.js";
 import { describeJsonParseError } from "./json-parse-error.js";
 
-export interface TrackerConfig { preset: string; toolPrefix: string; mcpServers: Record<string, unknown>; hints?: string }
+export interface TrackerConfig { preset: string; toolPrefix: string; hints?: string }
 export interface ForgeConfig { preset: "github" | "gitlab" | "bitbucket" | "custom"; username?: string; getPr?: string; merge?: string; map?: Record<string, string> }
 export interface Integrations { tracker?: TrackerConfig; forge?: ForgeConfig; projectRepos: Record<string, string> }
 

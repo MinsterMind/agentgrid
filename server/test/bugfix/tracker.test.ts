@@ -8,12 +8,12 @@ import type { TrackerConfig } from "../../src/bugfix/integrations.js";
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: vi.fn() }));
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
-const cfg: TrackerConfig = { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: { atlassian: { type: "sse", url: "https://x" } }, hints: "Bugs live in PAY" };
+const cfg: TrackerConfig = { preset: "jira", toolPrefix: "mcp__atlassian", hints: "Bugs live in PAY" };
 const presets = path.resolve("presets");
 
 const runner = (reply: string) => {
-  const seen: Array<{ prompt: string; allowedTools: string[]; mcpServers: Record<string, unknown> }> = [];
-  return { seen, run: async (a: { prompt: string; allowedTools: string[]; mcpServers: Record<string, unknown>; cwd: string }) => { seen.push(a); return reply; } };
+  const seen: Array<{ prompt: string; allowedTools: string[] }> = [];
+  return { seen, run: async (a: { prompt: string; allowedTools: string[]; cwd: string }) => { seen.push(a); return reply; } };
 };
 
 describe("parsers", () => {
@@ -50,9 +50,19 @@ describe("mcpTracker", () => {
     const t = mcpTracker(cfg, presets, r.run);
     expect(await t.listMyIssues()).toEqual([{ key: "PAY-42", title: "Boom", url: "https://x/PAY-42", status: "Open", priority: "High" }]);
     expect(r.seen[0].allowedTools).toEqual(["mcp__atlassian"]);
-    expect(r.seen[0].mcpServers).toEqual({ atlassian: { type: "sse", url: "https://x" } });   // passed explicitly — inheritance is not enough
     expect(r.seen[0].prompt).toContain("assigned to me");
     expect(r.seen[0].prompt).toContain("Bugs live in PAY");   // hints are injected
+  });
+
+  // The load-bearing assertion of this whole plan: no definition is ever copied or passed.
+  // `allowedTools` naming the prefix is what connects the server — see tracker.ts's `ask`.
+  it("passes the tool prefix in allowedTools and no mcpServers at all", async () => {
+    const seen: any[] = [];
+    const t = mcpTracker({ preset: "jira", toolPrefix: "mcp__claude_ai_Atlassian" }, presets,
+      async (opts) => { seen.push(opts); return "[]"; });
+    await t.listMyIssues();
+    expect(seen[0].allowedTools).toEqual(["mcp__claude_ai_Atlassian"]);
+    expect(seen[0].mcpServers).toBeUndefined();
   });
 
   it("fetches one issue by key or URL", async () => {
@@ -98,12 +108,15 @@ describe("defaultJsonRunner", () => {
       yield { type: "result", subtype: "success" } as never;
     })() as never);
 
-    await defaultJsonRunner({ prompt: "p", allowedTools: ["mcp__atlassian"], mcpServers: { atlassian: { type: "sse", url: "https://x" } }, cwd: "/tmp" });
+    await defaultJsonRunner({ prompt: "p", allowedTools: ["mcp__atlassian"], cwd: "/tmp" });
 
     expect(vi.mocked(query)).toHaveBeenCalledTimes(1);
-    const call = vi.mocked(query).mock.calls[0][0] as { options: { pathToClaudeCodeExecutable?: string; mcpServers?: unknown; allowedTools?: string[] } };
+    const call = vi.mocked(query).mock.calls[0][0] as { options: { pathToClaudeCodeExecutable?: string; mcpServers?: unknown; allowedTools?: string[]; settingSources?: string[] } };
     expect(call.options.pathToClaudeCodeExecutable).toBe(exe);
-    expect(call.options.mcpServers).toEqual({ atlassian: { type: "sse", url: "https://x" } });
+    expect(call.options.mcpServers).toBeUndefined();
     expect(call.options.allowedTools).toEqual(["mcp__atlassian"]);
+    // The critical finding this plan acts on: a project-scoped .mcp.json server loads only when
+    // "project" is in settingSources — mcpTracker must pass both "user" and "project".
+    expect(call.options.settingSources).toContain("project");
   });
 });

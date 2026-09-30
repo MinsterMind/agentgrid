@@ -5,7 +5,7 @@ import { ISSUE_KEY, assertIssueKey } from "./git.js";
 import type { TrackerConfig } from "./integrations.js";
 import type { IssueSummary, TrackerIssue } from "./types.js";
 
-export type JsonRunner = (args: { prompt: string; allowedTools: string[]; mcpServers: Record<string, unknown>; cwd: string }) => Promise<string>;
+export type JsonRunner = (args: { prompt: string; allowedTools: string[]; cwd: string }) => Promise<string>;
 
 export interface TrackerProvider {
   listMyIssues(): Promise<IssueSummary[]>;
@@ -64,11 +64,14 @@ async function section(presetsDir: string, preset: string, name: string, vars: R
  * the same way the agent runner does — the packaged Electron app doesn't ship the SDK's bundled
  * binary, so without this every tracker call there would fail.
  */
-export const defaultJsonRunner: JsonRunner = async ({ prompt, allowedTools, mcpServers, cwd }) => {
+export const defaultJsonRunner: JsonRunner = async ({ prompt, allowedTools, cwd }) => {
   let last = "";
-  // mcpServers must be passed explicitly: a 2026-09-25 spike showed settingSources alone surfaces no MCP tools.
-  for await (const m of realQuery({ prompt, options: { cwd, settingSources: ["user"], model: "claude-opus-5",
-      effort: "low", maxTurns: 12, allowedTools, mcpServers: mcpServers as never,
+  // No mcpServers here: naming the prefix in allowedTools is what connects a server, verified
+  // 2026-09-30 through this same runner — an account connector's tool worked with no mcpServers
+  // passed at all. "project" is required alongside "user": a config-defined server otherwise
+  // does not load — probed directly, see the task-2 report for the probe transcript.
+  for await (const m of realQuery({ prompt, options: { cwd, settingSources: ["user", "project"], model: "claude-opus-5",
+      effort: "low", maxTurns: 12, allowedTools,
       permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true } as never })) {
     if (m.type === "assistant") for (const b of (m as any).message.content) if (b.type === "text" && b.text.trim()) last = b.text;
     if (m.type === "result" && (m as any).subtype !== "success") throw new Error(`tracker query failed: ${(m as any).subtype}`);
@@ -80,7 +83,7 @@ export const defaultJsonRunner: JsonRunner = async ({ prompt, allowedTools, mcpS
 export function mcpTracker(cfg: TrackerConfig, presetsDir: string, run: JsonRunner = defaultJsonRunner): TrackerProvider {
   const ask = async (name: string, vars: Record<string, string>) =>
     run({ prompt: await section(presetsDir, cfg.preset, name, { hints: cfg.hints ?? "", ...vars }),
-          allowedTools: [cfg.toolPrefix], mcpServers: cfg.mcpServers, cwd: process.cwd() });
+          allowedTools: [cfg.toolPrefix], cwd: process.cwd() });
   return {
     async listMyIssues() { return parseIssueList(await ask("listMyIssues", {})); },
     async fetchIssue(ref: string) { return parseIssue(await ask("fetchIssue", { ref })); },

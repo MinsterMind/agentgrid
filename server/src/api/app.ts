@@ -287,16 +287,16 @@ export function createApp(deps: AppDeps) {
     const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
     const discovery = await discoverMcpServers(scanOptions());
     // Stub (task 1, for task 3 to redesign): "importable" here is every non-account server —
-    // task 1 removed `definition` from McpServerFound, so there is no longer anything to copy
-    // into `tracker.mcpServers`. Task 3 owns deciding what, if anything, replaces that field
-    // now that a tool prefix alone is what actually connects a server (spec §2).
+    // task 1 removed `definition` from McpServerFound, and task 2 removed `mcpServers` from
+    // TrackerConfig, so there is no longer anything to copy at all. Task 3 owns redesigning
+    // this route now that a tool prefix alone is what actually connects a server (spec §2).
     const server = discovery.servers.find(s => s.name === name && s.origin !== "account");
     if (!server) throw new BadRequest(`no importable MCP server named "${name}" was found in your Claude Code configuration`);
     // "jira" is the only preset shipped today (`presets/tracker/jira.md`); defaulting a fresh
     // import to anything else (the old default was "mcp") writes a preset with no prompt file,
     // and every tracker call then fails with ENOENT the moment the engine is wired.
     const saved = await integrationsStore().write(cur => ({
-      tracker: { preset: cur.tracker?.preset ?? "jira", toolPrefix: server.toolPrefix, mcpServers: {} },
+      tracker: { preset: cur.tracker?.preset ?? "jira", toolPrefix: server.toolPrefix },
     }));
     deps.onConfigSaved?.(saved);
     await tryWire();
@@ -412,18 +412,14 @@ export function createApp(deps: AppDeps) {
       }
       // `preset` is deliberately not enum-checked: it's a free-form lookup key into
       // presets/tracker/<preset>.md, not a fixed set like forge's. Every other field on
-      // TrackerConfig is checked for shape when present; unknown keys are dropped, same
-      // as the rest of this body.
+      // TrackerConfig is checked for shape when present; unknown keys (including a 0.4.0
+      // client still sending `mcpServers`) are dropped, same as the rest of this body.
       if (tracker.preset !== undefined && typeof tracker.preset !== "string") throw new BadRequest("tracker.preset must be a string");
       if (tracker.toolPrefix !== undefined && typeof tracker.toolPrefix !== "string") throw new BadRequest("tracker.toolPrefix must be a string");
-      if (tracker.mcpServers !== undefined && (typeof tracker.mcpServers !== "object" || tracker.mcpServers === null || Array.isArray(tracker.mcpServers))) {
-        throw new BadRequest("tracker.mcpServers must be an object");
-      }
       if (tracker.hints !== undefined && typeof tracker.hints !== "string") throw new BadRequest("tracker.hints must be a string");
       const t: Record<string, unknown> = {};
       if (tracker.preset !== undefined) t.preset = tracker.preset;
       if (tracker.toolPrefix !== undefined) t.toolPrefix = tracker.toolPrefix;
-      if (tracker.mcpServers !== undefined) t.mcpServers = tracker.mcpServers;
       if (tracker.hints !== undefined) t.hints = tracker.hints;
       patch.tracker = t;
     }

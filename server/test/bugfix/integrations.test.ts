@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { IntegrationsStore, detectForge } from "../../src/bugfix/integrations.js";
@@ -36,12 +36,12 @@ describe("detectForge", () => {
 describe("IntegrationsStore", () => {
   it("starts empty, merges patches, and round-trips through disk", async () => {
     expect(await store.read()).toEqual({ projectRepos: {} });
-    await store.write({ tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: { atlassian: { type: "sse", url: "https://mcp.atlassian.com/v1/sse" } } } });
+    await store.write({ tracker: { preset: "jira", toolPrefix: "mcp__atlassian" } });
     await store.write({ forge: { preset: "github" } });
     const again = new IntegrationsStore(home);
     expect(await again.read()).toEqual({
       projectRepos: {},
-      tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: { atlassian: { type: "sse", url: "https://mcp.atlassian.com/v1/sse" } } },
+      tracker: { preset: "jira", toolPrefix: "mcp__atlassian" },
       forge: { preset: "github" },
     });
   });
@@ -106,11 +106,28 @@ describe("IntegrationsStore", () => {
 
   it("keeps both patches when two writes race", async () => {
     await Promise.all([
-      store.write({ tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: {} } }),
+      store.write({ tracker: { preset: "jira", toolPrefix: "mcp__atlassian" } }),
       store.rememberRepo("PAY", "/r/payments"),
     ]);
     const after = await store.read();
     expect(after.tracker?.preset).toBe("jira");
     expect(after.projectRepos.PAY).toBe("/r/payments");
+  });
+
+  // A 0.4.0 config still on disk carries tracker.mcpServers — a copy of a connection's
+  // definition, credential included. It must still load (the tracker keeps working), and the
+  // very next write must shed the field rather than round-tripping it forever.
+  it("loads a 0.4.0 config that still carries mcpServers, and drops it on the next write", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "ag-migrate-"));
+    await writeFile(path.join(home, "integrations.json"), JSON.stringify({
+      tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: { atlassian: { headers: { Authorization: "Bearer old" } } } },
+      projectRepos: {},
+    }));
+    const store = new IntegrationsStore(home);
+    expect((await store.read()).tracker?.toolPrefix).toBe("mcp__atlassian");   // still works
+    await store.write({ tracker: { preset: "jira", toolPrefix: "mcp__atlassian" } });
+    const raw = await readFile(path.join(home, "integrations.json"), "utf8");
+    expect(raw).not.toContain("Authorization");                                 // shed on write
+    expect(raw).not.toContain("mcpServers");
   });
 });
