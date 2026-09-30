@@ -87,6 +87,16 @@ describe("discoverMcpServers", () => {
     expect(d.servers.map(s => s.name)).toEqual(["claude.ai Atlassian"]);
   });
 
+  it("a locally defined server of the same name overrides the account connector", async () => {
+    const home = await fakeHome({
+      mcpServers: { "claude.ai Atlassian": { type: "http", url: "https://local-override" } },
+      claudeAiMcpEverConnected: ["claude.ai Atlassian"],
+    });
+    const d = await discoverMcpServers({ home });
+    expect(d.servers).toHaveLength(1);
+    expect(d.servers[0]!.origin).toBe("user");   // the local definition wins, not "account"
+  });
+
   it("a malformed file is reported by name and does not blank the good ones", async () => {
     const home = await fakeHome("{ this is not json", { mcpServers: { ok: { type: "http", url: "https://example.invalid" } } });
     const d = await discoverMcpServers({ home });
