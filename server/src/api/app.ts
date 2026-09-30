@@ -322,16 +322,22 @@ export function createApp(deps: AppDeps) {
 
   // Spec §8: "the UI sees a server's name, transport and URL, not its headers." A definition in
   // tracker.mcpServers can carry a credential (a bearer token, a header) copied verbatim from
-  // Claude Code's own config — never send it to the browser. The UI's only uses of this route are
+  // Claude Code's own config — never send it to the browser. The UI's only uses of these routes are
   // projectRepos and forge (username included; forges never store a secret here, unlike a tracker
   // MCP definition), plus tracker.preset/toolPrefix for display.
+  /** The one shape either integrations route may hand the browser, so the two cannot drift.
+   *  `PUT`'s response needs this every bit as much as `GET`'s: `write()` returns the *merged*
+   *  config, so a Save touching only `forge` would otherwise echo back a stored
+   *  `tracker.mcpServers` — token and headers included — that the browser never sent and must
+   *  never receive. */
+  const redactIntegrations = (cfg: Integrations) => ({
+    projectRepos: cfg.projectRepos,
+    ...(cfg.forge ? { forge: cfg.forge } : {}),
+    ...(cfg.tracker ? { tracker: { preset: cfg.tracker.preset, toolPrefix: cfg.tracker.toolPrefix } } : {}),
+  });
+
   app.get("/api/integrations", wrap(async (_req, res) => {
-    const cfg = await integrationsStore().read();
-    res.json({
-      projectRepos: cfg.projectRepos,
-      ...(cfg.forge ? { forge: cfg.forge } : {}),
-      ...(cfg.tracker ? { tracker: { preset: cfg.tracker.preset, toolPrefix: cfg.tracker.toolPrefix } } : {}),
-    });
+    res.json(redactIntegrations(await integrationsStore().read()));
   }));
 
   const MERGE_POLICIES = ["ask", "auto"] as const;
@@ -439,7 +445,7 @@ export function createApp(deps: AppDeps) {
     const saved = await integrationsStore().write(patch as never);
     deps.onConfigSaved?.(saved);
     await tryWire();
-    res.json(saved);
+    res.json(redactIntegrations(saved));
   }));
 
   app.use("/api", (_req, res) => res.status(404).json({ error: "not found" }));
