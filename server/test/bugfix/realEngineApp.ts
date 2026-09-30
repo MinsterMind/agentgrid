@@ -64,7 +64,7 @@ export async function createBugFixTestApp() {
   // same file — write it here so a GET /api/setup against this "fully wired" harness reports
   // tracker/forge as configured, same as it would on a machine that actually set them up.
   await integrations.write({
-    tracker: { preset: "mcp", toolPrefix: "mcp__tracker", mcpServers: {} },
+    tracker: { preset: "jira", toolPrefix: "mcp__tracker", mcpServers: {} },
     forge: { preset: "github" },
   });
   const fake = makeFakeQuery();

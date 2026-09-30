@@ -186,6 +186,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     openTerminal, runInTerminal, staticDir, browseRoot: opts.browseRoot ?? process.env.AGENTGRID_BROWSE_ROOT, ...(fakeSessions ? { sessions: fakeSessions } : {}),
     integrations,
     roleResolves: () => { try { store.getRole("bugfix"); return true; } catch { return false; } },
+    trackerPresetResolves: (preset: string) => existsSync(path.join(presetsDir, "tracker", `${preset}.md`)),
     setupForge: () => fakeForgeHandle ?? makeForge(lastCfg.forge),
     setupRepo: () => {
       const repos = lastCfg.projectRepos;

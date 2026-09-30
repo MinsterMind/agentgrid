@@ -80,6 +80,33 @@ describe("buildSetupReport", () => {
     expect(forge.fix).toEqual({ kind: "field", value: "forge.preset" });
   });
 
+  // C1: `toolPrefix` alone used to be enough for the "tracker" check to report ok, so a preset
+  // with no prompt file (the old default, "mcp", among them) sailed through Settings green and
+  // only surfaced as an ENOENT the moment a bug fix actually asked the tracker something.
+  it("reports a tracker preset that has no prompt file as broken, not ok, and is not ready", () => {
+    const cfg: Integrations = { tracker: { preset: "mcp", toolPrefix: "mcp__atlassian", mcpServers: {} }, forge: { preset: "github" }, projectRepos: {} };
+    const r = buildSetupReport({ ...base, cfg, trackerPresetResolves: (preset: string) => preset === "jira" });
+    const tracker = find(r, "tracker");
+    expect(tracker.state).toBe("broken");
+    expect(tracker.detail).toMatch(/"mcp"/);
+    expect(tracker.detail).toMatch(/presets\/tracker/);
+    expect(tracker.fix).toEqual({ kind: "field", value: "tracker.preset" });
+    expect(r.ready).toBe(false);
+  });
+
+  it("a tracker preset that does resolve still reports ok", () => {
+    const cfg: Integrations = { tracker: { preset: "jira", toolPrefix: "mcp__atlassian", mcpServers: {} }, forge: { preset: "github" }, projectRepos: {} };
+    const r = buildSetupReport({ ...base, cfg, trackerPresetResolves: (preset: string) => preset === "jira" });
+    expect(find(r, "tracker").state).toBe("ok");
+    expect(r.ready).toBe(true);
+  });
+
+  it("without a resolver, the tracker check falls back to what it always tested (toolPrefix alone)", () => {
+    const cfg: Integrations = { tracker: { preset: "mcp", toolPrefix: "mcp__atlassian", mcpServers: {} }, forge: { preset: "github" }, projectRepos: {} };
+    const r = buildSetupReport({ ...base, cfg });
+    expect(find(r, "tracker").state).toBe("ok");
+  });
+
   it("reports a role that does not resolve", () => {
     const r = buildSetupReport({ ...base, cfg: { projectRepos: {} }, roleResolves: false });
     expect(find(r, "role").state).toBe("missing");

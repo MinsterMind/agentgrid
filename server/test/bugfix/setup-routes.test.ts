@@ -16,6 +16,12 @@ function fakeWiredBugs(): AppDeps["bugs"] {
   return { engine: null as never, store: null as never, integrations: null as never, tracker: null as never };
 }
 
+/** Like `fakeWiredBugs`, but with a working `store.list()` so a route that touches it (rather
+ *  than just the `wired` flag) can be asserted against without throwing on a null dereference. */
+function fakeWiredBugsWithStore(): AppDeps["bugs"] {
+  return { engine: null as never, store: { list: () => [] } as never, integrations: null as never, tracker: null as never };
+}
+
 /**
  * An app with NO bug-fix engine — the case the old API could not express. `agentgrid-setup-`
  * (the `~/.agentgrid` home) and `claudeHome` (the `~/.claude` home `discoverMcpServers` scans)
@@ -23,7 +29,7 @@ function fakeWiredBugs(): AppDeps["bugs"] {
  * the wrong one leaks into the other's slot. Both are fresh per call, so this suite never reads
  * or depends on the real machine's `~/.claude` or `~/.agentgrid`.
  */
-async function unwiredApp(extra?: { onConfigured?: AppDeps["onConfigured"]; onConfigSaved?: AppDeps["onConfigSaved"]; tracker?: { listMyIssues: () => Promise<unknown[]> }; forge?: { authStatus: () => Promise<{ ok: boolean; message: string }> } } | undefined) {
+async function unwiredApp(extra?: { onConfigured?: AppDeps["onConfigured"]; onConfigSaved?: AppDeps["onConfigSaved"]; tracker?: { listMyIssues: () => Promise<unknown[]> }; forge?: { authStatus: () => Promise<{ ok: boolean; message: string }> }; trackerPresetResolves?: AppDeps["trackerPresetResolves"] } | undefined) {
   const home = await mkdtemp(path.join(os.tmpdir(), "agentgrid-setup-"));
   const claudeHome = await mkdtemp(path.join(os.tmpdir(), "agentgrid-setup-claude-"));
   const store = new Store(home, path.resolve("roles"));
@@ -37,6 +43,7 @@ async function unwiredApp(extra?: { onConfigured?: AppDeps["onConfigured"]; onCo
     setupHome: () => claudeHome,
     onConfigured: extra?.onConfigured,
     onConfigSaved: extra?.onConfigSaved,
+    trackerPresetResolves: extra?.trackerPresetResolves,
     ...(extra?.tracker ? { setupTracker: () => extra.tracker as never } : {}),
     ...(extra?.forge ? { setupForge: () => extra.forge as never } : {}),
   });
@@ -75,6 +82,35 @@ describe("the setup routes answer without an engine", () => {
     const { app } = await unwiredApp();
     const res = await request(app).post("/api/setup/import").send({ name: "nope" }).expect(400);
     expect(res.body.error).toMatch(/nope/);
+  });
+
+  // C1: the headline journey (Detect → Import → start a bug fix) writes a tracker preset that
+  // has to actually resolve to a prompt file, or the very next tracker call is a bare ENOENT
+  // while Settings reports green. This is the missing success-path test for the import route,
+  // and it also closes the deferred item about that route's untested `onConfigSaved` call.
+  it("importing a discovered server writes a tracker preset that resolves, reports it ok, and tells the host", async () => {
+    const saved: Array<Record<string, unknown>> = [];
+    const { app, claudeHome, integrations } = await unwiredApp({
+      onConfigSaved: cfg => { saved.push(cfg as never); },
+      // Only "jira" has a prompt file in this stand-in for `presets/tracker/`, same as the real
+      // shipped directory — proving the written preset is the one that actually resolves.
+      trackerPresetResolves: (preset: string) => preset === "jira",
+    });
+    await writeFile(path.join(claudeHome, ".claude.json"), JSON.stringify({
+      mcpServers: { atlassian: { type: "http", url: "https://mcp.atlassian.com/v1/mcp" } },
+    }));
+
+    const res = await request(app).post("/api/setup/import").send({ name: "atlassian" }).expect(200);
+
+    const written = await integrations.read();
+    expect(written.tracker).toEqual({
+      preset: "jira", toolPrefix: "mcp__atlassian",
+      mcpServers: { atlassian: { type: "http", url: "https://mcp.atlassian.com/v1/mcp" } },
+    });
+    const trackerCheck = res.body.checks.find((c: { id: string }) => c.id === "tracker");
+    expect(trackerCheck).toMatchObject({ state: "ok" });
+    expect(saved).toHaveLength(1);
+    expect((saved[0] as any).tracker.preset).toBe("jira");
   });
 
   // Pins `setupHome`'s wiring: without it, `discoverMcpServers` silently falls back to
@@ -156,6 +192,7 @@ describe("the setup routes answer without an engine", () => {
     expect(saved).toHaveLength(2);
     expect((saved[1] as any).forge).toEqual({ preset: "bitbucket", username: "me@example.com" });
   });
+
 });
 
 describe("the setup test buttons", () => {

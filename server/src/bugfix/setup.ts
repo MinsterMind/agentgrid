@@ -41,8 +41,12 @@ export function buildSetupReport(input: {
   env: NodeJS.ProcessEnv;
   wired: boolean;
   roleResolves: boolean;
+  /** Whether `<preset>.md` exists under the tracker presets directory. Undefined (no host
+   *  wired one in) is treated as "can't tell, assume fine" — the check degrades to what it
+   *  always tested rather than blocking every caller that hasn't been updated. */
+  trackerPresetResolves?: (preset: string) => boolean;
 }): SetupReport {
-  const { cfg, cfgError, cfgExists, discovery, env, wired, roleResolves } = input;
+  const { cfg, cfgError, cfgExists, discovery, env, wired, roleResolves, trackerPresetResolves } = input;
   const checks: Check[] = [];
 
   if (cfgError) {
@@ -59,7 +63,18 @@ export function buildSetupReport(input: {
 
   const tracker = cfg?.tracker;
   if (tracker?.toolPrefix) {
-    checks.push({ id: "tracker", state: "ok", blocks: true, detail: `Tracker configured (${tracker.preset}, tools ${tracker.toolPrefix}).` });
+    const presetResolves = trackerPresetResolves ? trackerPresetResolves(tracker.preset) : true;
+    if (presetResolves) {
+      checks.push({ id: "tracker", state: "ok", blocks: true, detail: `Tracker configured (${tracker.preset}, tools ${tracker.toolPrefix}).` });
+    } else {
+      // The exact failure C1 closes: `toolPrefix` alone used to be enough to report ok, so a
+      // preset with no prompt file (an unset default, a typo) sailed through Settings green and
+      // only surfaced as an ENOENT the moment a bug fix actually asked the tracker something.
+      checks.push({ id: "tracker", state: "broken", blocks: true,
+        detail: `Tracker preset "${tracker.preset}" has no prompt file in presets/tracker/ — ` +
+          `"${tracker.preset}.md" does not exist there. Set tracker.preset to one that does, e.g. "jira".`,
+        fix: { kind: "field", value: "tracker.preset" } });
+    }
   } else {
     const first = discovery.importable[0];
     checks.push({ id: "tracker", state: "missing", blocks: true,

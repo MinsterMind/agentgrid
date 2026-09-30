@@ -28,6 +28,10 @@ export interface AppDeps {
   integrations?: IntegrationsStore;
   /** Whether the bugfix role resolves (from the app's defaults or ~/.agentgrid/roles). */
   roleResolves?: () => boolean;
+  /** Whether a tracker preset has a prompt file to resolve (`presets/tracker/<preset>.md`).
+   *  Without this the "tracker" check can only see `toolPrefix` and reports ok on a preset that
+   *  does not exist, which is exactly how a fresh Import used to end in a first-run ENOENT. */
+  trackerPresetResolves?: (preset: string) => boolean;
   /** A repo whose `.mcp.json` is worth scanning, when one is known. */
   setupRepo?: () => string | undefined;
   /** The home directory to scan for Claude Code's MCP configuration. Defaults to the real
@@ -251,7 +255,8 @@ export function createApp(deps: AppDeps) {
     const cfgExists = await store_.exists();
     const discovery = await discoverMcpServers(scanOptions());
     return buildSetupReport({ cfg, ...(cfgError ? { cfgError } : {}), cfgExists, discovery,
-      env: process.env, wired: !!wired, roleResolves: deps.roleResolves?.() ?? true });
+      env: process.env, wired: !!wired, roleResolves: deps.roleResolves?.() ?? true,
+      trackerPresetResolves: deps.trackerPresetResolves });
   };
 
   app.get("/api/setup", wrap(async (_req, res) => res.json(await setupReport())));
@@ -261,8 +266,11 @@ export function createApp(deps: AppDeps) {
     const discovery = await discoverMcpServers(scanOptions());
     const server = discovery.importable.find(s => s.name === name);
     if (!server) throw new BadRequest(`no importable MCP server named "${name}" was found in your Claude Code configuration`);
+    // "jira" is the only preset shipped today (`presets/tracker/jira.md`); defaulting a fresh
+    // import to anything else (the old default was "mcp") writes a preset with no prompt file,
+    // and every tracker call then fails with ENOENT the moment the engine is wired.
     const saved = await integrationsStore().write(cur => ({
-      tracker: { preset: cur.tracker?.preset ?? "mcp", toolPrefix: `mcp__${server.name}`,
+      tracker: { preset: cur.tracker?.preset ?? "jira", toolPrefix: `mcp__${server.name}`,
                  mcpServers: { [server.name]: server.definition } },
     }));
     deps.onConfigSaved?.(saved);
