@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { describeJsonParseError } from "./json-parse-error.js";
 
 export interface McpServerFound {
   name: string;
@@ -25,7 +26,9 @@ async function readJson(file: string, problems: string[]): Promise<any | undefin
     return undefined;
   }
   try { return JSON.parse(raw); }
-  catch (err) { problems.push(`${file} could not be parsed: ${(err as Error).message}`); return undefined; }
+  // Never surface the raw parser message here: it may embed a source excerpt straight out of a
+  // credential-bearing MCP definition (see `describeJsonParseError`).
+  catch (err) { problems.push(`${file} could not be parsed: ${describeJsonParseError(err)}`); return undefined; }
 }
 
 function collect(into: Map<string, McpServerFound>, servers: unknown, origin: McpServerFound["origin"], originDetail?: string): void {

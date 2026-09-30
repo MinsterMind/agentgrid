@@ -252,7 +252,11 @@ export function createApp(deps: AppDeps) {
     const store_ = integrationsStore();
     let cfg: Integrations | null = null; let cfgError: string | undefined;
     try { cfg = await store_.read(); } catch (err) { cfgError = (err as Error).message; }
-    const cfgExists = await store_.exists();
+    // `exists()` now throws for the same "present but unreadable" case `read()` just caught
+    // above — only ask it when `read()` didn't already answer that question, so a broken file
+    // doesn't turn into an unhandled rejection here.
+    let cfgExists = false;
+    if (!cfgError) { try { cfgExists = await store_.exists(); } catch (err) { cfgError = (err as Error).message; } }
     const discovery = await discoverMcpServers(scanOptions());
     return buildSetupReport({ cfg, ...(cfgError ? { cfgError } : {}), cfgExists, discovery,
       env: process.env, wired: !!wired, roleResolves: deps.roleResolves?.() ?? true,
@@ -298,7 +302,19 @@ export function createApp(deps: AppDeps) {
     return res.json(status);
   }));
 
-  app.get("/api/integrations", wrap(async (_req, res) => res.json(await integrationsStore().read())));
+  // Spec §8: "the UI sees a server's name, transport and URL, not its headers." A definition in
+  // tracker.mcpServers can carry a credential (a bearer token, a header) copied verbatim from
+  // Claude Code's own config — never send it to the browser. The UI's only uses of this route are
+  // projectRepos and forge (username included; forges never store a secret here, unlike a tracker
+  // MCP definition), plus tracker.preset/toolPrefix for display.
+  app.get("/api/integrations", wrap(async (_req, res) => {
+    const cfg = await integrationsStore().read();
+    res.json({
+      projectRepos: cfg.projectRepos,
+      ...(cfg.forge ? { forge: cfg.forge } : {}),
+      ...(cfg.tracker ? { tracker: { preset: cfg.tracker.preset, toolPrefix: cfg.tracker.toolPrefix } } : {}),
+    });
+  }));
 
   const MERGE_POLICIES = ["ask", "auto"] as const;
   const MERGE_METHODS = ["squash", "merge", "rebase"] as const;

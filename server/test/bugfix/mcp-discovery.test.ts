@@ -53,6 +53,21 @@ describe("discoverMcpServers", () => {
     expect(d.problems[0]).toMatch(/\.claude\.json/);
   });
 
+  // I4: V8's JSON.parse error can embed a source excerpt of the file it failed to parse — and
+  // this is Claude Code's own MCP config, which can carry a bearer token in a server's headers.
+  // That excerpt must never reach `discovery.problems`, which the Settings screen renders verbatim.
+  it("a malformed file's parse error never echoes a credential from its own contents", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agentgrid-mcp-secret-"));
+    await writeFile(path.join(home, ".claude.json"),
+      '{"mcpServers":{"x":{"headers":{"Authorization":Bearer sk-SECRET123}}}}');
+    const d = await discoverMcpServers({ home });
+    expect(d.problems).toHaveLength(1);
+    expect(d.problems[0]).not.toContain("sk-SECRET123");
+    expect(d.problems[0]).not.toContain("Authorization");
+    expect(d.problems[0]).not.toContain("Bearer");
+    expect(d.problems[0]).toMatch(/\.claude\.json/);
+  });
+
   it("a missing ~/.claude is nothing found, not an error", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "agentgrid-empty-"));
     await expect(discoverMcpServers({ home })).resolves.toEqual({ importable: [], accountOnly: [], problems: [] });

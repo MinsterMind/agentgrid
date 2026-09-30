@@ -145,7 +145,21 @@ describe("bug task routes", () => {
     const tracker = { preset: "jira", toolPrefix: "mcp__jira__", mcpServers: { jira: { command: "x" } }, hints: "h" };
     const saved = await request(app).put("/api/integrations").send({ tracker }).expect(200);
     expect(saved.body.tracker).toEqual(tracker);
-    expect((await request(app).get("/api/integrations")).body.tracker).toEqual(tracker);
+    // GET redacts mcpServers/hints (I5, spec §8: "the UI sees a server's name, transport and
+    // URL, not its headers") — only PUT's own response echoes the full saved config back.
+    expect((await request(app).get("/api/integrations")).body.tracker).toEqual({ preset: "jira", toolPrefix: "mcp__jira__" });
+  });
+
+  // I5: a definition in tracker.mcpServers can carry a credential copied verbatim from Claude
+  // Code's own config. GET /api/integrations must never hand it to the browser.
+  it("GET /api/integrations never returns a tracker definition's headers", async () => {
+    const tracker = { preset: "jira", toolPrefix: "mcp__jira__",
+      mcpServers: { jira: { type: "http", url: "https://x.invalid", headers: { Authorization: "Bearer sk-secret" } } } };
+    await request(app).put("/api/integrations").send({ tracker }).expect(200);
+    const res = await request(app).get("/api/integrations").expect(200);
+    expect(JSON.stringify(res.body)).not.toContain("Bearer sk-secret");
+    expect(JSON.stringify(res.body)).not.toContain("headers");
+    expect(res.body.tracker).toEqual({ preset: "jira", toolPrefix: "mcp__jira__" });
   });
 
   it("returns 501 for every bug route when the feature is not wired", async () => {

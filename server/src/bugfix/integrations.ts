@@ -1,6 +1,7 @@
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { Conflict } from "../store/store.js";
+import { describeJsonParseError } from "./json-parse-error.js";
 
 export interface TrackerConfig { preset: string; toolPrefix: string; mcpServers: Record<string, unknown>; hints?: string }
 export interface ForgeConfig { preset: "github" | "gitlab" | "bitbucket" | "custom"; username?: string; getPr?: string; merge?: string; map?: Record<string, string> }
@@ -45,12 +46,25 @@ export class IntegrationsStore {
    * catch it and say so; `write()` has always refused to merge onto a corrupt base.
    */
   async read(): Promise<Integrations> {
-    const raw = await readFile(this.file, "utf8").catch(() => "");
+    let raw: string;
+    try { raw = await readFile(this.file, "utf8"); }
+    catch (err) {
+      // ENOENT is normal — see the doc comment above. Anything else (EACCES, EISDIR: the file
+      // is there but this process could not read it) used to be swallowed the same way, which
+      // is how a present-but-unreadable config ended up reporting "missing" ("Saving here
+      // creates it") instead of "broken" — and Saving then overwrote it. Say what actually
+      // happened instead.
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return { projectRepos: {} };
+      throw new Conflict(`integrations.json could not be read (${(err as Error).message}). ` +
+        `Fix its permissions, then try again.`);
+    }
     if (!raw) return { projectRepos: {} };
     let parsed: Partial<Integrations>;
     try { parsed = JSON.parse(raw); }
     catch (err) {
-      throw new Conflict(`integrations.json is corrupt (${(err as Error).message}). ` +
+      // Never interpolate the raw parser message: it can embed a source excerpt straight out
+      // of a credential this same file stores (see `describeJsonParseError`).
+      throw new Conflict(`integrations.json is corrupt (${describeJsonParseError(err)}). ` +
         `Fix or remove ${this.file}, then try again.`);
     }
     return { ...parsed, projectRepos: parsed.projectRepos ?? {} };
@@ -80,9 +94,15 @@ export class IntegrationsStore {
   }
 
   /** Whether the file is actually there — distinct from `read()`'s empty-on-missing result,
-   *  which cannot tell "no file yet" from "a file with nothing in it". */
+   *  which cannot tell "no file yet" from "a file with nothing in it". A present-but-unreadable
+   *  file (EACCES, EISDIR) is not "missing" either — it throws, same as `read()`, rather than
+   *  quietly reporting false and letting a caller (the "config-file" check) call it "missing"
+   *  and offer to overwrite it. */
   async exists(): Promise<boolean> {
-    return readFile(this.file, "utf8").then(() => true, () => false);
+    return readFile(this.file, "utf8").then(() => true, (err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") return false;
+      throw new Conflict(`integrations.json could not be read (${err.message}). Fix its permissions, then try again.`);
+    });
   }
 
   async rememberRepo(project: string, repo: string): Promise<void> {
