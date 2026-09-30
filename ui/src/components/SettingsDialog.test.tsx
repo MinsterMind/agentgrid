@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SettingsDialog } from "./SettingsDialog";
 import { api } from "../api";
@@ -141,6 +141,19 @@ describe("SettingsDialog", () => {
     const body = put.mock.calls[0][0] as { forge?: { preset?: string; username?: string } };
     if (body.forge) expect(body.forge).toEqual({ preset: "bitbucket", username: "me@example.com" });
     else expect(body.forge).toBeUndefined();
+  });
+
+  it("entering a tracker by hand sends exactly the pasted preset and toolPrefix, no extra keys", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report());
+    const put = vi.spyOn(api, "putIntegrations").mockResolvedValue({ projectRepos: {} });
+    render(<SettingsDialog onClose={() => {}} />);
+    await userEvent.click(await screen.findByRole("button", { name: /enter a tracker by hand/i }));
+    const box = await screen.findByPlaceholderText(/toolPrefix/);
+    fireEvent.change(box, { target: { value: '{"preset":"jira","toolPrefix":"mcp__x"}' } });
+    await userEvent.click(screen.getByRole("button", { name: /save/i }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    const sent = put.mock.calls[0][0] as { tracker?: unknown };
+    expect(sent.tracker).toEqual({ preset: "jira", toolPrefix: "mcp__x" });
   });
 
   it("can be dismissed from the header, without scrolling to the bottom", async () => {

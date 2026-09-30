@@ -167,10 +167,13 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             <div className="row">
               <button className="btn" disabled={busy} onClick={() => void run(load)}>Detect</button>
               <button className="btn" disabled={busy} onClick={() => void run(async () => setTrackerTest(await api.testTracker()))}>Test</button>
-              <button className="btn" onClick={() => setPasted(pasted === null ? "" : null)}>Paste a definition</button>
+              <button className="btn" onClick={() => setPasted(pasted === null ? "" : null)}>Enter a tracker by hand</button>
             </div>
-            {pasted !== null && <textarea className="paste" value={pasted} onChange={e => setPasted(e.target.value)}
-              placeholder={'{"preset":"jira","toolPrefix":"mcp__atlassian","mcpServers":{"atlassian":{"type":"http","url":"…"}}}'} />}
+            {pasted !== null && <>
+              <div className="hint">Not in the list above? Claude Code may not have connected it yet — name its preset and tool prefix directly.</div>
+              <textarea className="paste" value={pasted} onChange={e => setPasted(e.target.value)}
+                placeholder={'{"preset":"jira","toolPrefix":"mcp__claude_ai_Atlassian"}'} />
+            </>}
             {trackerTest && <div className={trackerTest.ok ? "ok" : "err"}>{trackerTest.message}</div>}
           </section>
 
