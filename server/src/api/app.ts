@@ -263,7 +263,11 @@ export function createApp(deps: AppDeps) {
       trackerPresetResolves: deps.trackerPresetResolves });
   };
 
-  app.get("/api/setup", wrap(async (_req, res) => res.json(await setupReport())));
+  // A hand-edited config on a running-but-unwired server (the README tells people to edit the
+  // file directly) must come alive the next time Settings is opened, without ever re-wiring an
+  // engine that already exists — `maybeWire` is memoised and absent→present-once, so this is
+  // just "try once more before answering" rather than a second wiring path.
+  app.get("/api/setup", wrap(async (_req, res) => { await maybeWire(); res.json(await setupReport()); }));
 
   app.post("/api/setup/import", wrap(async (req, res) => {
     const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";

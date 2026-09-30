@@ -193,6 +193,41 @@ describe("the setup routes answer without an engine", () => {
     expect((saved[1] as any).forge).toEqual({ preset: "bitbucket", username: "me@example.com" });
   });
 
+  // I3: the new README tells people editing is fine ("Editing the file directly"). A valid
+  // config hand-written onto a running-but-unwired server must not sit there reporting green
+  // while the bug-fix routes still 501 — the original two-session failure, reproduced. Writing
+  // straight through `integrations` (not the PUT route) is the point: nothing told the running
+  // process about this write, so only `GET /api/setup` calling `maybeWire()` itself can notice.
+  it("wires a hand-edited config the next time GET /api/setup is called, without going through the route", async () => {
+    let calls = 0;
+    // Mirrors production's `onConfigured` (start.ts:197 -> wireBugFix): it re-reads the config
+    // and returns null when there is no tracker to build one from. A stub that wires
+    // unconditionally would report `wired: true` on the very first GET against an empty home,
+    // which is what made this test assert against a state the server can never be in.
+    let integrationsRef!: { read: () => Promise<{ tracker?: unknown }> };
+    const onConfigured: AppDeps["onConfigured"] = async () => {
+      if (!(await integrationsRef.read()).tracker) return null;
+      calls++; return fakeWiredBugsWithStore();
+    };
+    const { app, integrations } = await unwiredApp({ onConfigured });
+    integrationsRef = integrations;
+
+    const before = await request(app).get("/api/setup").expect(200);
+    expect(before.body.wired).toBe(false);
+    expect(calls).toBe(0);
+    await request(app).get("/api/bugtasks").expect(501);   // nothing wired yet
+
+    await integrations.write({ tracker: { preset: "jira", toolPrefix: "mcp__x", mcpServers: {} }, forge: { preset: "github" } });
+
+    const after = await request(app).get("/api/setup").expect(200);
+    expect(after.body.wired).toBe(true);
+    await request(app).get("/api/bugtasks").expect(200);   // no longer 501
+    expect(calls).toBe(1);
+
+    // Still never a re-wire: a second GET must not build again.
+    await request(app).get("/api/setup").expect(200);
+    expect(calls).toBe(1);
+  });
 });
 
 describe("the setup test buttons", () => {
