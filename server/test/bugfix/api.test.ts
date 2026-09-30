@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import request from "supertest";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Store } from "../../src/store/store.js";
@@ -144,18 +144,23 @@ describe("bug task routes", () => {
 
     const tracker = { preset: "jira", toolPrefix: "mcp__jira__", mcpServers: { jira: { command: "x" } }, hints: "h" };
     const saved = await request(app).put("/api/integrations").send({ tracker }).expect(200);
-    // PUT redacts its response exactly as GET does (I5, spec §8: "the UI sees a server's name,
-    // transport and URL, not its headers"). This assertion previously demanded the full saved
-    // config back — see the I5 test below for why that was a hole, not a feature.
+    // `mcpServers` in the request body is an unknown key to this route now (task 2 dropped it
+    // from TrackerConfig) and is stripped before the write ever happens — same as any other
+    // unrecognised field. This does not exercise `redactIntegrations` against a *stored*
+    // credential; see "GET /api/integrations never echoes a legacy tracker.mcpServers
+    // credential" below for that.
     expect(saved.body.tracker).toEqual({ preset: "jira", toolPrefix: "mcp__jira__" });
     expect((await request(app).get("/api/integrations")).body.tracker).toEqual({ preset: "jira", toolPrefix: "mcp__jira__" });
     // The full config is still on disk — redacting the response is not dropping the write.
     expect((await request(app).get("/api/setup").expect(200)).status).toBe(200);
   });
 
-  // I5: a definition in tracker.mcpServers can carry a credential copied verbatim from Claude
-  // Code's own config. GET /api/integrations must never hand it to the browser.
-  it("GET /api/integrations never returns a tracker definition's headers", async () => {
+  // I5, as it stands post-task-2: PUT strips an incoming `mcpServers` before the write, so these
+  // two prove input-key stripping — a request carrying `mcpServers` never gets it echoed back —
+  // not that a *stored* credential is redacted. See the next test for that: a 0.4.0
+  // integrations.json can still have tracker.mcpServers sitting on disk, and GET must never
+  // echo it either.
+  it("GET /api/integrations never echoes a tracker.mcpServers sent on a PUT (it's an unknown key, stripped before the write)", async () => {
     const tracker = { preset: "jira", toolPrefix: "mcp__jira__",
       mcpServers: { jira: { type: "http", url: "https://x.invalid", headers: { Authorization: "Bearer sk-secret" } } } };
     await request(app).put("/api/integrations").send({ tracker }).expect(200);
@@ -165,9 +170,28 @@ describe("bug task routes", () => {
     expect(res.body.tracker).toEqual({ preset: "jira", toolPrefix: "mcp__jira__" });
   });
 
+  // GET must never echo a legacy tracker.mcpServers credential that genuinely made it onto
+  // disk — a 0.4.0 integrations.json, before task 2 removed the field from TrackerConfig and
+  // the route stopped accepting it. Seeding the file directly (not via PUT) is what actually
+  // exercises redactIntegrations against a *stored* credential, which is what I5 always meant.
+  it("GET /api/integrations never echoes a legacy tracker.mcpServers credential still on disk", async () => {
+    await writeFile(path.join(home, "integrations.json"), JSON.stringify({
+      tracker: { preset: "jira", toolPrefix: "mcp__jira__",
+        mcpServers: { jira: { type: "http", url: "https://x.invalid", headers: { Authorization: "Bearer sk-secret" } } } },
+      projectRepos: {},
+    }));
+    const res = await request(app).get("/api/integrations").expect(200);
+    expect(JSON.stringify(res.body)).not.toContain("Bearer sk-secret");
+    expect(JSON.stringify(res.body)).not.toContain("headers");
+    expect(JSON.stringify(res.body)).not.toContain("mcpServers");
+    expect(res.body.tracker).toEqual({ preset: "jira", toolPrefix: "mcp__jira__" });
+  });
+
   // I5, the other half: a Save that touches only `forge` merges onto the *stored* config, so
   // echoing `write()`'s result handed the browser a `tracker.mcpServers` it never had — bearer
   // token and headers included — reopening by PUT exactly the path the GET redaction closed.
+  // (Here the credential is still one PUT sent, since PUT's own stripping already covers the
+  // "never sent" case above — this is about a save that never touched `tracker` at all.)
   it("PUT /api/integrations never returns a tracker definition's headers, not even ones it did not write", async () => {
     const tracker = { preset: "jira", toolPrefix: "mcp__jira__",
       mcpServers: { jira: { type: "http", url: "https://x.invalid", headers: { Authorization: "Bearer sk-secret" } } } };

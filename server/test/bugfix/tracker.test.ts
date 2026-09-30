@@ -58,8 +58,12 @@ describe("mcpTracker", () => {
   // `allowedTools` naming the prefix is what connects the server — see tracker.ts's `ask`.
   it("passes the tool prefix in allowedTools and no mcpServers at all", async () => {
     const seen: any[] = [];
-    const t = mcpTracker({ preset: "jira", toolPrefix: "mcp__claude_ai_Atlassian" }, presets,
-      async (opts) => { seen.push(opts); return "[]"; });
+    // A truthy dummy `mcpServers`, forced onto TrackerConfig with a cast (the field no longer
+    // exists on the real type): against the pre-task-2 source, which read `cfg.mcpServers` and
+    // forwarded it, this makes the assertion below fail for real — a fixture that simply omits
+    // the key can't, since `cfg.mcpServers` is `undefined` either way at the JS level.
+    const cfg = { preset: "jira", toolPrefix: "mcp__claude_ai_Atlassian", mcpServers: { x: 1 } } as unknown as TrackerConfig;
+    const t = mcpTracker(cfg, presets, async (opts) => { seen.push(opts); return "[]"; });
     await t.listMyIssues();
     expect(seen[0].allowedTools).toEqual(["mcp__claude_ai_Atlassian"]);
     expect(seen[0].mcpServers).toBeUndefined();

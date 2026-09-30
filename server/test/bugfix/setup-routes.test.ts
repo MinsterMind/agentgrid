@@ -219,7 +219,7 @@ describe("the setup routes answer without an engine", () => {
     expect(calls).toBe(0);
     await request(app).get("/api/bugtasks").expect(501);   // nothing wired yet
 
-    await integrations.write({ tracker: { preset: "jira", toolPrefix: "mcp__x", mcpServers: {} }, forge: { preset: "github" } });
+    await integrations.write({ tracker: { preset: "jira", toolPrefix: "mcp__x" }, forge: { preset: "github" } });
 
     const after = await request(app).get("/api/setup").expect(200);
     expect(after.body.wired).toBe(true);
