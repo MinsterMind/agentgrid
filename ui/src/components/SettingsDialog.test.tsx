@@ -71,11 +71,70 @@ describe("SettingsDialog", () => {
     expect(screen.queryByText(/restart/i)).toBeNull();
   });
 
+  // The saved forge now comes from `GET /api/integrations`, not from parsing the "forge"
+  // check's prose (I2) — so this pins the preset through the config, which is what actually
+  // decides which merge methods the adapter supports.
   it("omits rebase from the merge methods for bitbucket", async () => {
     vi.spyOn(api, "getSetup").mockResolvedValue(report({ checks: [{ id: "forge", state: "ok", detail: "Forge: bitbucket.", blocks: true }] }));
+    vi.spyOn(api, "getIntegrations").mockResolvedValue({ projectRepos: {}, forge: { preset: "bitbucket", username: "me@example.com" } });
     render(<SettingsDialog onClose={() => {}} />);
     await screen.findByText(/Forge: bitbucket/);
-    expect(screen.queryByText(/rebase/i)).toBeNull();
+    await waitFor(() => expect(screen.queryByText(/rebase/i)).toBeNull());
+  });
+
+  // I2: a gitlab or custom forge is a valid `FORGE_PRESETS` value that the select cannot offer.
+  // Opening Settings and pressing Save for an unrelated reason (pasting a tracker definition,
+  // say) must not rewrite it to github. The old code inferred the preset by regex over the
+  // "forge" check's prose and fell back to "github", then sent `forge` on every Save.
+  it("does not rewrite a gitlab forge when Save is pressed without touching the forge", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report({
+      checks: [{ id: "forge", state: "ok", detail: "Forge: gitlab.", blocks: true }],
+    }));
+    vi.spyOn(api, "getIntegrations").mockResolvedValue({ projectRepos: {}, forge: { preset: "gitlab", username: "someone" } });
+    const put = vi.spyOn(api, "putIntegrations").mockResolvedValue({ projectRepos: {} });
+    render(<SettingsDialog onClose={() => {}} />);
+    // Wait for the saved forge to land, or the "nothing saved yet" branch would legitimately
+    // send one and this would assert against the wrong state.
+    expect(await screen.findByText(/gitlab \(saved\)/)).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    const body = put.mock.calls[0][0] as { forge?: { preset?: string } };
+    // Either shape is correct: say nothing about the forge, or preserve it exactly. What must
+    // never happen is `forge: { preset: "github" }`, which also drops `username`.
+    if (body.forge) expect(body.forge.preset).toBe("gitlab");
+    else expect(body.forge).toBeUndefined();
+  });
+
+  // The companion to the above: a bitbucket user who edits nothing must keep their username,
+  // and a fresh machine with no forge saved must still be able to create one.
+  it("still sends a forge on a machine that has none saved yet", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report());
+    vi.spyOn(api, "getIntegrations").mockResolvedValue({ projectRepos: {} });
+    const put = vi.spyOn(api, "putIntegrations").mockResolvedValue({ projectRepos: {} });
+    render(<SettingsDialog onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByRole("combobox")).toBeTruthy());
+    await userEvent.click(screen.getByRole("button", { name: /save/i }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    expect((put.mock.calls[0][0] as { forge?: { preset?: string } }).forge).toEqual({ preset: "github" });
+  });
+
+  it("re-sends a saved bitbucket username the user never touched", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report({
+      checks: [{ id: "forge", state: "ok", detail: "Forge: bitbucket.", blocks: true }],
+    }));
+    vi.spyOn(api, "getIntegrations").mockResolvedValue({ projectRepos: {}, forge: { preset: "bitbucket", username: "me@example.com" } });
+    const put = vi.spyOn(api, "putIntegrations").mockResolvedValue({ projectRepos: {} });
+    render(<SettingsDialog onClose={() => {}} />);
+    // The input is seeded from the saved config, not left empty.
+    await waitFor(() => expect((screen.getByPlaceholderText(/Atlassian account email/) as HTMLInputElement).value).toBe("me@example.com"));
+
+    await userEvent.click(screen.getByRole("button", { name: /save/i }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    const body = put.mock.calls[0][0] as { forge?: { preset?: string; username?: string } };
+    if (body.forge) expect(body.forge).toEqual({ preset: "bitbucket", username: "me@example.com" });
+    else expect(body.forge).toBeUndefined();
   });
 
   it("surfaces a blocking check that has no dedicated section, e.g. a corrupt config file", async () => {

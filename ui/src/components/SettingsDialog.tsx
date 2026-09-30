@@ -40,23 +40,48 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [trackerTest, setTrackerTest] = useState<{ ok: boolean; message: string } | null>(null);
   const [forgeTest, setForgeTest] = useState<{ ok: boolean; message: string } | null>(null);
-  // `undefined` means "the user hasn't touched the select yet" — until they do, it follows
-  // whatever the "forge" check says is currently saved (see `preset` below), computed on every
-  // render rather than seeded via an effect, so there is no frame where a just-loaded bitbucket
-  // report still shows github's merge methods.
-  const [presetOverride, setPresetOverride] = useState<"github" | "bitbucket" | undefined>(undefined);
+  // `undefined` means "the user hasn't touched the select yet". Until they do, it follows the
+  // forge actually saved in `integrations.json` (`savedForge` below) — never a value parsed out
+  // of a check's prose. I2: this used to regex `/^Forge: (github|bitbucket)\./` over the
+  // "forge" check's sentence and fall back to "github", so a gitlab or custom forge (both are
+  // valid `FORGE_PRESETS`) read as github, and any Save rewrote it — `username` included, since
+  // the patch replaces the whole `forge` object. A prose string is not structured data: reword
+  // the sentence, as this branch already did once to the sibling check, and it silently breaks.
+  const [presetOverride, setPresetOverride] = useState<string | undefined>(undefined);
   const [username, setUsername] = useState("");
+  // The saved forge, straight from `GET /api/integrations` (`forge` survives that route's
+  // redaction — only `tracker.mcpServers` is stripped). `loaded` distinguishes "no forge is
+  // saved" from "we have not been told yet", which decides whether Save may send one at all.
+  const [savedForge, setSavedForge] = useState<{ preset: string; username?: string } | undefined>(undefined);
+  const [forgeLoaded, setForgeLoaded] = useState(false);
   const [pasted, setPasted] = useState<string | null>(null);
   const [saved, setSaved] = useState<"live" | "restart" | null>(null);
   const [projectRepos, setProjectRepos] = useState<ProjectRepos>({});
 
   const load = () => api.getSetup().then(r => { setReport(r); setErr(null); }).catch(e => setErr((e as Error).message));
   useEffect(() => { void load(); }, []);
-  useEffect(() => { api.getIntegrations().then(i => setProjectRepos(i.projectRepos ?? {})).catch(() => {}); }, []);
+  useEffect(() => {
+    api.getIntegrations().then(i => {
+      setProjectRepos(i.projectRepos ?? {});
+      setSavedForge(i.forge);
+      // Seed the email input from what is saved, so a bitbucket user who opens Settings and
+      // saves for an unrelated reason re-sends their own username rather than an empty string.
+      if (i.forge?.username) setUsername(i.forge.username);
+      setForgeLoaded(true);
+    }).catch(() => {});
+  }, []);
 
-  const forgeCheck = report?.checks.find(c => c.id === "forge");
-  const detectedPreset = forgeCheck?.state === "ok" ? /^Forge: (github|bitbucket)\./.exec(forgeCheck.detail)?.[1] as "github" | "bitbucket" | undefined : undefined;
-  const preset = presetOverride ?? detectedPreset ?? "github";
+  // A preset the select cannot offer (gitlab, custom — Phase 2) is still shown as what is
+  // saved, so the dialog never displays a forge the user does not have.
+  const SELECTABLE = ["github", "bitbucket"];
+  const preset = presetOverride ?? savedForge?.preset ?? "github";
+
+  // Send `forge` only when the user actually changed it: touching the select, editing the
+  // username, or there being no saved forge to preserve in the first place (a fresh machine,
+  // where the whole point of Save is to create one). While the saved forge is still loading we
+  // send nothing — overwriting on a race is the very failure this closes.
+  const forgeDirty = presetOverride !== undefined
+    || (forgeLoaded && (!savedForge || username !== (savedForge.username ?? "")));
 
   const run = async (fn: () => Promise<void>) => { setBusy(true); try { await fn(); } catch (e) { setErr((e as Error).message); } finally { setBusy(false); } };
 
@@ -74,7 +99,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     // while changing an already-running config needs a restart (nothing is rebuilt under
     // in-flight tasks). Read it before the response replaces the report.
     const wasWired = report?.wired ?? false;
-    const body: Record<string, unknown> = { forge: { preset, ...(preset === "bitbucket" ? { username } : {}) } };
+    const body: Record<string, unknown> = {};
+    if (forgeDirty) body.forge = { preset, ...(preset === "bitbucket" ? { username } : {}) };
     if (pasted !== null) body.tracker = JSON.parse(pasted);
     await api.putIntegrations(body as never);
     await load();
@@ -120,7 +146,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             <h4>Forge</h4>
             {check("forge") && <CheckRow check={check("forge")!} />}
             <div className="row">
-              <select value={preset} onChange={e => setPresetOverride(e.target.value as "github" | "bitbucket")}>
+              <select value={preset} onChange={e => setPresetOverride(e.target.value)}>
+                {!SELECTABLE.includes(preset) && <option value={preset}>{preset} (saved)</option>}
                 <option value="github">github</option>
                 <option value="bitbucket">bitbucket</option>
               </select>
