@@ -131,7 +131,7 @@ export class BugFixEngine {
       const auth = await this.deps.forge.authStatus();
       if (!auth.ok) problems.push(`forge not authenticated: ${auth.message}`);
     }
-    try { this.deps.store.getRole(this.role); } catch { problems.push(`role "${this.role}" is missing from ~/.agentgrid/roles`); }
+    try { this.deps.store.getRole(this.role); } catch { problems.push(`the "${this.role}" role could not be resolved — it ships with AgentGrid, so this usually means a broken install`); }
     return { ok: problems.length === 0, problems };
   }
 

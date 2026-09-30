@@ -144,8 +144,42 @@ describe("bug task routes", () => {
 
     const tracker = { preset: "jira", toolPrefix: "mcp__jira__", mcpServers: { jira: { command: "x" } }, hints: "h" };
     const saved = await request(app).put("/api/integrations").send({ tracker }).expect(200);
-    expect(saved.body.tracker).toEqual(tracker);
-    expect((await request(app).get("/api/integrations")).body.tracker).toEqual(tracker);
+    // PUT redacts its response exactly as GET does (I5, spec §8: "the UI sees a server's name,
+    // transport and URL, not its headers"). This assertion previously demanded the full saved
+    // config back — see the I5 test below for why that was a hole, not a feature.
+    expect(saved.body.tracker).toEqual({ preset: "jira", toolPrefix: "mcp__jira__" });
+    expect((await request(app).get("/api/integrations")).body.tracker).toEqual({ preset: "jira", toolPrefix: "mcp__jira__" });
+    // The full config is still on disk — redacting the response is not dropping the write.
+    expect((await request(app).get("/api/setup").expect(200)).status).toBe(200);
+  });
+
+  // I5: a definition in tracker.mcpServers can carry a credential copied verbatim from Claude
+  // Code's own config. GET /api/integrations must never hand it to the browser.
+  it("GET /api/integrations never returns a tracker definition's headers", async () => {
+    const tracker = { preset: "jira", toolPrefix: "mcp__jira__",
+      mcpServers: { jira: { type: "http", url: "https://x.invalid", headers: { Authorization: "Bearer sk-secret" } } } };
+    await request(app).put("/api/integrations").send({ tracker }).expect(200);
+    const res = await request(app).get("/api/integrations").expect(200);
+    expect(JSON.stringify(res.body)).not.toContain("Bearer sk-secret");
+    expect(JSON.stringify(res.body)).not.toContain("headers");
+    expect(res.body.tracker).toEqual({ preset: "jira", toolPrefix: "mcp__jira__" });
+  });
+
+  // I5, the other half: a Save that touches only `forge` merges onto the *stored* config, so
+  // echoing `write()`'s result handed the browser a `tracker.mcpServers` it never had — bearer
+  // token and headers included — reopening by PUT exactly the path the GET redaction closed.
+  it("PUT /api/integrations never returns a tracker definition's headers, not even ones it did not write", async () => {
+    const tracker = { preset: "jira", toolPrefix: "mcp__jira__",
+      mcpServers: { jira: { type: "http", url: "https://x.invalid", headers: { Authorization: "Bearer sk-secret" } } } };
+    await request(app).put("/api/integrations").send({ tracker }).expect(200);
+
+    // Touches `forge` alone: the stored tracker is merged in by `write()` and must stay on disk.
+    const saved = await request(app).put("/api/integrations").send({ forge: { preset: "github" } }).expect(200);
+
+    expect(JSON.stringify(saved.body)).not.toContain("Bearer sk-secret");
+    expect(JSON.stringify(saved.body)).not.toContain("headers");
+    expect(saved.body.tracker).toEqual({ preset: "jira", toolPrefix: "mcp__jira__" });
+    expect(saved.body.forge).toEqual({ preset: "github" });
   });
 
   it("returns 501 for every bug route when the feature is not wired", async () => {
@@ -294,4 +328,11 @@ describe("approve honours a merge method, address-comments, and dismiss", () => 
     await request(bare).post("/api/bugtasks/bt1/address-comments").expect(501);
     await request(bare).delete("/api/bugtasks/bt1").expect(501);
   });
+});
+
+it("GET /api/setup reports ready once tracker, forge and role are in place", async () => {
+  const m = await appAtMergeGate();            // the existing fully-wired harness
+  const res = await request(m.app).get("/api/setup").expect(200);
+  expect(res.body.wired).toBe(true);
+  expect(res.body.checks.find((c: { id: string }) => c.id === "tracker").state).toBe("ok");
 });

@@ -150,7 +150,10 @@ email and reports whether the token is visible to the server process,
 with the export-then-restart note. **Test** calls `authStatus` and names
 the account. `rebase` is omitted from the merge methods for Bitbucket.
 
-**Repos.** The project→repo map, read-only with a clear action per row.
+**Repos.** The project→repo map, read-only. No action per row: no
+route accepts removing a remembered repo (`PUT /api/integrations`
+takes only `tracker` and `forge`), and the UI does not offer a button
+the server has nowhere to send. A removal route is follow-up work.
 
 **`BugLauncher.tsx`** replaces today's red `the bug-fix workflow is not
 configured` with a short line naming the blocking checks and a button

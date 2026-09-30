@@ -12,14 +12,42 @@ import os from "node:os";
 import type { Agent, Assignment, Decision, SessionInfo } from "../types.js";
 import type { BugFixEngine } from "../bugfix/engine.js";
 import type { BugTaskStore } from "../bugfix/store.js";
-import type { IntegrationsStore } from "../bugfix/integrations.js";
+import type { IntegrationsStore, Integrations } from "../bugfix/integrations.js";
 import type { TrackerProvider } from "../bugfix/tracker.js";
+import type { ForgeAdapter } from "../bugfix/forge/types.js";
+import { discoverMcpServers } from "../bugfix/mcp-discovery.js";
+import { buildSetupReport } from "../bugfix/setup.js";
 
 export interface AppDeps {
   store: Store;
   manager: Manager;
   /** Bug-fix workflow; absent when the feature is not configured (routes answer 501). */
   bugs?: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider };
+  /** The config store, needed with or without an engine: an unconfigured machine must still
+   *  be able to read and write its own integrations.json. */
+  integrations?: IntegrationsStore;
+  /** Whether the bugfix role resolves (from the app's defaults or ~/.agentgrid/roles). */
+  roleResolves?: () => boolean;
+  /** Whether a tracker preset has a prompt file to resolve (`presets/tracker/<preset>.md`).
+   *  Without this the "tracker" check can only see `toolPrefix` and reports ok on a preset that
+   *  does not exist, which is exactly how a fresh Import used to end in a first-run ENOENT. */
+  trackerPresetResolves?: (preset: string) => boolean;
+  /** A repo whose `.mcp.json` is worth scanning, when one is known. */
+  setupRepo?: () => string | undefined;
+  /** The home directory to scan for Claude Code's MCP configuration. Defaults to the real
+   *  one in production; tests pass a temporary home so the suite never depends on the
+   *  machine it runs on. */
+  setupHome?: () => string | undefined;
+  /** Builds the bug-fix subsystem once configuration first appears. Called at most once. */
+  onConfigured?: () => Promise<AppDeps["bugs"] | null>;
+  /** Called after any successful write to integrations.json, wired or not. Lets the host keep
+   *  config-derived helpers (setupForge, setupRepo) honest: a diagnostic must never report a
+   *  configuration the user has already replaced. */
+  onConfigSaved?: (cfg: Integrations) => void;
+  /** The tracker to exercise from Settings' Test button, when one can be built. */
+  setupTracker?: () => TrackerProvider | null;
+  /** The forge to exercise from Settings' Test button, when one can be built. */
+  setupForge?: () => ForgeAdapter | null;
   transcript?: (assignment: Assignment, agent: Agent) => Promise<unknown[]>;
   /** Full, untruncated transcript of a session in a repo. */
   fullTranscript?: (cwd: string, sessionId: string) => Promise<unknown[]>;
@@ -181,8 +209,136 @@ export function createApp(deps: AppDeps) {
   }));
 
   class NotWired extends Error { status = 501; }
-  const bugs = () => { if (!deps.bugs) throw new NotWired("the bug-fix workflow is not configured"); return deps.bugs; };
-  if (deps.bugs) store.bugTasks = () => deps.bugs!.store.list();
+  // The engine may arrive mid-process, once configuration first appears (see `maybeWire`).
+  let wired = deps.bugs;
+  const bugs = () => { if (!wired) throw new NotWired("the bug-fix workflow is not configured"); return wired; };
+  const setBugTasksSource = () => { if (wired) store.bugTasks = () => wired!.store.list(); };
+  setBugTasksSource();
+
+  /** The config store is reachable with or without an engine; the engine's copy is the same object. */
+  const integrationsStore = () => {
+    const s = deps.integrations ?? wired?.integrations;
+    if (!s) throw new NotWired("no configuration store");
+    return s;
+  };
+
+  /**
+   * One absent→present transition per process, never a re-wire: with no engine, no bug task
+   * can exist, so building one disrupts nothing. An engine that already exists is left alone —
+   * rebuilding it would tear down in-flight tasks whose dispatch state is in memory.
+   */
+  let wiring: Promise<void> | null = null;
+  const maybeWire = (): Promise<void> => {
+    if (wired || !deps.onConfigured) return Promise.resolve();
+    // Memoised before any await: two overlapping saves must join one build, not race two.
+    // Task 5's `onConfigured` starts a PrWatcher, so a discarded second build would leave
+    // a timer polling for the life of the process with no reference left to stop it.
+    if (!wiring) wiring = (async () => {
+      wired = (await deps.onConfigured!()) ?? undefined;
+      setBugTasksSource();
+    })().finally(() => { wiring = null; });
+    return wiring;
+  };
+
+  /**
+   * `maybeWire`, made non-fatal to the response. Every route below can answer perfectly well
+   * without an engine, and a failed wiring attempt is never news the caller is missing: the way
+   * `onConfigured` fails in practice is a config it could not read — `read()` throws `Conflict`
+   * (HTTP 409) for a corrupt or present-but-unreadable `integrations.json` — and `setupReport()`
+   * independently reports exactly that cause, as a `config-file` check in state "broken" carrying
+   * the parse error and the action that fixes it. Letting the rejection through would replace
+   * that diagnosis with a bare 409, denying the user the one thing that tells them how to
+   * recover; boot deliberately catches the same error for the same reason (see `start.ts`).
+   * Nothing is hidden, and the one-shot memoisation is untouched: `wiring` and its `finally`
+   * still live in `maybeWire`.
+   */
+  const tryWire = (): Promise<void> => maybeWire().catch(() => {});
+
+  /** Options for `discoverMcpServers`, shared by both call sites so they cannot drift: `home`
+   *  defaults to the real one in production, but tests inject a temporary one via `setupHome`
+   *  so the suite never depends on the machine it runs on. */
+  const scanOptions = () => ({
+    ...(deps.setupHome?.() ? { home: deps.setupHome()! } : {}),
+    ...(deps.setupRepo?.() ? { repo: deps.setupRepo()! } : {}),
+  });
+
+  const setupReport = async () => {
+    const store_ = integrationsStore();
+    let cfg: Integrations | null = null; let cfgError: string | undefined;
+    try { cfg = await store_.read(); } catch (err) { cfgError = (err as Error).message; }
+    // `exists()` now throws for the same "present but unreadable" case `read()` just caught
+    // above — only ask it when `read()` didn't already answer that question, so a broken file
+    // doesn't turn into an unhandled rejection here.
+    let cfgExists = false;
+    if (!cfgError) { try { cfgExists = await store_.exists(); } catch (err) { cfgError = (err as Error).message; } }
+    const discovery = await discoverMcpServers(scanOptions());
+    return buildSetupReport({ cfg, ...(cfgError ? { cfgError } : {}), cfgExists, discovery,
+      env: process.env, wired: !!wired, roleResolves: deps.roleResolves?.() ?? true,
+      trackerPresetResolves: deps.trackerPresetResolves });
+  };
+
+  // A hand-edited config on a running-but-unwired server (the README tells people to edit the
+  // file directly) must come alive the next time Settings is opened, without ever re-wiring an
+  // engine that already exists — `maybeWire` is memoised and absent→present-once, so this is
+  // just "try once more before answering" rather than a second wiring path.
+  app.get("/api/setup", wrap(async (_req, res) => { await tryWire(); res.json(await setupReport()); }));
+
+  app.post("/api/setup/import", wrap(async (req, res) => {
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+    const discovery = await discoverMcpServers(scanOptions());
+    const server = discovery.importable.find(s => s.name === name);
+    if (!server) throw new BadRequest(`no importable MCP server named "${name}" was found in your Claude Code configuration`);
+    // "jira" is the only preset shipped today (`presets/tracker/jira.md`); defaulting a fresh
+    // import to anything else (the old default was "mcp") writes a preset with no prompt file,
+    // and every tracker call then fails with ENOENT the moment the engine is wired.
+    const saved = await integrationsStore().write(cur => ({
+      tracker: { preset: cur.tracker?.preset ?? "jira", toolPrefix: `mcp__${server.name}`,
+                 mcpServers: { [server.name]: server.definition } },
+    }));
+    deps.onConfigSaved?.(saved);
+    await tryWire();
+    res.json(await setupReport());
+  }));
+
+  // A failed test is an answer, not a server error: 200 with ok:false, carrying the
+  // provider's own words. "Something went wrong" is exactly what this screen exists to end.
+  app.post("/api/setup/test/tracker", wrap(async (_req, res) => {
+    const tracker = deps.setupTracker?.() ?? wired?.tracker ?? null;
+    if (!tracker) return res.json({ ok: false, message: "no tracker is configured yet" });
+    try {
+      const issues = await tracker.listMyIssues();
+      return res.json({ ok: true, message: `${issues.length} issues assigned to you.` });
+    } catch (err) {
+      return res.json({ ok: false, message: (err as Error).message });
+    }
+  }));
+
+  app.post("/api/setup/test/forge", wrap(async (_req, res) => {
+    const forge = deps.setupForge?.() ?? null;
+    if (!forge) return res.json({ ok: false, message: "no forge is configured yet" });
+    const status = await forge.authStatus();          // adapters never throw
+    return res.json(status);
+  }));
+
+  // Spec §8: "the UI sees a server's name, transport and URL, not its headers." A definition in
+  // tracker.mcpServers can carry a credential (a bearer token, a header) copied verbatim from
+  // Claude Code's own config — never send it to the browser. The UI's only uses of these routes are
+  // projectRepos and forge (username included; forges never store a secret here, unlike a tracker
+  // MCP definition), plus tracker.preset/toolPrefix for display.
+  /** The one shape either integrations route may hand the browser, so the two cannot drift.
+   *  `PUT`'s response needs this every bit as much as `GET`'s: `write()` returns the *merged*
+   *  config, so a Save touching only `forge` would otherwise echo back a stored
+   *  `tracker.mcpServers` — token and headers included — that the browser never sent and must
+   *  never receive. */
+  const redactIntegrations = (cfg: Integrations) => ({
+    projectRepos: cfg.projectRepos,
+    ...(cfg.forge ? { forge: cfg.forge } : {}),
+    ...(cfg.tracker ? { tracker: { preset: cfg.tracker.preset, toolPrefix: cfg.tracker.toolPrefix } } : {}),
+  });
+
+  app.get("/api/integrations", wrap(async (_req, res) => {
+    res.json(redactIntegrations(await integrationsStore().read()));
+  }));
 
   const MERGE_POLICIES = ["ask", "auto"] as const;
   const MERGE_METHODS = ["squash", "merge", "rebase"] as const;
@@ -240,7 +396,6 @@ export function createApp(deps: AppDeps) {
     if (typeof repo !== "string" || !path.isAbsolute(repo)) throw new BadRequest("an absolute repo path is required");
     res.json(await bugs().engine.preflight(repo));
   }));
-  app.get("/api/integrations", wrap(async (_req, res) => res.json(await bugs().integrations.read())));
   app.put("/api/integrations", wrap(async (req, res) => {
     const body = req.body ?? {};
     // Only the two known top-level fields are accepted; anything else in the body is
@@ -287,7 +442,10 @@ export function createApp(deps: AppDeps) {
       }
       patch.forge = forge;
     }
-    res.json(await bugs().integrations.write(patch as never));
+    const saved = await integrationsStore().write(patch as never);
+    deps.onConfigSaved?.(saved);
+    await tryWire();
+    res.json(redactIntegrations(saved));
   }));
 
   app.use("/api", (_req, res) => res.status(404).json({ error: "not found" }));

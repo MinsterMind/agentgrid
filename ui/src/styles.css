@@ -145,3 +145,12 @@ button.pill:disabled { opacity:.6; }
 .difffiles { list-style:none; margin:6px 0 0; padding:0; }
 .hunks { white-space:pre; overflow:auto; background:#0f1115; border-radius:6px; padding:8px; font-size:11px; max-height:300px; }
 .add { color:#86efac; } .del { color:#fca5a5; }
+.dialog.settings { width:520px; max-width:95vw; max-height:85vh; overflow:auto; }
+.dialog.settings section { border-top:1px solid var(--line); padding-top:10px; margin-top:4px; }
+.dialog.settings section:first-of-type { border-top:none; padding-top:0; margin-top:0; }
+.checkrow { display:flex; align-items:baseline; gap:8px; padding:6px 0; font-size:12px; }
+.checkrow .mark { flex:none; }
+.checkrow.ok .mark { color:var(--green); } .checkrow.missing .mark { color:var(--amber); } .checkrow.broken .mark { color:var(--red); }
+.checkrow .detail { color:#c3c9d5; flex:1; }
+.paste { width:100%; min-height:70px; margin-top:8px; background:#0f1115; border:1px solid #2b3140; color:var(--fg); border-radius:6px; padding:6px 8px; font:11px/1.4 ui-monospace, monospace; resize:vertical; }
+.ok { color:var(--green); }

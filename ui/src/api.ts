@@ -1,4 +1,4 @@
-import type { Agent, Assignment, BugTask, Decision, DirListing, GridEvent, GridState, Integrations, IssueSummary, MemoryFile, SessionInfo } from "./types";
+import type { Agent, Assignment, BugTask, Decision, DirListing, GridEvent, GridState, Integrations, IssueSummary, MemoryFile, SessionInfo, SetupReport } from "./types";
 
 export interface TranscriptEntry { ts: string; role: "user" | "assistant"; kind: "text" | "tool_use" | "tool_result"; text: string; tool?: string; input?: unknown }
 
@@ -67,4 +67,8 @@ export const api = {
   bugPreflight: (repo: string) => call<{ ok: boolean; problems: string[] }>("GET", `/api/bugfix/preflight?repo=${encodeURIComponent(repo)}`),
   getIntegrations: () => call<Integrations>("GET", "/api/integrations"),
   putIntegrations: (patch: Partial<Integrations>) => call<Integrations>("PUT", "/api/integrations", patch),
+  getSetup: () => call<SetupReport>("GET", "/api/setup"),
+  importMcpServer: (name: string) => call<SetupReport>("POST", "/api/setup/import", { name }),
+  testTracker: () => call<{ ok: boolean; message: string }>("POST", "/api/setup/test/tracker"),
+  testForge: () => call<{ ok: boolean; message: string }>("POST", "/api/setup/test/forge"),
 };

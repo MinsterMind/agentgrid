@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { IntegrationsStore, detectForge } from "../../src/bugfix/integrations.js";
@@ -76,6 +76,32 @@ describe("IntegrationsStore", () => {
     await expect(store.write({ forge: { preset: "github" } })).rejects.toThrow(/corrupt/i);
     // The file on disk must be untouched — not overwritten with just the new patch.
     expect(await readFile(file, "utf8")).toBe("{ not json");
+  });
+
+  // I6: a present-but-unreadable file must never be reported the same as a missing one — the
+  // "config-file" check would otherwise say "does not exist yet. Saving here creates it." for a
+  // file that very much exists, and Saving would then overwrite it. `mkdir` at the file's own
+  // path stands in for "present but this process can't read it" (EISDIR), same trick
+  // mcp-discovery.test.ts uses for the same reason.
+  it("says an unreadable file is broken, not missing", async () => {
+    const file = path.join(home, "integrations.json");
+    await mkdir(file);
+    await expect(store.read()).rejects.toThrow(/could not be read/i);
+    await expect(store.exists()).rejects.toThrow(/could not be read/i);
+  });
+
+  // I4: the JSON.parse error can embed a source excerpt straight out of the file it failed to
+  // parse — and this file stores tracker/forge credentials. Never let that excerpt reach the
+  // thrown message.
+  it("never echoes a credential from a corrupt file's own contents in the parse error", async () => {
+    const file = path.join(home, "integrations.json");
+    await writeFile(file, '{"tracker":{"mcpServers":{"x":{"headers":{"Authorization":Bearer sk-SECRET123}}}}}');
+    const err = await store.read().catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/corrupt/i);
+    expect((err as Error).message).not.toContain("sk-SECRET123");
+    expect((err as Error).message).not.toContain("Authorization");
+    expect((err as Error).message).not.toContain("Bearer");
   });
 
   it("keeps both patches when two writes race", async () => {

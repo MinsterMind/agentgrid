@@ -59,11 +59,19 @@ export async function createBugFixTestApp() {
   await store.reloadRoles();
   const bugs = new BugTaskStore(home);
   await bugs.init();
+  const integrations = new IntegrationsStore(home);
+  // The fake tracker/forge above stand in for what a real wiring step would derive from this
+  // same file — write it here so a GET /api/setup against this "fully wired" harness reports
+  // tracker/forge as configured, same as it would on a machine that actually set them up.
+  await integrations.write({
+    tracker: { preset: "jira", toolPrefix: "mcp__tracker", mcpServers: {} },
+    forge: { preset: "github" },
+  });
   const fake = makeFakeQuery();
   const manager = new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, a, e) => ({ cwd: a.repo, abortController: e.abortController, canUseTool: e.canUseTool } as Options) });
   const engine = new BugFixEngine({
     store, bugs, manager,
-    git: fakeGit(), integrations: new IntegrationsStore(home),
+    git: fakeGit(), integrations,
     tracker: { listMyIssues: async () => [], fetchIssue: async () => ISSUE, comment: async () => {} },
     forge, presetsDir: path.resolve("presets"),
   });
@@ -71,7 +79,11 @@ export async function createBugFixTestApp() {
 
   const app = createApp({
     store, manager,
-    bugs: { engine, store: bugs, integrations: new IntegrationsStore(home), tracker: { listMyIssues: async () => [], fetchIssue: async () => ISSUE, comment: async () => {} } },
+    bugs: { engine, store: bugs, integrations, tracker: { listMyIssues: async () => [], fetchIssue: async () => ISSUE, comment: async () => {} } },
+    // Keeps GET /api/setup's MCP scan inside this harness's own temp home instead of the real
+    // machine's ~/.claude — this dir has no .claude.json/.claude/settings.json, so the scan
+    // just comes back empty, which is all the tests that reach this route need.
+    setupHome: () => home,
   });
 
   return {

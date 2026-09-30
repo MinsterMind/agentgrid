@@ -51,6 +51,8 @@ export interface RunningServer {
    *  in-process test can assert on its call counts (e.g. exactly one `createPr`) without
    *  a debug HTTP endpoint. Undefined outside fake mode. */
   fakeForge?: FakeForge;
+  /** Test-only accessor to the live-wired bug-fix engine, if one exists. */
+  bugEngineForTest?: () => BugFixEngine | undefined;
   close(): Promise<void>;
 }
 
@@ -146,30 +148,55 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       status: "Open", priority: "High", description: "A fake ticket used in fake mode.", acceptanceCriteria: ["it stops happening"] }),
     comment: async () => {},
   };
-  const tracker = fake ? fakeTracker : (cfg.tracker ? mcpTracker(cfg.tracker, presetsDir) : null);
   // Only read the script in fake mode: it is used nowhere else, and a stale malformed value left
   // in a real deployment's environment would otherwise throw here and stop the server booting.
   const fakePrScript = fake ? (opts.fakePrScript ?? parseFakePrScript(process.env.AGENTGRID_FAKE_PR_SCRIPT)) : undefined;
   const fakeForgeHandle = fake ? fakeForge(fakePrScript ?? []) : null;
-  const forge = fakeForgeHandle ?? makeForge(cfg.forge);
-  const engine = tracker ? new BugFixEngine({ store, bugs: bugStore, manager, git: new GitOps(), integrations, tracker, forge, presetsDir }) : null;
-  // Recovery already ran above (`recoverStuckBugTasks`, tracker or no tracker) —
-  // `BugFixEngine` has no recovery step of its own to call.
-  if (engine) engine.attach();
 
-  // The watcher polls the forge for tasks resting on an open PR and hands findings to the
-  // engine, which stays the only writer of task state. In fake mode it ticks fast so the
-  // offline tests and the e2e advance without waiting real minutes.
-  const prWatcher = engine && forge
-    ? new PrWatcher({ bugs: bugStore, forge, onFinding: f => engine.onPrFinding(f).catch(err => log(`bugfix: watcher finding failed: ${(err as Error).message}`)),
-        onChecked: (id, at) => engine.onPrChecked(id, at).catch(err => log(`bugfix: recording the poll failed: ${(err as Error).message}`)),
-        ...(fake ? { baseMs: 200, ceilingMs: 1_000 } : {}) })
-    : null;
-  prWatcher?.start(fake ? 100 : 1_000);
+  let wiredBugFix: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider } | undefined;
+  let wiredWatcher: PrWatcher | null = null;
+  let lastCfg = cfg;
+
+  /**
+   * Builds the bug-fix subsystem from a configuration. Returns `null` when there is still no
+   * tracker — the one thing the workflow cannot run without. Safe to call again only while
+   * nothing is wired: `createApp` enforces the absent→present-once rule.
+   */
+  const wireBugFix = async (config: Integrations) => {
+    lastCfg = config;
+    const tracker = fake ? fakeTracker : (config.tracker ? mcpTracker(config.tracker, presetsDir) : null);
+    if (!tracker) return null;
+    const forge = fakeForgeHandle ?? makeForge(config.forge);
+    const engine = new BugFixEngine({ store, bugs: bugStore, manager, git: new GitOps(), integrations, tracker, forge, presetsDir });
+    engine.attach();
+    wiredWatcher?.stop();
+    wiredWatcher = forge
+      ? new PrWatcher({ bugs: bugStore, forge, onFinding: f => engine.onPrFinding(f).catch(err => log(`bugfix: watcher finding failed: ${(err as Error).message}`)),
+          onChecked: (id, at) => engine.onPrChecked(id, at).catch(err => log(`bugfix: recording the poll failed: ${(err as Error).message}`)),
+          ...(fake ? { baseMs: 200, ceilingMs: 1_000 } : {}) })
+      : null;
+    wiredWatcher?.start(fake ? 100 : 1_000);
+    wiredBugFix = { engine, store: bugStore, integrations, tracker };
+    return wiredBugFix;
+  };
+
+  await wireBugFix(cfg);
 
   const app = createApp({ store, manager, writeToTerminal: (sid, data) => ptys.write(sid, data), transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }),
     openTerminal, runInTerminal, staticDir, browseRoot: opts.browseRoot ?? process.env.AGENTGRID_BROWSE_ROOT, ...(fakeSessions ? { sessions: fakeSessions } : {}),
-    ...(engine && tracker ? { bugs: { engine, store: bugStore, integrations, tracker } } : {}) });
+    integrations,
+    roleResolves: () => { try { store.getRole("bugfix"); return true; } catch { return false; } },
+    trackerPresetResolves: (preset: string) => existsSync(path.join(presetsDir, "tracker", `${preset}.md`)),
+    setupForge: () => fakeForgeHandle ?? makeForge(lastCfg.forge),
+    setupRepo: () => {
+      const repos = lastCfg.projectRepos;
+      if (!repos || Object.keys(repos).length === 0) return undefined;
+      // Return any available repo (first by insertion order; any one is acceptable per the brief)
+      return Object.values(repos)[0];
+    },
+    onConfigured: async () => (await wireBugFix(await integrations.read())) ?? null,
+    onConfigSaved: cfg => { lastCfg = cfg; },
+    ...(wiredBugFix ? { bugs: wiredBugFix } : {}) });
   const server = http.createServer(app);
   attachPtyWebSocket(server, { store, ptys, sessions: () => listAllSessions(store.listAgents(), store.assignmentSessionIds(), fakeSessions) });
 
@@ -184,6 +211,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   return {
     port: bound, url, home,
     ...(fakeForgeHandle ? { fakeForge: fakeForgeHandle } : {}),
-    close: () => new Promise<void>(resolve => { watcher.stop(); statuses.stop(); prWatcher?.stop(); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }),
+    bugEngineForTest: () => wiredBugFix?.engine,
+    close: () => new Promise<void>(resolve => { watcher.stop(); statuses.stop(); wiredWatcher?.stop(); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }),
   };
 }
