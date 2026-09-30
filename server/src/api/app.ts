@@ -240,6 +240,20 @@ export function createApp(deps: AppDeps) {
     return wiring;
   };
 
+  /**
+   * `maybeWire`, made non-fatal to the response. Every route below can answer perfectly well
+   * without an engine, and a failed wiring attempt is never news the caller is missing: the way
+   * `onConfigured` fails in practice is a config it could not read — `read()` throws `Conflict`
+   * (HTTP 409) for a corrupt or present-but-unreadable `integrations.json` — and `setupReport()`
+   * independently reports exactly that cause, as a `config-file` check in state "broken" carrying
+   * the parse error and the action that fixes it. Letting the rejection through would replace
+   * that diagnosis with a bare 409, denying the user the one thing that tells them how to
+   * recover; boot deliberately catches the same error for the same reason (see `start.ts`).
+   * Nothing is hidden, and the one-shot memoisation is untouched: `wiring` and its `finally`
+   * still live in `maybeWire`.
+   */
+  const tryWire = (): Promise<void> => maybeWire().catch(() => {});
+
   /** Options for `discoverMcpServers`, shared by both call sites so they cannot drift: `home`
    *  defaults to the real one in production, but tests inject a temporary one via `setupHome`
    *  so the suite never depends on the machine it runs on. */
@@ -267,7 +281,7 @@ export function createApp(deps: AppDeps) {
   // file directly) must come alive the next time Settings is opened, without ever re-wiring an
   // engine that already exists — `maybeWire` is memoised and absent→present-once, so this is
   // just "try once more before answering" rather than a second wiring path.
-  app.get("/api/setup", wrap(async (_req, res) => { await maybeWire(); res.json(await setupReport()); }));
+  app.get("/api/setup", wrap(async (_req, res) => { await tryWire(); res.json(await setupReport()); }));
 
   app.post("/api/setup/import", wrap(async (req, res) => {
     const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
@@ -282,7 +296,7 @@ export function createApp(deps: AppDeps) {
                  mcpServers: { [server.name]: server.definition } },
     }));
     deps.onConfigSaved?.(saved);
-    await maybeWire();
+    await tryWire();
     res.json(await setupReport());
   }));
 
@@ -424,7 +438,7 @@ export function createApp(deps: AppDeps) {
     }
     const saved = await integrationsStore().write(patch as never);
     deps.onConfigSaved?.(saved);
-    await maybeWire();
+    await tryWire();
     res.json(saved);
   }));
 

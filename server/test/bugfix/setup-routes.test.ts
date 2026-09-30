@@ -7,6 +7,7 @@ import { createApp, type AppDeps } from "../../src/api/app.js";
 import { Store } from "../../src/store/store.js";
 import { Manager } from "../../src/runner/manager.js";
 import { IntegrationsStore } from "../../src/bugfix/integrations.js";
+import { Conflict } from "../../src/store/store.js";
 
 /**
  * A minimal wired bugs object for testing live-wiring behavior. Returns null to pass the type
@@ -227,6 +228,50 @@ describe("the setup routes answer without an engine", () => {
     // Still never a re-wire: a second GET must not build again.
     await request(app).get("/api/setup").expect(200);
     expect(calls).toBe(1);
+  });
+
+  // I1: `maybeWire()` on GET /api/setup was uncaught, and a previous finding in this wave made
+  // `integrations.read()` throw `Conflict` (409) for a corrupt file. Production's `onConfigured`
+  // re-reads the config, so an unwired server with a bad `integrations.json` answered 409 —
+  // losing the very report (`config-file` in state "broken", naming the parse error, carrying
+  // the fix-or-remove-config action) that this screen exists to show. Note the `onConfigured`:
+  // the default harness passes none, so `maybeWire` was a no-op in every other corrupt-config
+  // test and none of them could have caught this.
+  it("GET /api/setup still reports a corrupt config when wiring throws on it", async () => {
+    let integrationsRef!: IntegrationsStore;
+    // Mirrors production (start.ts: `wireBugFix(await integrations.read())`): the read is what
+    // throws, and it throws out of `onConfigured`, not out of `setupReport`.
+    const onConfigured: AppDeps["onConfigured"] = async () => { await integrationsRef.read(); return null; };
+    const { app, home, integrations } = await unwiredApp({ onConfigured });
+    integrationsRef = integrations;
+    await writeFile(path.join(home, "integrations.json"), "{ not json");
+
+    const res = await request(app).get("/api/setup").expect(200);
+
+    const cfg = res.body.checks.find((c: { id: string }) => c.id === "config-file");
+    expect(cfg).toMatchObject({ state: "broken" });
+    expect(cfg.fix).toEqual({ kind: "action", value: "fix-or-remove-config" });
+    expect(res.body.wired).toBe(false);
+    // The whole report survived, not just the error: Settings still has its checks list.
+    expect(res.body.checks.map((c: { id: string }) => c.id)).toContain("tracker");
+  });
+
+  // Same reason, the two writing routes: a save must not 409 because the config that was on
+  // disk *before* it was corrupt — the write itself replaces the corrupt base.
+  it("PUT /api/integrations still answers when wiring throws on a previously-corrupt config", async () => {
+    let integrationsRef!: IntegrationsStore;
+    let reads = 0;
+    const onConfigured: AppDeps["onConfigured"] = async () => {
+      reads++;
+      if (reads === 1) throw new Conflict("integrations.json is corrupt (unexpected token)");
+      await integrationsRef.read(); return null;
+    };
+    const { app, integrations } = await unwiredApp({ onConfigured });
+    integrationsRef = integrations;
+
+    const saved = await request(app).put("/api/integrations").send({ forge: { preset: "github" } }).expect(200);
+    expect(saved.body.forge).toEqual({ preset: "github" });
+    expect(reads).toBe(1);
   });
 });
 
