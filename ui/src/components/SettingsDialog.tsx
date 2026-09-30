@@ -215,7 +215,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             </section>
           )}
 
-          <div className="row">
+          <div className="row footer">
             <button className="btn p" disabled={busy} onClick={() => void save()}>Save</button>
             <button className="btn" onClick={onClose}>Close</button>
           </div>

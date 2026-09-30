@@ -164,6 +164,16 @@ describe("SettingsDialog", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  // The sticky-footer CSS targets `.footer` by name, not by position (a positional selector
+  // silently stopped matching once a save added a trailing message div — see styles.css). This
+  // pins the class stays on the Save/Close row, so a rename can't silently detach the styling.
+  it("keeps the Save/Close row tagged as the sticky footer", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report());
+    render(<SettingsDialog onClose={() => {}} />);
+    const save = await screen.findByRole("button", { name: /^save$/i });
+    expect(save.closest(".row")).toHaveClass("footer");
+  });
+
   it("surfaces a blocking check that has no dedicated section, e.g. a corrupt config file", async () => {
     vi.spyOn(api, "getSetup").mockResolvedValue(report({
       checks: [
