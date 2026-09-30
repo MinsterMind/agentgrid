@@ -75,7 +75,9 @@ Everything lives in `~/.agentgrid/` as plain files — roles, agents, assignment
 
 The bug-fix workflow needs a **tracker** (where the ticket lives) and a **forge** (where the pull request gets opened). On a fresh machine, neither is configured — click **🐞 Fix a bug** or **⚙︎ Settings** in the top bar and AgentGrid tells you exactly what's missing and how to fix it, right there in the dialog. There is no separate setup wizard and nothing to find in the dark; every check on the Settings screen names the specific problem (a missing tracker, a missing forge, a role that failed to load) and carries its own remedy — a command to run, a field to fill in, or a button to press.
 
-**Tracker.** AgentGrid talks to your tracker through an MCP server (Jira, Linear, … anything MCP-based). If Claude Code already has one configured — locally, or as a connector linked to your Claude account — Settings' **Detect** button finds it; a local one shows an **Import** button that copies just the connection details it needs (never your account connector's own credentials, which stay server-side). If nothing is found, Settings gives you the exact `claude mcp add` command to run, then Detect again. You can also paste a tracker definition by hand.
+**Tracker.** AgentGrid talks to your tracker through an MCP server (Jira, Linear, … anything MCP-based) — the same server Claude Code itself already uses. It stores no definition and no credential of its own: it reaches the server through Claude Code's own configuration, wherever that server is defined — locally, or as a connector linked to your Claude account. Open **⚙︎ Settings**, and every MCP server Claude Code currently has shows up in the **Tracker** section, labeled with where it came from ("configured in Claude Code", "linked to your Claude account", or the project it's scoped to). Pick the one that's your tracker, press **Use this**, and you're done — AgentGrid remembers only its name (the "tool prefix"), nothing else.
+
+If Claude Code has nothing configured yet, Settings gives you the exact `claude mcp add` command to run, then click **Detect** to pick it up.
 
 **Forge.** Pick **github** or **bitbucket** in Settings' Forge section and press Save.
 
@@ -94,11 +96,11 @@ The bug-fix workflow needs a **tracker** (where the ticket lives) and a **forge*
 
 **First save vs. later changes.** The very first time you save a working tracker + forge on a machine, the bug-fix workflow comes alive immediately — no restart. Once it's running, changing the configuration (switching forge, re-pointing the tracker) needs a restart to take effect, because the running engine isn't torn down and rebuilt under work that might be in flight; Settings tells you which case you're in right after you save.
 
-**Editing the file directly.** Everything Settings writes lives in one file, `~/.agentgrid/integrations.json`, alongside the project→repo memory the workflow builds up on its own. If you prefer to edit it by hand instead of using the dialog, its shape is:
+**Editing the file directly.** Everything Settings writes lives in one file, `~/.agentgrid/integrations.json`, alongside the project→repo memory the workflow builds up on its own. AgentGrid never writes an MCP server definition or credential into this file — only which one it's using (its name and preset). If you prefer to edit it by hand instead of using the dialog, its shape is:
 
 ```json
 {
-  "tracker": { "preset": "jira", "toolPrefix": "mcp__atlassian", "mcpServers": { "atlassian": { "type": "http", "url": "https://mcp.atlassian.com/v1/mcp" } } },
+  "tracker": { "preset": "jira", "toolPrefix": "mcp__atlassian" },
   "forge": { "preset": "bitbucket", "username": "<your Atlassian account email>" },
   "projectRepos": {}
 }

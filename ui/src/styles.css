@@ -148,6 +148,7 @@ button.pill:disabled { opacity:.6; }
 .dialog.settings { width:520px; max-width:95vw; max-height:85vh; overflow:auto; }
 .dialog.settings section { border-top:1px solid var(--line); padding-top:10px; margin-top:4px; }
 .dialog.settings section:first-of-type { border-top:none; padding-top:0; margin-top:0; }
+.dialog.settings .row:last-of-type { position:sticky; bottom:0; background:var(--panel); padding-top:8px; }
 .checkrow { display:flex; align-items:baseline; gap:8px; padding:6px 0; font-size:12px; }
 .checkrow .mark { flex:none; }
 .checkrow.ok .mark { color:var(--green); } .checkrow.missing .mark { color:var(--amber); } .checkrow.broken .mark { color:var(--red); }

@@ -143,6 +143,14 @@ describe("SettingsDialog", () => {
     else expect(body.forge).toBeUndefined();
   });
 
+  it("can be dismissed from the header, without scrolling to the bottom", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report());
+    const onClose = vi.fn();
+    render(<SettingsDialog onClose={onClose} />);
+    await userEvent.click(await screen.findByRole("button", { name: "✕" }));
+    expect(onClose).toHaveBeenCalled();
+  });
+
   it("surfaces a blocking check that has no dedicated section, e.g. a corrupt config file", async () => {
     vi.spyOn(api, "getSetup").mockResolvedValue(report({
       checks: [

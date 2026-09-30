@@ -128,7 +128,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   return (
     <div className="modal" onClick={onClose}>
       <div className="dialog settings" onClick={e => e.stopPropagation()}>
-        <h3>⚙︎ Settings — Integrations</h3>
+        <div className="hd"><h3 style={{ margin: 0 }}>⚙︎ Settings — Integrations</h3>
+          <button className="btn sm" style={{ marginLeft: "auto" }} onClick={onClose}>✕</button></div>
         {err && <div className="err">{err}</div>}
         {!report ? (err ? null : <div className="hint">Loading…</div>) : <>
           {other.length > 0 && (
