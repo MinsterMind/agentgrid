@@ -99,10 +99,17 @@ The authoritative source is a session's `system/init` message, whose
 `mcp_servers` array carries each server's `name`, `status` and `source` —
 including ones absent from the config file. It costs one short query.
 
-**Decision: read the file first, and offer a Refresh that runs the query.**
-Opening Settings must not spend a model call. The file-derived list is right in
-the common case; Refresh is there for when a connector is missing, and it
-replaces the list with what a real session reports.
+**Decision: 0.5.0 reads the file only. Refresh is deferred.**
+Opening Settings must not spend a model call, and the file-derived list is
+right in the case this work exists for — the user's `claude.ai Atlassian` is
+present in `claudeAiMcpEverConnected`, confirmed on their machine. Adding a
+model-call-backed Refresh for a gap nobody has hit would be speculative.
+
+The limitation is real and stated in the UI rather than hidden: a connector
+that has never been used may not appear, and the remedy is to use it once in
+Claude Code. If someone hits it, Refresh — reading `mcp_servers` from a
+session's `system/init` — is the fix, and it is a follow-up, not a gap in this
+plan.
 
 ## 7. What this removes
 
