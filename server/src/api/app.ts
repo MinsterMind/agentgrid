@@ -312,11 +312,21 @@ export function createApp(deps: AppDeps) {
    *  `PUT`'s response needs this every bit as much as `GET`'s: `write()` returns the *merged*
    *  config, so a Save touching only `forge` would otherwise echo back a stored
    *  `tracker.mcpServers` — token and headers included — that the browser never sent and must
-   *  never receive. */
+   *  never receive.
+   *
+   *  This is an allow-list: a field is named here only once it is known to carry no credential.
+   *  `hints` is named because it is prompt text the user wrote (it is interpolated into the
+   *  tracker preset's prompt, `tracker.ts`), and because `PUT` replaces `tracker` wholesale —
+   *  a browser that cannot read `hints` back destroys it on the next save. Nothing else on
+   *  `TrackerConfig` may be added without the same argument. */
   const redactIntegrations = (cfg: Integrations) => ({
     projectRepos: cfg.projectRepos,
     ...(cfg.forge ? { forge: cfg.forge } : {}),
-    ...(cfg.tracker ? { tracker: { preset: cfg.tracker.preset, toolPrefix: cfg.tracker.toolPrefix } } : {}),
+    ...(cfg.tracker ? { tracker: {
+      preset: cfg.tracker.preset,
+      toolPrefix: cfg.tracker.toolPrefix,
+      ...(cfg.tracker.hints !== undefined ? { hints: cfg.tracker.hints } : {}),
+    } } : {}),
   });
 
   app.get("/api/integrations", wrap(async (_req, res) => {
@@ -397,6 +407,12 @@ export function createApp(deps: AppDeps) {
       if (tracker.preset !== undefined && typeof tracker.preset !== "string") throw new BadRequest("tracker.preset must be a string");
       if (tracker.toolPrefix !== undefined && typeof tracker.toolPrefix !== "string") throw new BadRequest("tracker.toolPrefix must be a string");
       if (tracker.hints !== undefined && typeof tracker.hints !== "string") throw new BadRequest("tracker.hints must be a string");
+      // `tracker` is replaced wholesale on write (deliberately — that is what sheds a 0.4.0
+      // `mcpServers`), so a patch naming neither field is not a partial update: it replaces a
+      // working tracker with `{}`. Settings' hand-entry box makes that one empty textarea away.
+      if (tracker.preset === undefined && tracker.toolPrefix === undefined) {
+        throw new BadRequest("tracker must set preset or toolPrefix");
+      }
       const t: Record<string, unknown> = {};
       if (tracker.preset !== undefined) t.preset = tracker.preset;
       if (tracker.toolPrefix !== undefined) t.toolPrefix = tracker.toolPrefix;

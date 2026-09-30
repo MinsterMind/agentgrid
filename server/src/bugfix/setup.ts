@@ -2,11 +2,19 @@ import type { Integrations } from "./integrations.js";
 import type { Discovery, McpServerFound } from "./mcp-discovery.js";
 
 export type CheckId = "config-file" | "tracker" | "forge" | "forge-username" | "forge-token" | "role";
+/**
+ * The `action` fix vocabulary: a remedy the user performs *in the UI* rather than a string to
+ * copy. A closed union rather than a free `string`, because the UI has to render each one and
+ * a free string is the one place server and UI can drift silently — adding a member here is a
+ * compile error in `SettingsDialog`'s `Fix` until it is rendered. `use:<toolPrefix>` names the
+ * discovered server the tracker check would pick.
+ */
+export type FixAction = "save" | "reinstall" | "fix-or-remove-config" | `use:${string}`;
 export interface Check {
   id: CheckId;
   state: "ok" | "missing" | "broken";
   detail: string;
-  fix?: { kind: "command" | "env" | "field" | "action"; value: string };
+  fix?: { kind: "command" | "env" | "field"; value: string } | { kind: "action"; value: FixAction };
   /** Does this stop a bug fix from being started at all? Drives the launcher's summary. */
   blocks: boolean;
 }

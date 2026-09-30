@@ -61,8 +61,8 @@ describe("buildSetupReport", () => {
     expect(find(withLocal, "tracker").fix).toEqual({ kind: "action", value: "use:mcp__atlassian" });
     expect(withLocal.discovery.servers).toEqual([{ name: "atlassian", toolPrefix: "mcp__atlassian", origin: "user" }]);
 
-    const accountOnly = buildSetupReport({ ...base, cfg: { projectRepos: {} }, discovery: { servers: [{ name: "claude.ai Claude Docs", toolPrefix: "mcp__claude_ai_Claude_Docs", origin: "account" }], problems: [] } });
-    expect(find(accountOnly, "tracker").fix).toEqual({ kind: "action", value: "use:mcp__claude_ai_Claude_Docs" });
+    const accountConnector = buildSetupReport({ ...base, cfg: { projectRepos: {} }, discovery: { servers: [{ name: "claude.ai Claude Docs", toolPrefix: "mcp__claude_ai_Claude_Docs", origin: "account" }], problems: [] } });
+    expect(find(accountConnector, "tracker").fix).toEqual({ kind: "action", value: "use:mcp__claude_ai_Claude_Docs" });
 
     const none = buildSetupReport({ ...base, cfg: { projectRepos: {} }, discovery: { servers: [], problems: [] } });
     expect(find(none, "tracker").fix!.kind).toBe("command");

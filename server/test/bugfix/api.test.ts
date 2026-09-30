@@ -137,6 +137,35 @@ describe("bug task routes", () => {
     await request(app).put("/api/integrations").send({ forge: { preset: "github" } }).expect(200);
   });
 
+  // I3: `hints` is a live `TrackerConfig` field injected into every tracker prompt. The browser
+  // cannot preserve what it is never told, and `PUT` replaces `tracker` wholesale — so a Settings
+  // screen that could not read `hints` back silently destroyed it on the next "Use this". It
+  // carries no credential (it is prose the user wrote), so it crosses the redaction boundary.
+  it("GET /api/integrations returns tracker.hints, so the browser can send it back", async () => {
+    await request(app).put("/api/integrations")
+      .send({ tracker: { preset: "jira", toolPrefix: "mcp__x", hints: "Bugs live in PAY" } }).expect(200);
+    const res = await request(app).get("/api/integrations").expect(200);
+    expect(res.body.tracker).toEqual({ preset: "jira", toolPrefix: "mcp__x", hints: "Bugs live in PAY" });
+  });
+
+  it("omits hints entirely when none is stored, rather than sending an empty one", async () => {
+    await request(app).put("/api/integrations").send({ tracker: { preset: "jira", toolPrefix: "mcp__x" } }).expect(200);
+    const res = await request(app).get("/api/integrations").expect(200);
+    expect(res.body.tracker).toEqual({ preset: "jira", toolPrefix: "mcp__x" });
+    expect("hints" in res.body.tracker).toBe(false);
+  });
+
+  // M7: the hand-entry box is the documented remedy for the deferred Refresh, so an empty or
+  // contentless tracker patch must not be able to replace a working tracker with `{}`.
+  it("rejects a tracker patch naming neither preset nor toolPrefix, leaving the stored one alone", async () => {
+    await request(app).put("/api/integrations").send({ tracker: { preset: "jira", toolPrefix: "mcp__x" } }).expect(200);
+    const empty = await request(app).put("/api/integrations").send({ tracker: {} }).expect(400);
+    expect(empty.body.error).toMatch(/preset|toolPrefix/);
+    // `hints` alone is not a tracker either: it would still wipe `preset` and `toolPrefix`.
+    await request(app).put("/api/integrations").send({ tracker: { hints: "h" } }).expect(400);
+    expect((await request(app).get("/api/integrations")).body.tracker).toEqual({ preset: "jira", toolPrefix: "mcp__x" });
+  });
+
   it("rejects a malformed tracker on PUT /api/integrations, and accepts a well-formed one", async () => {
     await request(app).put("/api/integrations").send({ tracker: "garbage" }).expect(400);
     await request(app).put("/api/integrations").send({ tracker: 42 }).expect(400);
@@ -148,9 +177,10 @@ describe("bug task routes", () => {
     // from TrackerConfig) and is stripped before the write ever happens — same as any other
     // unrecognised field. This does not exercise `redactIntegrations` against a *stored*
     // credential; see "GET /api/integrations never echoes a legacy tracker.mcpServers
-    // credential" below for that.
-    expect(saved.body.tracker).toEqual({ preset: "jira", toolPrefix: "mcp__jira__" });
-    expect((await request(app).get("/api/integrations")).body.tracker).toEqual({ preset: "jira", toolPrefix: "mcp__jira__" });
+    // credential" below for that. `hints` is echoed back: it is prompt text the user writes,
+    // not a credential, and the browser needs it to round-trip (see the `hints` test below).
+    expect(saved.body.tracker).toEqual({ preset: "jira", toolPrefix: "mcp__jira__", hints: "h" });
+    expect((await request(app).get("/api/integrations")).body.tracker).toEqual({ preset: "jira", toolPrefix: "mcp__jira__", hints: "h" });
     // The full config is still on disk — redacting the response is not dropping the write.
     expect((await request(app).get("/api/setup").expect(200)).status).toBe(200);
   });
