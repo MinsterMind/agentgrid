@@ -286,14 +286,17 @@ export function createApp(deps: AppDeps) {
   app.post("/api/setup/import", wrap(async (req, res) => {
     const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
     const discovery = await discoverMcpServers(scanOptions());
-    const server = discovery.importable.find(s => s.name === name);
+    // Stub (task 1, for task 3 to redesign): "importable" here is every non-account server —
+    // task 1 removed `definition` from McpServerFound, so there is no longer anything to copy
+    // into `tracker.mcpServers`. Task 3 owns deciding what, if anything, replaces that field
+    // now that a tool prefix alone is what actually connects a server (spec §2).
+    const server = discovery.servers.find(s => s.name === name && s.origin !== "account");
     if (!server) throw new BadRequest(`no importable MCP server named "${name}" was found in your Claude Code configuration`);
     // "jira" is the only preset shipped today (`presets/tracker/jira.md`); defaulting a fresh
     // import to anything else (the old default was "mcp") writes a preset with no prompt file,
     // and every tracker call then fails with ENOENT the moment the engine is wired.
     const saved = await integrationsStore().write(cur => ({
-      tracker: { preset: cur.tracker?.preset ?? "jira", toolPrefix: `mcp__${server.name}`,
-                 mcpServers: { [server.name]: server.definition } },
+      tracker: { preset: cur.tracker?.preset ?? "jira", toolPrefix: server.toolPrefix, mcpServers: {} },
     }));
     deps.onConfigSaved?.(saved);
     await tryWire();

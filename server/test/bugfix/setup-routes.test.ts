@@ -104,9 +104,11 @@ describe("the setup routes answer without an engine", () => {
     const res = await request(app).post("/api/setup/import").send({ name: "atlassian" }).expect(200);
 
     const written = await integrations.read();
+    // No definition to copy any more (task 1 removed it from McpServerFound) — `mcpServers` is
+    // stubbed empty here; task 3 owns deciding what, if anything, replaces it.
     expect(written.tracker).toEqual({
       preset: "jira", toolPrefix: "mcp__atlassian",
-      mcpServers: { atlassian: { type: "http", url: "https://mcp.atlassian.com/v1/mcp" } },
+      mcpServers: {},
     });
     const trackerCheck = res.body.checks.find((c: { id: string }) => c.id === "tracker");
     expect(trackerCheck).toMatchObject({ state: "ok" });

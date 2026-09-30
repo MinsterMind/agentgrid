@@ -14,7 +14,11 @@ export interface SetupReport {
   ready: boolean;
   wired: boolean;
   checks: Check[];
-  discovery: { importable: Array<{ name: string; type?: string; url?: string; origin: string; originDetail?: string }>;
+  // TODO(task-3): this importable/accountOnly split is a stub over the new Discovery shape
+  // (see mcp-discovery.ts) — task 1 removed `definition` from McpServerFound, so `importable`
+  // here no longer carries `type`/`url`. Task 3 owns redesigning this report and the import
+  // route around the fact that no definition ever needs to leave the scanner.
+  discovery: { importable: Array<{ name: string; origin: string; originDetail?: string }>;
                accountOnly: string[]; problems: string[] };
   addCommand: string;
 }
@@ -49,6 +53,12 @@ export function buildSetupReport(input: {
   const { cfg, cfgError, cfgExists, discovery, env, wired, roleResolves, trackerPresetResolves } = input;
   const checks: Check[] = [];
 
+  // Stub (task 1, for task 3 to redesign): the rest of this function still speaks the old
+  // importable/accountOnly split, so split the new one-list `discovery.servers` back into it
+  // here rather than touching every call site below.
+  const importable = discovery.servers.filter(s => s.origin !== "account");
+  const accountOnly = discovery.servers.filter(s => s.origin === "account").map(s => s.name);
+
   if (cfgError) {
     checks.push({ id: "config-file", state: "broken", blocks: true,
       detail: `~/.agentgrid/integrations.json could not be read: ${cfgError}`,
@@ -76,12 +86,12 @@ export function buildSetupReport(input: {
         fix: { kind: "field", value: "tracker.preset" } });
     }
   } else {
-    const first = discovery.importable[0];
+    const first = importable[0];
     checks.push({ id: "tracker", state: "missing", blocks: true,
       detail: first
-        ? `No tracker configured. ${discovery.importable.length} MCP server(s) found in your Claude Code configuration.`
-        : discovery.accountOnly.length
-          ? `No tracker configured. ${discovery.accountOnly.length} connector(s) are linked to your Claude account, but account connectors keep their definition server-side — there is nothing to import. Add a local one, then press Detect.`
+        ? `No tracker configured. ${importable.length} MCP server(s) found in your Claude Code configuration.`
+        : accountOnly.length
+          ? `No tracker configured. ${accountOnly.length} connector(s) are linked to your Claude account, but account connectors keep their definition server-side — there is nothing to import. Add a local one, then press Detect.`
           : "No tracker configured, and no MCP server was found in your Claude Code configuration.",
       fix: first ? { kind: "action", value: `import:${first.name}` } : { kind: "command", value: DEFAULT_ADD_COMMAND } });
   }
@@ -126,16 +136,14 @@ export function buildSetupReport(input: {
     ready: wired || checks.every(c => !c.blocks || c.state === "ok"),
     wired,
     checks,
-    // Only the shape the UI needs: a definition can carry credentials and never leaves the server.
+    // Only the shape the UI needs: no definition ever reaches here to begin with now.
     discovery: {
-      importable: discovery.importable.map(s => ({
+      importable: importable.map(s => ({
         name: s.name,
-        ...(typeof s.definition.type === "string" ? { type: s.definition.type } : {}),
-        ...(typeof s.definition.url === "string" ? { url: s.definition.url } : {}),
         origin: s.origin,
         ...(s.originDetail ? { originDetail: s.originDetail } : {}),
       })),
-      accountOnly: discovery.accountOnly,
+      accountOnly,
       problems: discovery.problems,
     },
     addCommand: DEFAULT_ADD_COMMAND,

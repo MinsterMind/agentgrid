@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { buildSetupReport } from "../../src/bugfix/setup.js";
 import type { Integrations } from "../../src/bugfix/integrations.js";
 
-const noDiscovery = { importable: [], accountOnly: [], problems: [] };
+const noDiscovery = { servers: [], problems: [] };
 const base = { discovery: noDiscovery, env: {} as NodeJS.ProcessEnv, wired: false, roleResolves: true, cfgExists: true };
 const find = (r: ReturnType<typeof buildSetupReport>, id: string) => r.checks.find(c => c.id === id)!;
 
@@ -54,17 +54,19 @@ describe("buildSetupReport", () => {
   });
 
   it("offers an import when a server was discovered, and the add command when only an account connector was", () => {
-    const withLocal = buildSetupReport({ ...base, cfg: { projectRepos: {} }, discovery: { importable: [{ name: "atlassian", definition: { type: "http", url: "https://mcp.atlassian.com/v1/mcp" }, origin: "user" }], accountOnly: [], problems: [] } });
+    const withLocal = buildSetupReport({ ...base, cfg: { projectRepos: {} }, discovery: { servers: [{ name: "atlassian", toolPrefix: "mcp__atlassian", origin: "user" }], problems: [] } });
     expect(find(withLocal, "tracker").fix).toEqual({ kind: "action", value: "import:atlassian" });
-    expect(withLocal.discovery.importable[0]).toEqual({ name: "atlassian", type: "http", url: "https://mcp.atlassian.com/v1/mcp", origin: "user" });
+    expect(withLocal.discovery.importable[0]).toEqual({ name: "atlassian", origin: "user" });
 
-    const accountOnly = buildSetupReport({ ...base, cfg: { projectRepos: {} }, discovery: { importable: [], accountOnly: ["claude.ai Claude Docs"], problems: [] } });
+    const accountOnly = buildSetupReport({ ...base, cfg: { projectRepos: {} }, discovery: { servers: [{ name: "claude.ai Claude Docs", toolPrefix: "mcp__claude_ai_Claude_Docs", origin: "account" }], problems: [] } });
     expect(find(accountOnly, "tracker").fix!.kind).toBe("command");
     expect(find(accountOnly, "tracker").fix!.value).toMatch(/^claude mcp add --transport http /);
   });
 
-  it("never returns an imported definition's contents", () => {
-    const r = buildSetupReport({ ...base, cfg: { projectRepos: {} }, discovery: { importable: [{ name: "x", definition: { type: "http", url: "https://e.invalid", headers: { Authorization: "Bearer hunter2" } }, origin: "user" }], accountOnly: [], problems: [] } });
+  // A definition can no longer even be constructed here — McpServerFound carries no such field
+  // (task 1) — so this now guards that the report never invents one, rather than that it redacts one.
+  it("never returns a definition's contents", () => {
+    const r = buildSetupReport({ ...base, cfg: { projectRepos: {} }, discovery: { servers: [{ name: "x", toolPrefix: "mcp__x", origin: "user" }], problems: [] } });
     expect(JSON.stringify(r)).not.toContain("hunter2");
     expect(JSON.stringify(r)).not.toContain("Authorization");
   });
