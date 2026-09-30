@@ -38,7 +38,21 @@ already depends on.
 `mcp__claude_ai_Claude_Docs`; `claude.ai Kite mcp` → `mcp__claude_ai_Kite_mcp`.
 Rule: `claude.ai ` → `claude_ai_`, spaces → underscores, prefixed with `mcp__`.
 
-The consequence: **AgentGrid never needed a copy.** It needs one string.
+**A config-defined server also needs no copy — but only if its setting source
+is enabled.** Probed the same way: with `settingSources: ["user"]` a project's
+`.mcp.json` server does not load at all; with `["user", "project"]` it appears
+as `probe_local:failed:project` — failed only because the probe's command was
+not a real MCP server, which is beside the point: it was loaded from config.
+`mcpTracker` passes `["user"]` today, so it must gain `"project"`, or the
+project- and repo-scoped rows §5 lists would be listed and then fail at the
+first call.
+
+(Whether user scope — `~/.claude.json` → `mcpServers` — loads under `"user"`
+is unverified: this machine defines none. It is the documented meaning of the
+source, and the Test button surfaces a failure immediately.)
+
+The consequence: **AgentGrid never needed a copy.** It needs one string, and
+the setting sources that make the string resolvable.
 
 ## 3. Goal
 
@@ -63,7 +77,9 @@ leak defects fixed in 0.4.0 (a parse error echoing a bearer token; `GET` and
 and dropped on the next write. No user action, and a 0.4.0 config keeps working
 because `toolPrefix` was always the field that mattered.
 
-`mcpTracker` stops passing `mcpServers` and keeps `allowedTools: [toolPrefix]`.
+`mcpTracker` stops passing `mcpServers`, keeps `allowedTools: [toolPrefix]`,
+and passes `settingSources: ["user", "project"]` so every scope §5 lists can
+actually load.
 
 ## 5. Settings
 
