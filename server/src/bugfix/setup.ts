@@ -1,7 +1,7 @@
 import type { Integrations } from "./integrations.js";
 import type { Discovery, McpServerFound } from "./mcp-discovery.js";
 
-export type CheckId = "config-file" | "tracker" | "forge" | "forge-username" | "forge-token" | "role";
+export type CheckId = "config-file" | "tracker" | "tracker-server" | "forge" | "forge-username" | "forge-token" | "role";
 /**
  * The `action` fix vocabulary: a remedy the user performs *in the UI* rather than a string to
  * copy. A closed union rather than a free `string`, because the UI has to render each one and
@@ -84,6 +84,18 @@ export function buildSetupReport(input: {
           `"${tracker.preset}.md" does not exist there. Set tracker.preset to one that does, e.g. "jira".`,
         fix: { kind: "field", value: "tracker.preset" } });
     }
+    // AgentGrid holds no connection of its own — the agent reaches whatever Claude Code has — so
+    // the one thing worth saying about the prefix is whether Claude Code has it. Non-blocking:
+    // the scan can miss a connector that has never been used (spec §6), and Test settles it.
+    // A prefix may also name one tool of a server (`<server>__<tool>`), which still counts.
+    const prefix = tracker.toolPrefix;
+    const has = discovery.servers.some(s => prefix === s.toolPrefix || prefix.startsWith(`${s.toolPrefix}__`));
+    checks.push(has
+      ? { id: "tracker-server", state: "ok", blocks: false, detail: `Claude Code has ${prefix}.` }
+      : { id: "tracker-server", state: "missing", blocks: false,
+          detail: `Claude Code has no MCP server matching ${prefix}, so tracker calls will fail. ` +
+            "Connect your tracker in Claude (claude.ai → Settings → Connectors) or in Claude Code, then press Detect " +
+            "and pick it below. A connector you have never used may not be listed yet — Test is the check." });
   } else {
     // An account connector needs no definition to be usable — naming its tool prefix in
     // `allowedTools` is what connects it (spec §2) — so it is exactly as usable as a server

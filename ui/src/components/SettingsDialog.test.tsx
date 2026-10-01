@@ -279,4 +279,29 @@ describe("SettingsDialog", () => {
     render(<SettingsDialog onClose={() => {}} />);
     expect(await screen.findByText(/could not be read/)).toBeTruthy();
   });
+  it("warns in the Tracker section when Claude Code does not have the chosen tracker", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report({ checks: [
+      { id: "tracker", state: "ok", blocks: true, detail: "Tracker configured (jira, tools mcp__atlassian)." },
+      { id: "tracker-server", state: "missing", blocks: false, detail: "Claude Code has no MCP server matching mcp__atlassian." },
+    ], discovery: { problems: [], servers: [
+      { name: "claude.ai Claude Docs", toolPrefix: "mcp__claude_ai_Claude_Docs", origin: "account" },
+    ] } }));
+    render(<SettingsDialog onClose={() => {}} />);
+    const warning = await screen.findByText(/no MCP server matching mcp__atlassian/);
+    expect(warning.closest("section")!.querySelector("h4")!.textContent).toBe("Tracker");
+    expect(screen.queryByText("Other problems")).toBeNull();
+  });
+
+  it("marks the server the tracker already uses", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report({ checks: [], discovery: { problems: [], servers: [
+      { name: "claude.ai Atlassian", toolPrefix: "mcp__claude_ai_Atlassian", origin: "account" },
+      { name: "claude.ai Claude Docs", toolPrefix: "mcp__claude_ai_Claude_Docs", origin: "account" },
+    ] } }));
+    vi.spyOn(api, "getIntegrations").mockResolvedValue({ projectRepos: {},
+      tracker: { preset: "jira", toolPrefix: "mcp__claude_ai_Atlassian" } } as never);
+    render(<SettingsDialog onClose={() => {}} />);
+    const inUse = await screen.findByText(/in use/i);
+    expect(inUse.closest(".row")!.textContent).toContain("claude.ai Atlassian");
+    expect(screen.getAllByText(/in use/i)).toHaveLength(1);
+  });
 });

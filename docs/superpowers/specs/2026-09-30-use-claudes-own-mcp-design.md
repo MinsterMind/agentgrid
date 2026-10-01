@@ -171,6 +171,11 @@ protects a `mcpServers` field that a pre-0.5.0 config may still contain.
 - A `toolPrefix` naming a server Claude Code does not have fails at the first
   tracker call with the provider's own error. The **Test** button is the place
   to discover that, and is unchanged.
+- A saved `toolPrefix` that matches none of the servers Claude Code has (exactly, or as
+  `<server>__<tool>`) is reported by a **non-blocking** `tracker-server` check in the
+  Tracker section, telling the user to connect it in Claude rather than in AgentGrid. It
+  does not block, because the scan can miss a never-used connector (§6). The list also tags
+  the row already in use.
 - A connector that is `pending` is not an error: naming it in `allowedTools` is
   what connects it (§2). Settings does not report pending as a problem.
 - Refresh failing leaves the file-derived list in place and reports why.

@@ -134,4 +134,45 @@ describe("buildSetupReport", () => {
     expect(find(r, "tracker").state).toBe("missing");
     expect(find(r, "forge").state).toBe("missing");
   });
+  // The user's ask: AgentGrid does not hold the connection, Claude Code does — so Settings has to
+  // say when the tracker it is pointed at is not something Claude Code has. Non-blocking: the
+  // scan reads `claudeAiMcpEverConnected`, which can miss a connector never used (spec §6), so
+  // an absent row is a strong hint, not proof. Test is what settles it.
+  describe("tracker-server: is the chosen tracker something Claude Code has?", () => {
+    const cfg: Integrations = { tracker: { preset: "jira", toolPrefix: "mcp__atlassian" }, forge: { preset: "github" }, projectRepos: {} };
+    const docs = { name: "claude.ai Claude Docs", toolPrefix: "mcp__claude_ai_Claude_Docs", origin: "account" as const };
+
+    it("is ok when the prefix matches a discovered server", () => {
+      const r = buildSetupReport({ ...base, cfg: { ...cfg, tracker: { preset: "jira", toolPrefix: docs.toolPrefix } },
+        discovery: { servers: [docs], problems: [] } });
+      expect(find(r, "tracker-server").state).toBe("ok");
+    });
+
+    it("also matches a prefix narrowed to one of the server's own tools", () => {
+      const r = buildSetupReport({ ...base, cfg: { ...cfg, tracker: { preset: "jira", toolPrefix: `${docs.toolPrefix}__guide` } },
+        discovery: { servers: [docs], problems: [] } });
+      expect(find(r, "tracker-server").state).toBe("ok");
+    });
+
+    it("does not let a different server that merely shares a leading string count", () => {
+      const r = buildSetupReport({ ...base, cfg: { ...cfg, tracker: { preset: "jira", toolPrefix: "mcp__claude_ai_Claude_DocsX" } },
+        discovery: { servers: [docs], problems: [] } });
+      expect(find(r, "tracker-server").state).toBe("missing");
+    });
+
+    it("names the missing prefix and says to connect it in Claude, without blocking", () => {
+      const r = buildSetupReport({ ...base, cfg, discovery: { servers: [docs], problems: [] } });
+      const c = find(r, "tracker-server");
+      expect(c.state).toBe("missing");
+      expect(c.blocks).toBe(false);
+      expect(c.detail).toContain("mcp__atlassian");
+      expect(c.detail).toMatch(/Claude/);
+      expect(r.ready).toBe(true);   // a never-used connector can be absent from the scan
+    });
+
+    it("is not reported when no tracker is configured — the tracker check already covers that", () => {
+      const r = buildSetupReport({ ...base, cfg: { projectRepos: {} }, discovery: { servers: [docs], problems: [] } });
+      expect(r.checks.find(c => c.id === "tracker-server")).toBeUndefined();
+    });
+  });
 });

@@ -106,6 +106,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   // but it must be carried back on every tracker write: `PUT` replaces `tracker` wholesale, so
   // a "Use this" that did not re-send it destroyed it silently (I3).
   const [trackerHints, setTrackerHints] = useState<string | undefined>(undefined);
+  // The prefix saved now, so the list can say which of Claude Code's servers is already in use.
+  const [trackerPrefix, setTrackerPrefix] = useState<string | undefined>(undefined);
   // "Use this" cannot preserve what it has not been told, so it waits for the config to land.
   const [integrationsLoaded, setIntegrationsLoaded] = useState(false);
   const [saved, setSaved] = useState<"live" | "restart" | null>(null);
@@ -125,6 +127,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       // option, and `hints` must survive a click on "Use this".
       if (i.tracker?.preset) setTrackerPreset(i.tracker.preset);
       setTrackerHints(i.tracker?.hints);
+      setTrackerPrefix(i.tracker?.toolPrefix);
       // A failed read still releases the button rather than disabling it forever, and cannot
       // cost anyone their `hints`: this GET fails only when the server is down (the PUT behind
       // "Use this" fails too) or when integrations.json is unreadable or corrupt, and
@@ -153,7 +156,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   // today that's "config-file" and "role", both `blocks: true` — is rendered generically here,
   // so a check id added later, or a failure mode the sections don't have a dedicated spot for,
   // shows up on its own rather than silently making `ready: false` unexplained.
-  const SHOWN = new Set(["tracker", "forge", "forge-username", "forge-token"]);
+  const SHOWN = new Set(["tracker", "tracker-server", "forge", "forge-username", "forge-token"]);
   const other = report?.checks.filter(c => !SHOWN.has(c.id) && c.state !== "ok") ?? [];
 
   const save = () => run(async () => {
@@ -168,6 +171,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     // (M7). The server refuses a tracker naming neither preset nor toolPrefix in any case.
     if (pasted !== null && pasted.trim()) body.tracker = JSON.parse(pasted);
     await api.putIntegrations(body as never);
+    if (body.tracker) setTrackerPrefix((body.tracker as { toolPrefix?: string }).toolPrefix);
     await load();
     setSaved(wasWired ? "restart" : "live");
   });
@@ -189,6 +193,9 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           <section>
             <h4>Tracker</h4>
             {check("tracker") && <CheckRow check={check("tracker")!} />}
+            {/* Only when it is a problem: "Claude Code has <prefix>" beside a green tracker row
+                says nothing the "in use" tag on the list below does not. */}
+            {check("tracker-server") && check("tracker-server")!.state !== "ok" && <CheckRow check={check("tracker-server")!} />}
             {report.discovery.servers.length > 0 && (
               <div className="row">
                 <label>Tracker type <select value={trackerPreset} onChange={e => setTrackerPreset(e.target.value)}>
@@ -199,13 +206,15 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             )}
             {report.discovery.servers.map(s => (
               <div key={s.name} className="row">
-                <span>{s.name} <span className="hint">({originLabel(s)})</span></span>
+                <span>{s.name} <span className="hint">({originLabel(s)})</span>
+                  {s.toolPrefix === trackerPrefix && <span className="hint"> — in use</span>}</span>
                 {/* `hints` goes back exactly as it came: `PUT` replaces `tracker` wholesale
                     (deliberately — that is what sheds a 0.4.0 `mcpServers`), so anything not
                     re-sent here is destroyed. */}
                 <button className="btn p" disabled={busy || !integrationsLoaded} onClick={() => void run(async () => {
                   await api.putIntegrations({ tracker: { preset: trackerPreset, toolPrefix: s.toolPrefix,
                     ...(trackerHints !== undefined ? { hints: trackerHints } : {}) } });
+                  setTrackerPrefix(s.toolPrefix);
                   await load();
                 })}>Use this</button>
               </div>
