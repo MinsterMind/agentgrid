@@ -1,7 +1,7 @@
 # Bug Workflow Screen — Design Spec
 
 **Date:** 2026-10-05
-**Status:** Draft — awaiting review
+**Status:** Approved 2026-10-05
 **Ships in:** 0.6.0
 
 ## 1. Problem
@@ -59,9 +59,12 @@ decides nothing a human has not already seen.
 
 ### 4.2 One path per dispatch
 
-`assumptionsPath` is `<artifactsDir>/assumptions-<assignmentId>.json` — unique per dispatch, so
-a later round can never re-read an earlier round's file, and a retried stage starts clean. The
-engine passes it into the prompt context beside `planPath` and `prBodyPath`.
+`assumptionsPath` is `<artifactsDir>/assumptions-<token>.json`, where `<token>` is a random id the
+engine generates for each dispatch *before* rendering the prompt (the assignment id does not
+exist until after the prompt is handed over). The engine keeps `{ token, stage, round }` per task
+in memory beside `currentDispatch`, so a later round can never re-read an earlier round's file and
+a retried stage starts clean. A dispatch interrupted by a restart loses its token; that stage is
+re-run by recovery anyway, under a new one.
 
 ### 4.3 Reading it
 
@@ -73,6 +76,7 @@ failed stage's assumptions are often the explanation for the failure.
 |---|---|
 | Missing | No items. Not a problem — an agent with nothing to report may skip it. |
 | Valid array | Items appended, each tagged `{ stage, round, at }`. |
+| An object whose only list is `{ "assumptions": [...] }` | Accepted as that array — a common way models wrap a list; refusing it would hide real content over packaging. |
 | Not JSON, not an array, or an item with an unknown `kind` / non-string `text` | No items from this file; `assumptionsProblem` is set to a one-line reason naming the stage. Never fails the stage. |
 | More than 20 items, or `text` over 500 chars | The first 20 kept, each `text` cut to 500 chars with `…`; `assumptionsProblem` says what was cut. |
 
@@ -83,7 +87,7 @@ remains the only thing that decides whether a stage happened.
 
 ```ts
 export interface Assumption {
-  id: string;                         // "<assignmentId>:<index>" — stable across re-renders
+  id: string;                         // "<token>:<index>" — stable across re-renders
   stage: BugStage;                    // the agent stage that reported it
   round: number;                      // task.feedbackRounds at dispatch; 0 for analyze/implement
   kind: "assumption" | "question";
@@ -131,7 +135,7 @@ markdown or HTML, and never fed back into a later prompt by this feature.
 
 **Bug list.** Every task, active first, then by `updatedAt`. Each row: key, title, and one status
 mark — running ●, waiting on you ⚠, failed ✗, done ✓, cancelled –. Below 900px the list
-collapses to a select above the detail.
+stacks above the detail as a short scrolling list.
 
 **Header.** Key and title; links to the ticket, the PR (when there is one) and the worktree path
 (copyable); `costUsd`; `feedbackRounds` when non-zero.
@@ -196,7 +200,9 @@ as the source it came in. Monospace is reserved for things that are literally co
 paths, branch names, commit ids and diff lines.
 
 **One markdown renderer.** A single `<Markdown>` component renders every markdown-bearing string
-on the screen: the plan, the ticket description, the PR body, stage notes, and assumption text
+on the screen: the plan, the ticket description and acceptance criteria (a collapsed **Ticket**
+section), stage notes, assumption text, and agent outcomes. (The PR body is not shown here: it
+lives on the pull request, which the header links to.)
 (inline formatting only — bold, code, links). It uses `react-markdown` with `remark-gfm` (tables,
 task lists, strikethrough), with **raw HTML disabled** (no `rehype-raw`), links opened in a new
 tab with `rel="noreferrer"`, and images not loaded (shown as their alt text with a link). Agent and
@@ -233,8 +239,9 @@ money is `$0.84`; stage ids are never shown raw — `review-feedback` reads "Add
 horizontal stepper that wraps at narrow widths rather than scrolling. Blocking items are the
 most prominent block on the page when present (accent border, at the top of the detail column
 under the header); when empty they collapse to one muted line. Keyboard: ↑/↓ moves through the
-bug list, Enter opens, and every action is a real `<button>` with a visible focus ring. Both
-light and dark themes.
+bug list, Enter opens, and every action is a real `<button>` with a visible focus ring. The app
+is dark-only today (`color-scheme: dark`); the screen uses its existing tokens and adds none that
+would need a light counterpart.
 
 ### 5.4 Components
 
