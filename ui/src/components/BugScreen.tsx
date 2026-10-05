@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, CheckCircle2, CircleDashed, ClipboardList, Code2, Copy, ExternalLink, FileDiff, GitMerge, GitPullRequest, Hand, Inbox, Loader, Minus, MinusCircle, Radar, ScrollText, Search, X, XCircle } from "lucide-react";
+import { Check, CheckCircle2, CircleDashed, CircleDot, History, Lightbulb, MessageCircleQuestion, OctagonAlert, Radio, TriangleAlert, ClipboardList, Code2, Copy, ExternalLink, FileDiff, GitMerge, GitPullRequest, Hand, Inbox, Loader, Minus, MinusCircle, Radar, ScrollText, Search, X, XCircle } from "lucide-react";
 import { api } from "../api";
 import { blockersFor, isNew, listStatus, nowFor, orderAssumptions, pipelineFor, stageLabel, type Blocker, type ListStatus, type StepState } from "../bugView";
 import { elapsed, relativeTime, usd } from "../format";
@@ -27,6 +27,7 @@ function stepIcon(id: string, state: StepState) {
 }
 /** For a failed or cancelled task, the stage it stopped at — "Failed · Implementing" says where. */
 const lastRealStage = (t: BugTask) => [...t.history].reverse().find(h => h.stage !== "failed" && h.stage !== "cancelled")?.stage ?? t.stage;
+const TERMINAL = ["done", "failed", "cancelled"];
 const ACTIVE_FIRST: ListStatus[] = ["waiting", "running", "failed", "done", "cancelled"];
 
 /** Re-render every 30s so relative times and elapsed stay honest. */
@@ -170,30 +171,32 @@ function BugDetail({ task, state, now, onBugChanged, onTranscript, onOpenSetting
         ))}
       </ol>
 
-      <section className={`blocking ${blockers.length ? "has" : "none"}`} aria-label="Blocking">
-        <h3>Blocking</h3>
-        {blockers.length === 0 ? <p className="dim">Nothing is blocking this bug.</p> : (
-          <ul>{blockers.map((b, i) => <BlockerRow key={i} b={b} onOpenSettings={onOpenSettings} />)}</ul>
-        )}
-      </section>
+      <div className="row2">
+        <section className={`panel blocking ${blockers.length ? "has" : "none"}`} aria-label="Blocking">
+          <h3 className="panel-title"><OctagonAlert /> Blocking{blockers.length ? ` · ${blockers.length}` : ""}</h3>
+          {blockers.length === 0 ? <p className="calm">Nothing is blocking this bug.</p> : (
+            <ul>{blockers.map((b, i) => <BlockerRow key={i} b={b} onOpenSettings={onOpenSettings} />)}</ul>
+          )}
+        </section>
+        <section className="panel now" aria-label="Now">
+          <h3 className="panel-title"><Radio /> Now</h3>
+          <div className="now-line"><b>{nowLine.headline}</b>{nowLine.since && <> · <Since iso={nowLine.since} kind={nowLine.sinceKind} now={now} /></>}</div>
+          {nowLine.detail && <div className="now-detail">{nowLine.detail}</div>}
+        </section>
+      </div>
 
-      <section className="now" aria-label="Now">
-        <h3>Now</h3>
-        <div className="now-line"><b>{nowLine.headline}</b>{nowLine.since && <> · <Since iso={nowLine.since} kind={nowLine.sinceKind} now={now} /></>}</div>
-        {nowLine.detail && <div className="now-detail">{nowLine.detail}</div>}
-      </section>
-
-      <section className="gates" aria-label="Actions">
+      <section className="panel gates" aria-label="Actions">
         <BugGates task={task} onChanged={onBugChanged} onTranscript={onTranscript} />
       </section>
 
-      <section className="assumptions" aria-label="Assumptions and questions">
-        <h3>Assumptions & questions {items.length > 0 && <span className="dim">({items.length})</span>}</h3>
-        {task.assumptionsProblem && <div className="warnline">⚠ {task.assumptionsProblem}</div>}
+      <section className="panel assumptions" aria-label="Assumptions and questions">
+        <h3 className="panel-title"><Lightbulb /> Assumptions &amp; questions{items.length ? ` · ${items.length}` : ""}</h3>
+        <p className="panel-desc">What the agent decided on its own, or couldn't decide. Overturn any of them with “Request changes”.</p>
+        {task.assumptionsProblem && <div className="warnline"><TriangleAlert /> {task.assumptionsProblem}</div>}
         {items.length === 0 ? <p className="dim">The agent has not reported any assumptions yet.</p> : (
           <ul>{items.map(a => (
             <li key={a.id} className={`assumption ${a.kind}`}>
-              <span className="akind">{a.kind === "question" ? "? Question" : "• Assumed"}</span>
+              <span className="akind">{a.kind === "question" ? <><MessageCircleQuestion /> Question</> : <><CircleDot /> Assumed</>}</span>
               <Markdown inline text={a.text} />
               <span className="atag">{stageLabel(a.stage)}{a.round > 0 ? ` · round ${a.round}` : ""}</span>
               {isNew(a, task) && <span className="chip new">new</span>}
@@ -203,21 +206,21 @@ function BugDetail({ task, state, now, onBugChanged, onTranscript, onOpenSetting
       </section>
 
       {task.issue.description.trim() && (
-        <details className="section-collapse"><summary>Ticket</summary>
+        <details className="section-collapse panel"><summary>Ticket</summary>
           <Markdown text={task.issue.description} />
           {task.issue.acceptanceCriteria.length > 0 && <><h4>Acceptance criteria</h4><ul>{task.issue.acceptanceCriteria.map((c, i) => <li key={i}><Markdown inline text={c} /></li>)}</ul></>}
         </details>
       )}
 
       {plan && task.gate?.kind !== "plan" && (
-        <details className="section-collapse"><summary>Plan</summary>
+        <details className="section-collapse panel"><summary>Plan</summary>
           <PlanView markdown={plan} files={diff?.files.map(f => f.path)} onOpenFile={openInDiff} />
         </details>
       )}
 
       {hasDiff && task.gate?.kind !== "diff" && (
-        <section id="bug-changes" aria-label="Changes">
-          <h3>Changes</h3>
+        <section id="bug-changes" className="panel" aria-label="Changes">
+          <h3 className="panel-title"><FileDiff /> Changes</h3>
           {diffErr ? <ErrorCard text={`Could not load the changes. ${diffErr}`} />
             : !diff ? <div className="skeleton" aria-label="Loading the changes"><div /><div /></div>
             : <ul className="difffiles">{diff.files.map(f => (
@@ -234,10 +237,12 @@ function BugDetail({ task, state, now, onBugChanged, onTranscript, onOpenSetting
         </section>
       )}
 
-      <section className="timeline" aria-label="Timeline">
-        <h3>Timeline</h3>
+      <section className="panel timeline" aria-label="Timeline">
+        <h3 className="panel-title"><History /> Timeline</h3>
         <ol>{[...task.history].reverse().map((h, i) => (
-          <li key={i}><When iso={h.at} now={now} /> <b>{stageLabel(h.stage)}</b>{h.note && <> — <Markdown inline text={h.note} /></>}</li>
+<li key={i} data-tone={i === 0 && (task.gate || pending) ? "waiting" : h.stage === "failed" ? "failed" : h.stage === "cancelled" ? "neutral" : i === 0 && !TERMINAL.includes(h.stage) ? "current" : "done"}>
+            <When iso={h.at} now={now} /><span className="d" aria-hidden /><span><b>{stageLabel(h.stage)}</b>{h.note && <> — <Markdown inline text={h.note} /></>}</span>
+          </li>
         ))}</ol>
       </section>
     </div>

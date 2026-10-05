@@ -455,5 +455,9 @@ describe("errors as cards everywhere", () => {
     expect(within(reason).getByRole("link", { name: /#7/ })).toHaveAttribute("href", "https://bb/pr/7");
     expect(await screen.findByRole("button", { name: "Approve" })).toBeInTheDocument();
   });
+  it("says what approving the plan does", async () => {
+    render(<BugPanel task={task("plan-review")} onChanged={vi.fn()} />);
+    expect(await screen.findByText(/You review the diff before anything is pushed/)).toBeInTheDocument();
+  });
 });
 

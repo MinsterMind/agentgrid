@@ -22,4 +22,11 @@ describe("PlanView", () => {
     expect(screen.getByText(/doesn't follow the usual sections/i)).toBeInTheDocument();
     expect(container.querySelector("strong")!.textContent).toBe("Root cause");
   });
+  // Review Focus 5
+  it("lays sections in a grid only when the plan is structured", () => {
+    const { container, rerender } = render(<PlanView markdown={PLAN} />);
+    expect(container.querySelector(".plan")).toHaveClass("structured");
+    rerender(<PlanView markdown={"just some notes"} />);
+    expect(container.querySelector(".plan")).toHaveClass("whole");
+  });
 });

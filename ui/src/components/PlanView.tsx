@@ -6,7 +6,7 @@ export function PlanView({ markdown, files, onOpenFile }: { markdown: string; fi
   const { sections, structured } = planSections(markdown);
   const fileLinks = files && onOpenFile ? { files, onOpen: onOpenFile } : undefined;
   return (
-    <div className="plan">
+    <div className={`plan ${structured ? "structured" : "whole"}`}>
       {!structured && <p className="hint">This plan doesn't follow the usual sections.</p>}
       {sections.map((s, i) => (
         <section key={i} className="plansec">

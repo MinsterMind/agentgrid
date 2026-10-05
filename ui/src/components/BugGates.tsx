@@ -120,6 +120,7 @@ export function BugGates({ task, onChanged, onTranscript }: { task: BugTask; onC
           <div className="row">
             <button className="btn p" disabled={busy || !planReady} onClick={() => act(() => api.approveBug(task.id))}>Approve &amp; implement</button>
             <button className="btn" disabled={busy} onClick={() => setAsking(true)}>Request changes…</button>
+            <span className="hint gate-explain">Approving lets the agent write the fix. You review the diff before anything is pushed.</span>
             <button className="btn d" disabled={busy} onClick={() => act(() => api.cancelBug(task.id))}>Cancel task</button>
           </div>
         </div>

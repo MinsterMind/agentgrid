@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BugScreen } from "../src/components/BugScreen";
 import type { BugTask } from "../src/types";
@@ -209,5 +209,26 @@ describe("BugScreen — pipeline", () => {
     const strip = screen.getByRole("list", { name: "Pipeline" });
     expect(within(strip).getByText("Implement").closest("li")).toHaveAttribute("data-state", "failed");
     expect(within(strip).getByText("Diff review").closest("li")).toHaveAttribute("data-state", "todo");
+  });
+});
+
+describe("BugScreen — panels", () => {
+  it("puts Blocking beside Now, and only glows Blocking when something blocks", () => {
+    renderScreen([task("plan-review")]);
+    const blocking = screen.getByRole("region", { name: /blocking/i });
+    expect(blocking).toHaveClass("panel"); expect(blocking).toHaveClass("has");
+    expect(blocking.parentElement).toBe(screen.getByRole("region", { name: /now/i }).parentElement);
+    expect(blocking.parentElement).toHaveClass("row2");
+    cleanup();
+    // Review Focus 3
+    renderScreen([task("implementing")]);
+    expect(screen.getByRole("region", { name: /blocking/i })).not.toHaveClass("has");
+  });
+
+  it("colours timeline dots by what each entry was", () => {
+    renderScreen([task("plan-review", { history: [{ stage: "intake", at: "a", note: "" }, { stage: "analyzing", at: "b", note: "" }, { stage: "plan-review", at: "c", note: "" }] })]);
+    const items = within(screen.getByRole("region", { name: /timeline/i })).getAllByRole("listitem");
+    expect(items[0]).toHaveAttribute("data-tone", "waiting");
+    expect(items[1]).toHaveAttribute("data-tone", "done");
   });
 });
