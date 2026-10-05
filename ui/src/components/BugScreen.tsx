@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, CircleDashed, Hand, Loader, MinusCircle, XCircle } from "lucide-react";
+import { CheckCircle2, CircleDashed, Copy, ExternalLink, GitPullRequest, Hand, Loader, MinusCircle, ScrollText, XCircle } from "lucide-react";
 import { api } from "../api";
 import { blockersFor, isNew, listStatus, nowFor, orderAssumptions, pipelineFor, stageLabel, type Blocker, type ListStatus, type StepState } from "../bugView";
 import { elapsed, relativeTime, usd } from "../format";
@@ -135,15 +135,21 @@ function BugDetail({ task, state, now, onBugChanged, onTranscript, onOpenSetting
 
   return (
     <div className="bugdetail">
-      <header className="bugdetail-head">
-        <h2><a href={task.issue.url} target="_blank" rel="noreferrer">{task.issue.key}</a> <span>{task.issue.title}</span></h2>
-        <div className="row dim">
-          {task.pr && <a href={task.pr.url} target="_blank" rel="noreferrer">Pull request #{task.pr.number}</a>}
-          <code title="Worktree">{task.worktree}</code>
-          <button className="btn sm" onClick={() => void navigator.clipboard?.writeText(task.worktree)}>Copy path</button>
-          <span>{usd(task.costUsd)}</span>
-          {task.feedbackRounds > 0 && <span>Review round {task.feedbackRounds}</span>}
-          {agent && <button className="btn sm" onClick={() => onTranscript(agent.id)}>Transcript</button>}
+      <header className="dhead">
+        <div className="dtitle">
+          <h2><span className="key">{task.issue.key}</span>{task.issue.title}</h2>
+          <div className="meta">
+            <a href={task.issue.url} target="_blank" rel="noreferrer"><ExternalLink /> Ticket</a>
+            {task.pr && <a href={task.pr.url} target="_blank" rel="noreferrer"><GitPullRequest /> Pull request #{task.pr.number}</a>}
+            <span className="mono path" title="Worktree">{task.worktree}</span>
+            <button className="btn sm" onClick={() => void navigator.clipboard?.writeText(task.worktree)}><Copy /> Copy path</button>
+            {agent && <span className="chip">Bug fixer · {agent.displayName}</span>}
+            {agent && <button className="btn sm" onClick={() => onTranscript(agent.id)}><ScrollText /> Transcript</button>}
+          </div>
+        </div>
+        <div className="dcounters">
+          <div className="counter"><span className="num">{usd(task.costUsd)}</span><span className="lbl">Cost</span></div>
+          <div className={`counter ${task.feedbackRounds ? "" : "zero"}`}><span className="num">{task.feedbackRounds}</span><span className="lbl">Review rounds</span></div>
         </div>
       </header>
 

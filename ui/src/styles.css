@@ -235,7 +235,14 @@ svg.lucide { width:14px; height:14px; flex:none; }
 .bugrow .s { grid-column:1/-1; font-family:var(--mono); font-size:10.5px; text-transform:uppercase; letter-spacing:.5px; display:flex; align-items:center; gap:5px; }
 .s.running { color:var(--st-working); } .s.waiting { color:var(--st-needs-you); } .s.failed { color:var(--st-failed); } .s.done { color:var(--st-done); } .s.cancelled { color:var(--text-muted); }
 .bugdetail { overflow:auto; display:flex; flex-direction:column; gap:14px; padding-right:4px; }
-.bugdetail h2 { margin:0; font-size:16px; } .bugdetail h2 a { color:var(--accent); text-decoration:none; } .bugdetail h2 span { font-weight:500; }
+.dhead { display:flex; align-items:flex-start; gap:16px; flex-wrap:wrap; }
+.dtitle { flex:1; min-width:320px; }
+.dhead h2 { margin:0; font-size:18px; font-weight:600; overflow-wrap:anywhere; }
+.dhead h2 .key { font-family:var(--mono); color:var(--accent); margin-right:8px; }
+.dhead .meta { display:flex; gap:12px; align-items:center; margin-top:6px; font-size:12px; color:var(--text-muted); flex-wrap:wrap; }
+.dhead .meta a { color:var(--text-muted); text-decoration:none; display:inline-flex; gap:4px; align-items:center; } .dhead .meta a:hover { color:var(--accent); }
+.dhead .path { color:var(--text-muted); font-size:11.5px; max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dcounters { display:flex; gap:20px; }
 .bugdetail h3 { margin:0 0 6px; font-size:11px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.5px; }
 .bugdetail section { background:var(--surface); border:1px solid var(--grid-line); border-radius:10px; padding:12px 14px; }
 .pipeline { list-style:none; margin:0; padding:0; display:flex; flex-wrap:wrap; gap:6px; }

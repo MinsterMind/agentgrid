@@ -88,7 +88,7 @@ describe("BugScreen", () => {
 
   it("renders the ticket description as markdown", async () => {
     const { container } = render(<BugScreen state={stateWith([task("implementing", { issue: { ...ISSUE, description: "Steps:\n1. **Open** it" } })]) as never} selectedId="bt1" onSelect={vi.fn()} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={vi.fn()} />);
-    await userEvent.click(screen.getByText("Ticket"));
+    await userEvent.click(container.querySelector(".section-collapse summary") as HTMLElement);   // the section, not the header's Ticket link
     expect(container.querySelector(".section-collapse strong")!.textContent).toBe("Open");
   });
 
@@ -176,5 +176,18 @@ describe("BugScreen — the list", () => {
   it("heads the list with its count", () => {
     renderScreen([task("implementing"), task("done", { id: "bt2" })], "bt1");
     expect(screen.getByRole("listbox").closest(".buglist")!.querySelector(".lh")).toHaveTextContent(/Bug fixes\s*2/);
+  });
+});
+
+describe("BugScreen — header", () => {
+  it("shows cost and review rounds as counters, and the agent by name", () => {
+    const state = { ...stateWith([task("monitoring", { costUsd: 0.84, feedbackRounds: 2 })]),
+      agents: [{ id: "bugfix@r", role: "bugfix", repo: "/r", displayName: "Kai", createdAt: "", state: "free", currentAssignmentId: null }] };
+    render(<BugScreen state={state as never} selectedId="bt1" onSelect={vi.fn()} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={vi.fn()} />);
+    const head = document.querySelector(".dhead")!;
+    expect(within(head as HTMLElement).getByText("Cost").closest(".counter")).toHaveTextContent("$0.84");
+    expect(within(head as HTMLElement).getByText("Review rounds").closest(".counter")).toHaveTextContent("2");
+    expect(head).toHaveTextContent("Bug fixer · Kai");
+    expect(within(head as HTMLElement).getByRole("link", { name: /ticket/i })).toHaveAttribute("href", "https://x/PAY-42");
   });
 });
