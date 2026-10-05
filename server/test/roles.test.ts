@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdtemp, writeFile, readdir } from "node:fs/promises";
+import { mkdtemp, writeFile, readdir, copyFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseRole, loadRoles, ensureDefaultRoles } from "../src/store/roles.js";
@@ -60,5 +60,49 @@ describe("loadRoles / ensureDefaultRoles", () => {
     await writeFile(path.join(dir, "coder.md"), `---\nmodel: mine\n---\nmine`);
     await ensureDefaultRoles(dir, defaults);
     expect((await loadRoles(dir)).find(r => r.name === "coder")!.model).toBe("mine");
+  });
+  // A role added to AgentGrid after someone first ran it never reached them: seeding only ran
+  // into an empty dir, so a machine set up before `bugfix` existed failed every bug fix with
+  // "the bugfix role could not be resolved". New defaults must arrive; deletions must stick.
+  describe("defaults added in a later version", () => {
+    const defaults = path.resolve("roles");
+    const ORIGINAL = ["architect.md", "coder.md", "demo-prep.md", "devops.md", "reviewer.md", "tester.md"];
+    const legacyDir = async (files = ORIGINAL) => {
+      const dir = await mkdtemp(path.join(tmpdir(), "roles-"));
+      for (const f of files) await copyFile(path.join(defaults, f), path.join(dir, f));
+      return dir;
+    };
+
+    it("reach an install seeded before they existed, leaving its own edits alone", async () => {
+      const dir = await legacyDir();
+      await writeFile(path.join(dir, "coder.md"), `---\nmodel: mine\n---\nmine`);
+      await ensureDefaultRoles(dir, defaults);
+      const roles = await loadRoles(dir);
+      expect(roles.map(r => r.name)).toContain("bugfix");
+      expect(roles.find(r => r.name === "coder")!.model).toBe("mine");
+    });
+
+    it("do not bring back an original role the user deleted before upgrading", async () => {
+      const dir = await legacyDir(ORIGINAL.filter(f => f !== "devops.md"));
+      await ensureDefaultRoles(dir, defaults);
+      const files = await readdir(dir);
+      expect(files).toContain("bugfix.md");
+      expect(files).not.toContain("devops.md");
+    });
+
+    it("are copied once: deleting one afterwards sticks", async () => {
+      const dir = await legacyDir();
+      await ensureDefaultRoles(dir, defaults);
+      await rm(path.join(dir, "bugfix.md"));
+      await ensureDefaultRoles(dir, defaults);
+      expect(await readdir(dir)).not.toContain("bugfix.md");
+    });
+
+    it("never overwrite a same-named role the user wrote themselves", async () => {
+      const dir = await legacyDir();
+      await writeFile(path.join(dir, "bugfix.md"), `---\nmodel: mine\n---\nmine`);
+      await ensureDefaultRoles(dir, defaults);
+      expect((await loadRoles(dir)).find(r => r.name === "bugfix")!.model).toBe("mine");
+    });
   });
 });
