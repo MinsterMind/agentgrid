@@ -146,7 +146,9 @@ export function App() {
       <footer className="foot">
         <label><input type="checkbox" defaultChecked={settings.notifyWaiting} onChange={e => (settings.notifyWaiting = e.target.checked)} /> notify when someone needs me</label>
         <label><input type="checkbox" defaultChecked={settings.notifyFinished} onChange={e => (settings.notifyFinished = e.target.checked)} /> notify on done/failed</label>
-        <span className="dim">{route.view === "bugs" ? "keys: ↑↓ move · enter open · esc grid" : "keys: 1–9 select · a allow · d deny · o terminal · esc"}</span>
+        <span className="keys">{route.view === "bugs"
+          ? <><kbd>↑</kbd><kbd>↓</kbd> move <kbd>⏎</kbd> open <kbd>Esc</kbd> back to agents</>
+          : <><kbd>1</kbd>–<kbd>9</kbd> select <kbd>A</kbd> allow <kbd>D</kbd> deny <kbd>O</kbd> terminal <kbd>Esc</kbd> clear</>}</span>
       </footer>
       {spawnOpen && <SpawnDialog roles={s.roles} recentRepos={recentRepos} onSpawn={async i => { const a = await api.createAgent(i); dispatch({ type: "select", id: a.id }); }} onClose={() => setSpawnOpen(false)} />}
       {bugOpen && <BugLauncher onCreated={t => { setBugOpen(false); dispatch({ type: "select", id: t.agentId }); route.go({ view: "bugs", bugId: t.id }); }} onClose={() => setBugOpen(false)} onOpenSettings={() => { setBugOpen(false); setSettingsOpen(true); }} />}

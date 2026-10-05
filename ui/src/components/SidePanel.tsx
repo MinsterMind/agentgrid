@@ -6,7 +6,7 @@ import { BugPanel } from "./BugPanel";
 import { ErrorCard } from "./ErrorCard";
 import { Markdown } from "./Markdown";
 const TerminalPane = lazy(() => import("./TerminalPane").then(m => ({ default: m.TerminalPane })));
-import { elapsed, usd } from "../format";
+import { basename, elapsed, usd } from "../format";
 
 type Entry = { ts: string; role: string; kind: string; text: string };
 
@@ -75,7 +75,7 @@ export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, 
         <button className="tab" disabled={!termAvailable} title={busy ? "Wait for the current task to finish" : live?.kind === "interactive" ? "Open in another terminal — close it there to use it here" : live ? "Attach to the background session" : terminalSessionId ? "Open this session in a terminal here" : "No session yet"} onClick={() => setTab("terminal")}>Terminal</button>
       </div>
       <div className="hd"><div className="av" data-state={agent.state}>{role?.avatar ?? "🤖"}</div>
-        <div><div className="name">{agent.displayName} — {agent.role}</div><div className="repo">{agent.repo}{a ? ` · #${a.id}` : ""}</div>{agent.resumeSessionId && <div className="repo session-line">🔗 continues session <code title={agent.resumeSessionId}>{agent.resumeSessionId.slice(0, 8)}…</code>
+        <div><div className="name">{agent.displayName} — {agent.role}</div><div className="repo" data-testid="side-repo" title={agent.repo}>{basename(agent.repo)}{a ? ` · #${a.id}` : ""}</div>{agent.resumeSessionId && <div className="repo session-line">🔗 continues session <code title={agent.resumeSessionId}>{agent.resumeSessionId.slice(0, 8)}…</code>
           <button className="btn sm" title="Copy session id" onClick={() => { copyText(agent.resumeSessionId!); setCopied(true); setTimeout(() => setCopied(false), 1500); }}>{copied ? "copied" : "⧉"}</button>
           <button className="btn sm" title="Rename session" onClick={() => setRenaming(renaming === null ? "" : null)}>✎</button>
           {live && <span className="st-live"> · live in {live.kind === "background" ? "background" : "terminal"} ({live.status})</span>}</div>}

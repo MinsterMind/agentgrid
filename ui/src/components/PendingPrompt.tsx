@@ -23,7 +23,7 @@ export function PendingPrompt({ pending, onDecide, who }: { pending: Pending; on
         <div className="qtitle">{who ? `${who} ${describeRequest(pending.toolName)}` : describeRequest(pending.toolName).replace(/^wants/, "Wants")}</div>
         <pre className="cmd">{summarise(pending.input)}</pre>
         <div className="row">
-          <button className="btn g" onClick={() => onDecide({ kind: "allow" })}>Allow</button>
+          <button className="btn p" onClick={() => onDecide({ kind: "allow" })}>Allow</button>
           {pending.suggestions.length > 0 && <button className="btn" onClick={() => onDecide({ kind: "always" })}>Always allow</button>}
           <button className="btn d" onClick={() => onDecide({ kind: "deny" })}>Deny</button>
         </div>

@@ -15,7 +15,10 @@ test("spawn → assign → answer permission → ack", async ({ page }) => {
   await expect(tile).toHaveAttribute("data-state", "waiting");
   await expect(page).toHaveTitle("(1) AgentGrid");
   await expect(page.getByTestId("pending-permission")).toContainText("echo hi");
-  await page.getByRole("button", { name: "Allow", exact: true }).click();
+  // Answered right on the tile — the request card shows the exact command first.
+  const request = tile.getByTestId("tile-request");
+  await expect(request).toContainText("echo hi");
+  await request.getByRole("button", { name: "Allow", exact: true }).click();
 
   await expect(tile).toHaveAttribute("data-state", "done");
   await expect(tile).toContainText("All done (fake).");
@@ -55,7 +58,7 @@ test("sessions panel: adopt a past session and assign to it", async ({ page }) =
   await tile.getByPlaceholder(/assign work/i).fill("continue where we left off");
   await tile.getByPlaceholder(/assign work/i).press("Enter");
   await expect(tile).toHaveAttribute("data-state", "waiting");
-  await page.getByRole("button", { name: "Allow", exact: true }).click();
+  await page.getByTestId("pending-permission").getByRole("button", { name: "Allow", exact: true }).click();
   await expect(tile).toHaveAttribute("data-state", "done");
   await page.getByRole("button", { name: "Sessions" }).click();
   await expect(page.getByTestId("sessions-recent")).toContainText("on grid as");
@@ -99,7 +102,7 @@ test("live sessions appear on the grid by default and can be pulled in", async (
   await expect(ghost).toHaveCount(0);                       // no longer a ghost — it's an agent now
   const tile = page.locator(".tile.selected");
   await expect(tile).toContainText("🔗");
-  await expect(tile.getByTestId("live-note")).toContainText("live in background");
+  await expect(tile.getByTestId("live-note")).toContainText("Live in the background");
   await page.getByRole("button", { name: "Terminal", exact: true }).click();   // attaches to the background session
   await expect(page.getByTestId("terminal-pane").locator(".xterm")).toContainText("claude attach fake1");
 });

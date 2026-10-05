@@ -63,4 +63,10 @@ describe("PendingPrompt question", () => {
     expect(box).toHaveTextContent("Cody wants to run a shell command");
     expect(box.querySelector(".cmd")).toHaveTextContent("kubectl rollout restart deploy/api");
   });
+
+  it("makes Allow the primary action, the same as on the tile", () => {
+    render(<PendingPrompt pending={perm()} onDecide={vi.fn()} />);
+    expect(screen.getByRole("button", { name: /^allow$/i })).toHaveClass("p");
+  });
+
 });

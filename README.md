@@ -5,7 +5,7 @@ A local dashboard for running a **team of Claude Code agents in parallel** — a
 Each tile on the grid is a persona: a *role* (reviewer, coder, devops…) spawned into a *repo*. You assign work with one keystroke, watch what everyone is doing at a glance, answer permission prompts and questions inline, and drop into the full terminal session only when you need depth. When an agent finishes, it goes back to *free* and waits for the next task — remembering what it learned about that repo.
 
 ```
-┌ ⬢ AgentGrid ─ 12 agents ─ ● 5 working  ● 2 need you  ● 2 done  ○ 3 free ─ $4.12 today ─ [+ Spawn] ┐
+┌ ⬢ AgentGrid ─ 12 agents ─ ● 5 working  ● 2 need you  ● 2 done  ○ 3 free ─ $4.12 today ─ [+ New agent] ┐
 │                                                                                                   │
 │  🛠️ Dev — devops     🧐 Rhea — reviewer   👩‍💻 Cody — coder    🧪 Tess — tester      │ Dev — devops │
 │  hrns  [needs you]   payments [question]  hrns              hrns                 │ #a41 · 6m    │
@@ -57,7 +57,7 @@ npm run build
 npm run serve            # → http://127.0.0.1:4800
 ```
 
-1. Click **+ Spawn**, pick a role and browse to a repo (git repos are badged; one click selects). The agent appears on the grid as *free*.
+1. Click **+ New agent**, pick a role and browse to a repo (git repos are badged; one click selects). The agent appears on the grid as *free*.
 2. Type a task into its tile and press **⏎**. The tile turns blue (*working*) and shows what the agent is doing.
 3. When it needs you, the tile glows amber (*needs you*). Click it: the side panel shows the permission or question — **Allow / Always allow / Deny**, or pick an answer. Or press `a` / `d`.
 4. When it finishes the tile turns green (*done*) with a summary; failed tasks turn red. Press **Ack → free** to put the agent back in the pool.
@@ -69,6 +69,7 @@ npm run serve            # → http://127.0.0.1:4800
 10. **Sessions** (top bar) lists every Claude Code session on the machine — filter by name/repo/id, **rename** (✎, stored in Claude Code itself), or **pull in by session id** for anything older than the list — live terminal and background sessions with their status, plus recent history. **Adopt** a past session to put it on the grid: that agent then *continues that conversation* with every prompt you assign (🔗 on the tile). Background sessions get **Attach in Terminal**.
 11. **🐞 Fix a bug** (top bar) turns a tracked ticket into a merged PR, gated at every step: AgentGrid pulls the issue from your tracker, an agent analyses it and writes a plan you approve, and implements the fix in a private git worktree, showing you the diff. Approving the diff hands off to the server, which pushes exactly the commit you reviewed and opens the pull request itself — no agent ever holds a forge credential. From there it keeps watching: if a reviewer asks for changes, or your branch conflicts with the base, AgentGrid opens a new diff-review gate with the agent's fix — approving it pushes exactly the commit you reviewed, no more, no less. Once the PR is approved, a merge gate lets you pick the merge method and click Merge; AgentGrid confirms the merge really landed, tears down the worktree, and frees the agent for its next task. The finished card (merged, or closed without merging) stays up until you dismiss it. The first time you click it on an unconfigured machine, it explains exactly what's missing and gets out of your way — see **Set up the bug-fix workflow** below.
 12. **Bugs** (top bar) shows one bug fix end to end, on one page: where it is in the pipeline, what the agent is doing right now, everything blocking it (an approval waiting on you, a failed stage, failing checks, a conflict, a setup problem), and every assumption or open question the agent reported along the way — questions first, newest marked. The approve / request-changes / merge actions are on the same page. Plans, diffs and errors are rendered — sections, a real diff, readable error cards — never shown as raw markdown. Each bug has its own link (`#/bugs/bt3`); starting a fix opens it there, and a bug's card in the side panel has an **Open full view** link.
+13. **The look.** AgentGrid 0.7 shows live counters in the top bar, glows each agent by state (cyan working, amber needs you, green done, red failed), and lets you Allow or Deny a request right on the agent's card.
 
 Everything lives in `~/.agentgrid/` as plain files — roles, agents, assignments, and each agent's memory.
 

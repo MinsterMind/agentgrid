@@ -103,4 +103,12 @@ describe("SidePanel activity (feature: status + reply from Details)", () => {
     expect(stats).toHaveTextContent(/ELAPSED/); expect(stats).toHaveTextContent(/TURNS\s*2/); expect(stats).toHaveTextContent(/COST\s*\$0\.30/);
     expect(screen.getByTestId("pending-permission")).toHaveTextContent(/wants to run a shell command/);
   });
+
+  it("names the repo by its folder, with the full path on hover", () => {
+    render(<SidePanel agent={{ ...agent, repo: "/Users/me/work/infra" }} role={role} assignment={asg} {...fns} />);
+    const repo = screen.getByTestId("side-repo");
+    expect(repo).toHaveTextContent(/^infra/);
+    expect(repo).toHaveAttribute("title", "/Users/me/work/infra");
+  });
+
 });
