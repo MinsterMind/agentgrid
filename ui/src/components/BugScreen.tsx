@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, CircleDashed, Copy, ExternalLink, GitPullRequest, Hand, Loader, MinusCircle, ScrollText, XCircle } from "lucide-react";
+import { Check, CheckCircle2, CircleDashed, ClipboardList, Code2, Copy, ExternalLink, FileDiff, GitMerge, GitPullRequest, Hand, Inbox, Loader, Minus, MinusCircle, Radar, ScrollText, Search, X, XCircle } from "lucide-react";
 import { api } from "../api";
 import { blockersFor, isNew, listStatus, nowFor, orderAssumptions, pipelineFor, stageLabel, type Blocker, type ListStatus, type StepState } from "../bugView";
 import { elapsed, relativeTime, usd } from "../format";
@@ -15,10 +15,16 @@ const STATUS: Record<ListStatus, { Icon: typeof Hand; word: string }> = {
   running: { Icon: Loader, word: "Running" }, waiting: { Icon: Hand, word: "Waiting on you" },
   failed: { Icon: XCircle, word: "Failed" }, done: { Icon: CheckCircle2, word: "Done" }, cancelled: { Icon: MinusCircle, word: "Cancelled" },
 };
-const STEP: Record<StepState, { icon: string; word: string }> = {
-  done: { icon: "✓", word: "done" }, current: { icon: "●", word: "in progress" }, waiting: { icon: "⚠", word: "waiting on you" },
-  failed: { icon: "✗", word: "failed" }, cancelled: { icon: "–", word: "cancelled" }, todo: { icon: "○", word: "not reached" },
+const STEP_ICON: Record<string, typeof Hand> = {
+  intake: Inbox, analyze: Search, plan: ClipboardList, implement: Code2, diff: FileDiff, pr: GitPullRequest, monitor: Radar, merge: GitMerge,
 };
+const STEP_WORD: Record<StepState, string> = {
+  done: "done", current: "in progress", waiting: "waiting on you", failed: "failed", cancelled: "cancelled", todo: "not reached",
+};
+function stepIcon(id: string, state: StepState) {
+  const I = state === "done" ? Check : state === "waiting" ? Hand : state === "failed" ? X : state === "cancelled" ? Minus : STEP_ICON[id] ?? CircleDashed;
+  return <I />;
+}
 /** For a failed or cancelled task, the stage it stopped at — "Failed · Implementing" says where. */
 const lastRealStage = (t: BugTask) => [...t.history].reverse().find(h => h.stage !== "failed" && h.stage !== "cancelled")?.stage ?? t.stage;
 const ACTIVE_FIRST: ListStatus[] = ["waiting", "running", "failed", "done", "cancelled"];
@@ -153,12 +159,12 @@ function BugDetail({ task, state, now, onBugChanged, onTranscript, onOpenSetting
         </div>
       </header>
 
-      <ol className="pipeline" aria-label="Pipeline">
+      <ol className="pipe" aria-label="Pipeline">
         {steps.map(s => (
-          <li key={s.id} data-state={s.state} className={`step ${s.state}`}>
-            <span className="step-icon" aria-hidden>{STEP[s.state].icon}</span>
-            <span className="step-label">{s.label}</span>
-            <span className="step-word">{STEP[s.state].word}</span>
+          <li key={s.id} data-state={s.state} className={`pstep ${s.state}`}>
+            <span className="pdot" aria-hidden>{stepIcon(s.id, s.state)}</span>
+            <span className="pname">{s.label}</span>
+            <span className="pword">{STEP_WORD[s.state]}</span>
             {s.badge && <span className="chip">{s.badge}</span>}
           </li>
         ))}

@@ -191,3 +191,23 @@ describe("BugScreen — header", () => {
     expect(within(head as HTMLElement).getByRole("link", { name: /ticket/i })).toHaveAttribute("href", "https://x/PAY-42");
   });
 });
+
+describe("BugScreen — pipeline", () => {
+  it("is a connected stepper: dot, name and word per step", () => {
+    renderScreen([task("plan-review")]);
+    const strip = screen.getByRole("list", { name: "Pipeline" });
+    const step = within(strip).getByText("Plan review").closest("li")!;
+    expect(step).toHaveAttribute("data-state", "waiting");
+    expect(step.querySelector(".pdot svg")).not.toBeNull();
+    expect(step.querySelector(".pword")).toHaveTextContent("waiting on you");
+    expect(strip.textContent).not.toMatch(/[⚠✗✓●○]/);
+  });
+
+  // Review Focus 2
+  it("stops at a failed step: red word there, nothing reached after it", () => {
+    renderScreen([task("failed", { history: [{ stage: "intake", at: "a", note: "" }, { stage: "implementing", at: "b", note: "" }, { stage: "failed", at: "c", note: "" }] })]);
+    const strip = screen.getByRole("list", { name: "Pipeline" });
+    expect(within(strip).getByText("Implement").closest("li")).toHaveAttribute("data-state", "failed");
+    expect(within(strip).getByText("Diff review").closest("li")).toHaveAttribute("data-state", "todo");
+  });
+});
