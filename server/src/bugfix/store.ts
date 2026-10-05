@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { mkdir, readdir, readFile, writeFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { NotFound } from "../store/store.js";
-import { TERMINAL_STAGES, type BugTask, type PrInfo, type TrackerIssue, type Transition } from "./types.js";
+import { TERMINAL_STAGES, type Assumption, type BugTask, type PrInfo, type TrackerIssue, type Transition } from "./types.js";
 
 let seq = 0;
 const writeChains = new Map<string, Promise<unknown>>();
@@ -54,6 +54,8 @@ export class BugTaskStore extends EventEmitter {
       t.prCheckedAt ??= null;
       t.outcome ??= null;
       t.checksRoundHead ??= null;
+      t.assumptions ??= [];
+      t.assumptionsProblem ??= null;
       this.tasks.set(t.id, t);
       const n = Number(t.id.slice(2));
       if (n >= this.next) this.next = n + 1;
@@ -103,6 +105,7 @@ export class BugTaskStore extends EventEmitter {
       id: `bt${this.next++}`, ...input, stage: "intake", gate: null, approvedHead: null, outcome: null, checksRoundHead: null, pr: null, prCheckedAt: null,
       costUsd: 0, history: [{ stage: "intake", at: now, note: "" }], error: null,
       createdAt: now, updatedAt: now, feedbackRounds: 0,
+      assumptions: [], assumptionsProblem: null,
     };
     await mkdir(this.dir(task.id), { recursive: true });
     return withWriteChain(this.file(task.id), () => this.save(task));
@@ -125,6 +128,17 @@ export class BugTaskStore extends EventEmitter {
     this.get(id);
     return withWriteChain(this.file(id), () =>
       this.save({ ...this.get(id), ...p, id, updatedAt: new Date().toISOString() }));
+  }
+
+  /** Append a stage's assumptions and record the read's problem (null clears it). Computed from
+   *  the record *inside* the write chain, so two stages finishing back to back can't drop each
+   *  other's items the way a read-then-`patch` would. */
+  async addAssumptions(id: string, items: Assumption[], problem: string | null): Promise<BugTask> {
+    this.get(id);
+    return withWriteChain(this.file(id), () => {
+      const cur = this.get(id);
+      return this.save({ ...cur, assumptions: [...cur.assumptions, ...items], assumptionsProblem: problem, updatedAt: new Date().toISOString() });
+    });
   }
 
   /**

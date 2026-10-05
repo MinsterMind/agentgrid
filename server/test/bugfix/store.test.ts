@@ -194,4 +194,29 @@ describe("patchPr", () => {
     const after = await store.patchPr(t.id, view({ state: "MERGED" }), "2026-09-27T10:00:05Z");
     expect(after.pr).toMatchObject({ state: "MERGED" });
   });
+  it("a record written before 0.6.0 loads with no assumptions and no problem", async () => {
+    const t = await mk();
+    const file = path.join(home, "bugtasks", `${t.id}.json`);
+    const raw = JSON.parse(await readFile(file, "utf8"));
+    delete raw.assumptions; delete raw.assumptionsProblem;
+    await writeFile(file, JSON.stringify(raw));
+    const reloaded = new BugTaskStore(home); await reloaded.init();
+    expect(reloaded.get(t.id).assumptions).toEqual([]);
+    expect(reloaded.get(t.id).assumptionsProblem).toBeNull();
+  });
+
+  it("a new task starts with no assumptions", async () => {
+    const t = await mk();
+    expect(t.assumptions).toEqual([]);
+    expect(t.assumptionsProblem).toBeNull();
+  });
+
+  it("addAssumptions appends, sets the problem, and two concurrent calls both land", async () => {
+    const t = await mk();
+    const a = { id: "k:0", stage: "analyzing" as const, round: 0, kind: "assumption" as const, text: "a", at: "t" };
+    const b = { ...a, id: "j:0", text: "b" };
+    await Promise.all([store.addAssumptions(t.id, [a], null), store.addAssumptions(t.id, [b], "p")]);
+    expect(store.get(t.id).assumptions.map(x => x.text).sort()).toEqual(["a", "b"]);
+    expect(store.get(t.id).assumptionsProblem).toBe("p");
+  });
 });

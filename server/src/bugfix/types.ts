@@ -15,6 +15,20 @@ export interface TrackerIssue {
 }
 export interface IssueSummary { key: string; title: string; url: string; status: string; priority: string }
 
+/** One thing an agent stage reported it assumed, or could not decide. Agent-written text:
+ *  rendered as text, never as HTML, never fed back into a prompt. */
+export interface Assumption {
+  /** "<dispatch token>:<index>" — stable across re-renders, and the token groups one run's items. */
+  id: string;
+  stage: BugStage;
+  /** `feedbackRounds` when the stage was dispatched; 0 for analyze/implement. */
+  round: number;
+  kind: "assumption" | "question";
+  text: string;
+  /** When the engine read it (ISO). */
+  at: string;
+}
+
 export interface PrInfo {
   number: number; url: string;
   state: "OPEN" | "MERGED" | "CLOSED";
@@ -87,6 +101,11 @@ export interface BugTask {
    *  normalised to 0 in `BugTaskStore.init` — the one place old records enter the system —
    *  so every consumer here can treat it as an honest `number`. */
   feedbackRounds: number;
+  /** Everything the agent stages reported assuming or being unable to decide, oldest first.
+   *  Records written before 0.6.0 normalise to [] in `BugTaskStore.init`. */
+  assumptions: Assumption[];
+  /** Why the last assumptions file could not be used, or null. Cleared by the next clean read. */
+  assumptionsProblem: string | null;
 }
 
 export type BugEvent =
