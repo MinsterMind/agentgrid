@@ -35,5 +35,14 @@ Acceptance criteria:
    - Risks and anything you are unsure about
 Keep it under 400 words; the human reads this before approving.
 
+## Before you finish: what you assumed
+
+Write  — a JSON list of anything in this step you decided without being told, or could not decide and worked around:
+
+[{ "kind": "assumption", "text": "One sentence: what you assumed and why." },
+ { "kind": "question", "text": "One sentence: what the human should decide." }]
+
+Only real decisions a reviewer might want to overturn. If there are none, write an empty list: []
+
 Finish with a 2–3 line summary of the root cause."
 `;

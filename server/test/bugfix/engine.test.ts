@@ -1741,3 +1741,55 @@ describe("creating the pull request", () => {
     expect(h.forge.created).toEqual([]);
   });
 });
+
+/** The assumptions path this dispatch's prompt named — the test plays the agent and writes there. */
+const assumptionsPathIn = (prompt: string) => /(\S+assumptions-[a-f0-9]+\.json)/.exec(prompt)![1];
+
+describe("assumptions", () => {
+  it("records what the analyze stage reported, tagged with its stage", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "# Plan");
+    await writeFile(assumptionsPathIn(fake.calls.at(-1)!.prompt), JSON.stringify([{ kind: "question", text: "Up or down?" }]));
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    expect(bugs.get(t.id).assumptions).toMatchObject([{ stage: "analyzing", round: 0, kind: "question", text: "Up or down?" }]);
+  });
+
+  it("records them even when the stage fails", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await writeFile(assumptionsPathIn(fake.calls.at(-1)!.prompt), JSON.stringify([{ kind: "assumption", text: "No plan needed" }]));
+    await finishStage(); await until(() => bugs.get(t.id).stage === "failed");   // no plan.md
+    expect(bugs.get(t.id).assumptions.map(a => a.text)).toEqual(["No plan needed"]);
+  });
+
+  it("gives every dispatch its own file, so a later round never re-reads an earlier one", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "# Plan");
+    const first = assumptionsPathIn(fake.calls.at(-1)!.prompt);
+    await writeFile(first, JSON.stringify([{ kind: "assumption", text: "first" }]));
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    await engine.requestChanges(t.id, "again");
+    expect(assumptionsPathIn(fake.calls.at(-1)!.prompt)).not.toBe(first);
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    expect(bugs.get(t.id).assumptions.map(a => a.text)).toEqual(["first"]);
+  });
+
+  it("a malformed file sets the problem and the stage still advances; a clean read clears it", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "# Plan");
+    await writeFile(assumptionsPathIn(fake.calls.at(-1)!.prompt), "not json");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    expect(bugs.get(t.id).assumptionsProblem).toMatch(/not valid JSON/);
+    await engine.requestChanges(t.id, "again");
+    await writeFile(assumptionsPathIn(fake.calls.at(-1)!.prompt), "[]");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    expect(bugs.get(t.id).assumptionsProblem).toBeNull();
+  });
+
+  it("no file leaves the task's assumptions and problem untouched", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "# Plan");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    expect(bugs.get(t.id).assumptions).toEqual([]);
+    expect(bugs.get(t.id).assumptionsProblem).toBeNull();
+  });
+});

@@ -25,6 +25,11 @@ describe("detectStage, against the real stage presets", () => {
     expect(detectStage(prompt)).toEqual({ stage: "analyze", planPath: "/a/bt1/plan.md" });
   });
 
+  it("finds the assumptions path in the analyze prompt", async () => {
+    const prompt = await renderStagePrompt("analyzing", task, { ...ctx, assumptionsPath: "/a/bt1/assumptions-0a1b2c.json" }, presets);
+    expect(detectStage(prompt)).toEqual({ stage: "analyze", planPath: "/a/bt1/plan.md", assumptionsPath: "/a/bt1/assumptions-0a1b2c.json" });
+  });
+
   it("recognises the implement prompt", async () => {
     const prompt = await renderStagePrompt("implementing", { ...task, stage: "implementing" }, ctx, presets);
     expect(detectStage(prompt)).toMatchObject({ stage: "implement" });

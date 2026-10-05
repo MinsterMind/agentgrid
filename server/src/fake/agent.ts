@@ -20,10 +20,14 @@ const PR_BODY_PATH = /write the pull request description to (\S+?)[:\s]/i;
 const APPROVED_PLAN = /the approved plan is at (\S+)/i;
 const REVIEW_FEEDBACK = /address the review feedback|reviewers have asked for changes/i;
 const REBASE = /rebase \S+ onto/i;
+const ASSUMPTIONS_PATH = /write (\S+assumptions-[a-f0-9]+\.json)/i;
 
-export function detectStage(prompt: string): { stage: FakeStage; planPath?: string; prBodyPath?: string } {
+export function detectStage(prompt: string): { stage: FakeStage; planPath?: string; prBodyPath?: string; assumptionsPath?: string } {
   const plan = PLAN_PATH.exec(prompt);
-  if (plan) return { stage: "analyze", planPath: plan[1] };
+  if (plan) {
+    const assumptions = ASSUMPTIONS_PATH.exec(prompt);
+    return { stage: "analyze", planPath: plan[1], ...(assumptions ? { assumptionsPath: assumptions[1] } : {}) };
+  }
   const prBody = PR_BODY_PATH.exec(prompt);
   if (prBody) return { stage: "open-pr", prBodyPath: prBody[1] };
   const approved = APPROVED_PLAN.exec(prompt);
@@ -74,7 +78,7 @@ async function commitSomething(cwd: string): Promise<void> {
  * which is exactly the behaviour the guard exists for, and not what this fixture is for.
  */
 export const fakeAgentQuery: QueryFn = ({ prompt, options }) => (async function* () {
-  const { stage, planPath, prBodyPath } = detectStage(prompt);
+  const { stage, planPath, prBodyPath, assumptionsPath } = detectStage(prompt);
   const cwd = (options.cwd as string | undefined) ?? process.cwd();
   yield { type: "system", subtype: "init", session_id: `fake-${Date.now()}` } as any;
 
@@ -90,6 +94,11 @@ export const fakeAgentQuery: QueryFn = ({ prompt, options }) => (async function*
   try {
     if (stage === "analyze" && planPath) {
       await writeFile(planPath, PLAN);
+      // One of each, so fake mode and the e2e exercise the whole assumptions path.
+      if (assumptionsPath) await writeFile(assumptionsPath, JSON.stringify([
+        { kind: "assumption", text: "The fake ticket's fault is confined to `fake-fix.txt`." },
+        { kind: "question", text: "Should the fix also add a regression test?" },
+      ]));
       summary = `Wrote the plan to ${planPath} (fake).`;
     } else if (stage === "implement") {
       await commitSomething(cwd);

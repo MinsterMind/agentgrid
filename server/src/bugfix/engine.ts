@@ -1,4 +1,5 @@
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { Conflict, NotFound } from "../store/store.js";
 import type { Store } from "../store/store.js";
@@ -10,6 +11,7 @@ import { IntegrationsStore } from "./integrations.js";
 import type { ForgeAdapter } from "./forge/index.js";
 import type { TrackerProvider } from "./tracker.js";
 import { renderStagePrompt, type StageNote } from "./prompts.js";
+import { parseAssumptions } from "./assumptions.js";
 import { nextStage } from "./stages.js";
 import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask } from "./types.js";
 import { describeComments, type PrFinding } from "./watcher.js";
@@ -18,6 +20,9 @@ import type { MergeMethod } from "./forge/types.js";
 /** After this many rounds the watcher's findings stop dispatching and only report. A
  *  pathological review thread should not quietly spend the user's budget. */
 export const FEEDBACK_ROUND_CAP = 5;
+/** Agent stages that make decisions a human may want to overturn, and so report assumptions.
+ *  Not `opening-pr`: it writes a PR body for a change the human has already approved. */
+export const ASSUMPTION_STAGES: BugStage[] = ["analyzing", "implementing", "review-feedback", "rebase"];
 
 /** Prefix of the "the forge could not be read" note. One constant because three places have to
  *  agree on it: the write, the clear once a poll succeeds again, and the card that renders it. */
@@ -108,6 +113,9 @@ export class BugFixEngine {
    * monitoring/merge stages will dispatch against), not a leak.
    */
   private currentDispatch = new Map<string, string>();
+  /** The assumptions file each task's current dispatch was told to write. In memory, like
+   *  `currentDispatch`: a dispatch a restart interrupts is re-run by recovery under a new token. */
+  private dispatchAssumptions = new Map<string, { token: string; stage: BugStage; round: number }>();
 
   constructor(deps: EngineDeps) { this.deps = deps; this.role = deps.role ?? "bugfix"; }
 
@@ -407,7 +415,15 @@ export class BugFixEngine {
     // is durable), so this has to land before dispatch, not after — a stage that failed after
     // dispatching still counts as one round spent, not a free retry of the cap itself.
     if (stage === "review-feedback") await this.deps.bugs.patch(task.id, { feedbackRounds: task.feedbackRounds + 1 });
-    const prompt = await renderStagePrompt(stage, task, ctx, this.deps.presetsDir);
+    let assumptionsPath: string | undefined;
+    if (ASSUMPTION_STAGES.includes(stage)) {
+      const token = randomBytes(6).toString("hex");
+      assumptionsPath = path.join(dir, `assumptions-${token}.json`);
+      this.dispatchAssumptions.set(task.id, { token, stage, round: bugs.get(task.id).feedbackRounds });
+    } else {
+      this.dispatchAssumptions.delete(task.id);
+    }
+    const prompt = await renderStagePrompt(stage, task, { ...ctx, assumptionsPath }, this.deps.presetsDir);
     this.pendingNote.delete(task.id);
 
     const agent = store.getAgent(task.agentId);
@@ -672,6 +688,7 @@ export class BugFixEngine {
     if (this.currentDispatch.get(task.id) !== a.id) return;
 
     await bugs.patch(task.id, { costUsd: Number((task.costUsd + (a.costUsd ?? 0)).toFixed(4)) });
+    await this.collectAssumptions(task.id);
     // The "assignment" event fires as soon as the assignment record itself is written,
     // but Runner.finish() writes the agent's own state (to this same a.state) in a
     // second, separate store write right after — so at this point the agent may still
@@ -695,6 +712,19 @@ export class BugFixEngine {
       return;
     }
     await this.advance(task.id, { type: "stage-done" });
+  }
+
+  /** Read what this dispatch's agent said it assumed. Never throws: assumptions are reporting,
+   *  not evidence, and must never be why a stage fails. */
+  private async collectAssumptions(taskId: string): Promise<void> {
+    const meta = this.dispatchAssumptions.get(taskId);
+    if (!meta) return;
+    this.dispatchAssumptions.delete(taskId);
+    try {
+      const raw = await this.deps.bugs.readArtifact(taskId, `assumptions-${meta.token}.json`);
+      const r = parseAssumptions(raw, { ...meta, at: new Date().toISOString() });
+      if (r.read) await this.deps.bugs.addAssumptions(taskId, r.items, r.problem);
+    } catch { /* a store write failing here must not take the stage down with it */ }
   }
 
   /** The server's own evidence that a stage really happened. */

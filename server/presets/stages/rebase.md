@@ -12,5 +12,14 @@ Your job in this step, in {{worktree}}:
 5. Run whatever tests cover the areas you touched.
 6. Summarise what conflicted and how you resolved it.
 
+## Before you finish: what you assumed
+
+Write {{assumptionsPath}} — a JSON list of anything in this step you decided without being told, or could not decide and worked around:
+
+[{ "kind": "assumption", "text": "One sentence: what you assumed and why." },
+ { "kind": "question", "text": "One sentence: what the human should decide." }]
+
+Only real decisions a reviewer might want to overturn. If there are none, write an empty list: []
+
 Do not push. Do not merge. A human reviews the rebased diff before anything reaches the
 pull request, and the server force-pushes with a lease only after that approval.

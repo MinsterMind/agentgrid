@@ -33,6 +33,20 @@ function affirmativeLines(text: string, re: RegExp): string[] {
 }
 
 describe("renderStagePrompt", () => {
+  it.each(["analyzing", "implementing", "review-feedback", "rebase"] as const)(
+    "%s asks for the assumptions file at the path it is given", async stage => {
+      const p = await renderStagePrompt(stage, { ...task, stage }, { ...ctx, assumptionsPath: "/a/bt1/assumptions-abc.json" }, presets);
+      expect(p).toContain("/a/bt1/assumptions-abc.json");
+      expect(p).toMatch(/"assumption"/);
+      expect(p).toMatch(/"question"/);
+      expect(p).toMatch(/empty list/i);
+    });
+
+  it("opening-pr asks for no assumptions", async () => {
+    const p = await renderStagePrompt("opening-pr", { ...task, stage: "opening-pr" }, { ...ctx, assumptionsPath: "/a/bt1/assumptions-abc.json" }, presets);
+    expect(p).not.toContain("assumptions-abc.json");
+  });
+
   it("analyze names the ticket, the worktree and the plan file it must write", async () => {
     const p = await renderStagePrompt("analyzing", task, ctx, presets);
     expect(p).toContain("PAY-42"); expect(p).toContain("Refresh token rotates twice");

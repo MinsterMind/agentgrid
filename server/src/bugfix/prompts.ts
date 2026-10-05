@@ -23,6 +23,8 @@ export interface StageContext {
   artifactsDir: string;
   planPath: string;
   prBodyPath: string;
+  /** Where this dispatch's agent writes what it assumed — unique per dispatch (engine.ts). */
+  assumptionsPath?: string;
   /** Free text from a gate or a review round — see `StageNote`. */
   note?: StageNote;
 }
@@ -87,7 +89,7 @@ export async function renderStagePrompt(stage: BugStage, task: BugTask, ctx: Sta
     issueStatus: q(task.issue.status), issuePriority: q(task.issue.priority), issueDescription: q(task.issue.description),
     acceptanceCriteria: q(task.issue.acceptanceCriteria.length ? task.issue.acceptanceCriteria.map(a => `- ${a}`).join("\n") : "- (none given)"),
     worktree: task.worktree, branch: task.branch, baseBranch: task.baseBranch,
-    artifactsDir: ctx.artifactsDir, planPath: ctx.planPath, prBodyPath: ctx.prBodyPath,
+    artifactsDir: ctx.artifactsDir, planPath: ctx.planPath, prBodyPath: ctx.prBodyPath, assumptionsPath: ctx.assumptionsPath ?? "",
     // Two different sources travel through the same `note` placeholder, and the note itself says
     // which it is (`StageNote.trusted`) — never the stage, which receives both.
     note: !noteText ? ""
