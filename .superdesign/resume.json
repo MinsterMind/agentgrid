@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "projectId": "eeff6cda-2ff1-4007-b03f-2c0226fcd2dd",
+  "canvas": "https://superdesign.dev/teams/f31ee3f6-79d2-4afd-b37b-e9f3e1af5d0d/projects/eeff6cda-2ff1-4007-b03f-2c0226fcd2dd",
+  "targets": {
+    "grid": {
+      "route": "#/",
+      "description": "Agent grid + side panel (main screen)",
+      "baselineDraftId": "89cd505a-0ee6-46b2-8811-ca1de7bdac66",
+      "activeDraftId": "e3e73031-5d4c-4c39-b2c2-63f2e827deda",
+      "branches": [
+        {
+          "draftId": "14ef5867-e70e-4bae-95ee-17684b271b5f",
+          "description": "Direction A \u2014 Calm Graphite"
+        },
+        {
+          "draftId": "e3e73031-5d4c-4c39-b2c2-63f2e827deda",
+          "description": "Direction B \u2014 Mission Control"
+        }
+      ],
+      "model": "gemini-3.1-pro",
+      "device": "desktop",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "ui/src/styles.css",
+        "ui/src/App.tsx:92",
+        "ui/src/components/TopBar.tsx",
+        "ui/src/components/AgentGrid.tsx",
+        "ui/src/components/AgentTile.tsx",
+        "ui/src/components/SessionTile.tsx",
+        "ui/src/components/SidePanel.tsx",
+        "ui/src/components/AssignBox.tsx",
+        "ui/src/components/PendingPrompt.tsx",
+        "ui/src/state/sections.ts"
+      ],
+      "fingerprints": {
+        ".superdesign/design-system.md": "8416c1547e61c3ad829b8a41503c8dcfb7df7b416ef3dcdf2a136f72d863abce",
+        "ui/src/styles.css": "e9682a1d766d30dc65b564762f07acff0048807fe651ffe1cf40790adcc19cf3",
+        "ui/src/App.tsx": "71a2f064bbee23788d63d66ca431434cc31ea228f0cb695b138bacddaa604645",
+        "ui/src/components/TopBar.tsx": "f5666943f2190b8a3029b63e5e8dc1a6b5daa321a97a6d368763470e9d0b41b1",
+        "ui/src/components/AgentGrid.tsx": "0c0a063b697f01558da371dbbd6dca868e0dc3a0fc7604a0ff0396210b6ae914",
+        "ui/src/components/AgentTile.tsx": "fbeb8ce60e1cf094836a98ba28fe222edd5719c63f78b60d434840126d29c30a",
+        "ui/src/components/SessionTile.tsx": "674afafe1825e68775f479d4f66b66499f41ed48834e49e845f2f54a11c1d47e",
+        "ui/src/components/SidePanel.tsx": "613288041e7dcfe29ae458909cb27fc20b67420265197ee8395e06110741a53b",
+        "ui/src/components/AssignBox.tsx": "c3e5509f0eeb0fa30473a4561652431f1e1dca687fe6a866f8b30f67811bad52",
+        "ui/src/components/PendingPrompt.tsx": "33856dd7c499e9ae97050d1992bee8decf4139d240ac9e4d37c1a8d3f9cfb3b8",
+        "ui/src/state/sections.ts": "a1db8d4c9877b388bbbdad589b2df8930bfe0bd14cf8ccf709aa4922fa58f908"
+      },
+      "components": [],
+      "updatedAt": "2026-10-05T13:24:56.933392+00:00",
+      "selectedDirection": "Mission Control"
+    },
+    "bug-screen": {
+      "route": "#/bugs/<id>",
+      "description": "Bug screen",
+      "activeDraftId": "de9ced35-5e7e-4a46-92ec-a04fbf1c89f0",
+      "source": "imported (authored by claude-opus-5-5 from the Mission Control grid draft's CSS; .superdesign/tmp/build.py)",
+      "sourceDraftId": "e3e73031-5d4c-4c39-b2c2-63f2e827deda"
+    },
+    "first-run": {
+      "route": "#/ (no agents)",
+      "description": "First run / empty grid",
+      "activeDraftId": "450ec38d-b47a-4ecb-9ac2-865fa985acaa",
+      "source": "imported (authored by claude-opus-5-5 from the Mission Control grid draft's CSS; .superdesign/tmp/build.py)",
+      "sourceDraftId": "e3e73031-5d4c-4c39-b2c2-63f2e827deda"
+    },
+    "dialogs": {
+      "route": "overlay",
+      "description": "New agent + Fix a bug dialogs",
+      "activeDraftId": "e3c62078-4dd0-42fc-8277-b680d5740ff4",
+      "source": "imported (authored by claude-opus-5-5 from the Mission Control grid draft's CSS; .superdesign/tmp/build.py)",
+      "sourceDraftId": "e3e73031-5d4c-4c39-b2c2-63f2e827deda"
+    },
+    "settings": {
+      "route": "overlay",
+      "description": "Settings / Integrations",
+      "activeDraftId": "11a05789-6598-4c70-b172-ef98db5d68d5",
+      "source": "imported (authored by claude-opus-5-5 from the Mission Control grid draft's CSS; .superdesign/tmp/build.py)",
+      "sourceDraftId": "e3e73031-5d4c-4c39-b2c2-63f2e827deda"
+    }
+  }
+}

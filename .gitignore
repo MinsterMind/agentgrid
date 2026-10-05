@@ -4,3 +4,4 @@ dist/
 ui/test-results/
 ui/playwright-report/
 desktop/release/
+.superdesign/tmp/
