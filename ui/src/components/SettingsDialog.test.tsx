@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SettingsDialog } from "./SettingsDialog";
 import { api } from "../api";
@@ -195,7 +195,7 @@ describe("SettingsDialog", () => {
     render(<SettingsDialog onClose={() => {}} />);
     // Wait for the saved forge to land, or the "nothing saved yet" branch would legitimately
     // send one and this would assert against the wrong state.
-    expect(await screen.findByText(/gitlab \(saved\)/)).toBeTruthy();
+    expect(await screen.findByText(/gitlab \(current\)/)).toBeTruthy();
 
     await userEvent.click(screen.getByRole("button", { name: /save/i }));
 
@@ -214,7 +214,7 @@ describe("SettingsDialog", () => {
     vi.spyOn(api, "getIntegrations").mockResolvedValue({ projectRepos: {} });
     const put = vi.spyOn(api, "putIntegrations").mockResolvedValue({ projectRepos: {} });
     render(<SettingsDialog onClose={() => {}} />);
-    await waitFor(() => expect(screen.getByRole("combobox")).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("button", { name: "GitHub" })).toBeTruthy());
     await userEvent.click(screen.getByRole("button", { name: /save/i }));
     await waitFor(() => expect(put).toHaveBeenCalled());
     expect((put.mock.calls[0][0] as { forge?: { preset?: string } }).forge).toEqual({ preset: "github" });
@@ -254,7 +254,7 @@ describe("SettingsDialog", () => {
     vi.spyOn(api, "getSetup").mockResolvedValue(report());
     const onClose = vi.fn();
     render(<SettingsDialog onClose={onClose} />);
-    await userEvent.click(await screen.findByRole("button", { name: "✕" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Close settings" }));
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -303,5 +303,42 @@ describe("SettingsDialog", () => {
     const inUse = await screen.findByText(/in use/i);
     expect(inUse.closest(".row")!.textContent).toContain("claude.ai Atlassian");
     expect(screen.getAllByText(/in use/i)).toHaveLength(1);
+  });
+});
+
+describe("Settings — readiness checklist", () => {
+  it("opens with what is left before bug fixes work", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report({ ready: false, checks: [
+      { id: "tracker", state: "ok", blocks: true, detail: "Tracker configured (jira, tools mcp__x)." },
+      { id: "forge", state: "missing", blocks: true, detail: "No forge configured." },
+      { id: "role", state: "ok", blocks: true, detail: "The bugfix role resolves." },
+    ] }));
+    render(<SettingsDialog onClose={() => {}} />);
+    const banner = await screen.findByTestId("overall");
+    expect(banner).toHaveTextContent("1 thing left before you can fix bugs");
+    expect(banner).toHaveTextContent(/Agents work without any of this/);
+    expect(within(banner).getByText("Forge").closest(".chip")).toHaveClass("amber");
+  });
+
+  it("says ready when everything blocking is ok", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report({ ready: true, checks: [{ id: "tracker", state: "ok", blocks: true, detail: "ok" }] }));
+    render(<SettingsDialog onClose={() => {}} />);
+    expect(await screen.findByTestId("overall")).toHaveTextContent("Ready to fix bugs");
+  });
+
+  it("explains why each section exists", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report({}));
+    render(<SettingsDialog onClose={() => {}} />);
+    expect(await screen.findByText(/Where your tickets live/)).toBeInTheDocument();
+    expect(screen.getByText(/Where pull requests are opened and merged/)).toBeInTheDocument();
+  });
+
+  it("picks the forge with a segmented control", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report({}));
+    vi.spyOn(api, "getIntegrations").mockResolvedValue({ projectRepos: {}, forge: { preset: "github" } } as never);
+    render(<SettingsDialog onClose={() => {}} />);
+    await userEvent.click(await screen.findByRole("button", { name: /bitbucket/i }));
+    expect(screen.getByRole("button", { name: /bitbucket/i })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByPlaceholderText("Atlassian account email")).toBeInTheDocument();
   });
 });

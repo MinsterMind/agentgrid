@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Check as CheckIcon, CheckCircle2, FolderGit2, GitPullRequest, PlugZap, Ticket, TriangleAlert, X } from "lucide-react";
 import { api } from "../api";
 import type { Check, FixAction, McpServerFound, SetupReport } from "../types";
 
@@ -77,6 +78,13 @@ function originLabel(s: McpServerFound): string {
 // A preset saved by hand that is not in this list is still offered as what is saved, the same
 // way the forge select does it, so seeding from the config can never silently change it.
 const TRACKER_PRESETS = ["jira"];
+
+/** The checks that decide whether "Fix a bug" can run — shown as the banner's chips. */
+const READINESS = [["tracker", "Tracker"], ["forge", "Forge"], ["role", "Bug fixer role"]] as const;
+
+function StatusChip({ ok }: { ok: boolean }) {
+  return ok ? <span className="chip green"><CheckIcon /> Ready</span> : <span className="chip amber"><TriangleAlert /> Needs attention</span>;
+}
 
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [report, setReport] = useState<SetupReport | null>(null);
@@ -178,20 +186,41 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="modal" onClick={onClose}>
-      <div className="dialog settings" onClick={e => e.stopPropagation()}>
-        <div className="hd"><h3 style={{ margin: 0 }}>⚙︎ Settings — Integrations</h3>
-          <button className="btn sm" style={{ marginLeft: "auto" }} onClick={onClose}>✕</button></div>
+      <section className="dialog settings" role="dialog" aria-label="Integrations" onClick={e => e.stopPropagation()}>
+        <div className="dlg-hd">
+          <span className="dlg-ic"><PlugZap /></span>
+          <div><h2>Integrations</h2><p>What the bug-fix workflow needs, and whether it's ready. Every problem comes with its fix.</p></div>
+          <button className="x" aria-label="Close settings" onClick={onClose}><X /></button>
+        </div>
+        <div className="dlg-body">
         {err && <div className="err">{err}</div>}
-        {!report ? (err ? null : <div className="hint">Loading…</div>) : <>
+        {!report ? (err ? null : <div className="skeleton" aria-label="Loading settings"><div /><div /><div /></div>) : <>
+          {(() => {
+            const left = READINESS.filter(([id]) => { const c = check(id); return c && c.state !== "ok"; });
+            return (
+              <div className="overall" data-testid="overall" data-ready={left.length === 0}>
+                {left.length === 0 ? <CheckCircle2 className="ok-ic" /> : <TriangleAlert className="warn-ic" />}
+                <div className="grow"><b>{left.length === 0 ? "Ready to fix bugs" : `${left.length} thing${left.length === 1 ? "" : "s"} left before you can fix bugs`}</b>
+                  <div className="help">Agents work without any of this. Only “Fix a bug” needs a tracker and a forge.</div></div>
+                <div className="checks">{READINESS.map(([id, label]) => { const c = check(id); if (!c) return null; const ok = c.state === "ok";
+                  return <span key={id} className={`chip ${ok ? "green" : "amber"}`}>{ok ? <CheckIcon /> : <TriangleAlert />} {label}</span>; })}</div>
+              </div>
+            );
+          })()}
           {other.length > 0 && (
-            <section>
-              <h4>Other problems</h4>
-              {other.map(c => <CheckRow key={c.id} check={c} />)}
+            <section className="sec">
+              <div className="sec-head"><h4>Other problems</h4><p className="why">Something outside the tracker and forge is stopping bug fixes.</p></div>
+              <div className="sec-body">{other.map(c => <CheckRow key={c.id} check={c} />)}</div>
             </section>
           )}
 
-          <section>
-            <h4>Tracker</h4>
+          <section className="sec">
+            <div className="sec-head">
+              <h4><Ticket />Tracker</h4>
+              <StatusChip ok={check("tracker")?.state === "ok"} />
+              <p className="why">Where your tickets live. AgentGrid uses the connection Claude Code already has; nothing is copied.</p>
+            </div>
+            <div className="sec-body">
             {check("tracker") && <CheckRow check={check("tracker")!} />}
             {/* Only when it is a problem: "Claude Code has <prefix>" beside a green tracker row
                 says nothing the "in use" tag on the list below does not. */}
@@ -234,19 +263,22 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                 placeholder={'{"preset":"jira","toolPrefix":"mcp__claude_ai_Atlassian"}'} />
             </>}
             {trackerTest && <div className={trackerTest.ok ? "ok" : "err"}>{trackerTest.message}</div>}
+            </div>
           </section>
 
-          <section>
-            <h4>Forge</h4>
-            {check("forge") && <CheckRow check={check("forge")!} />}
-            <div className="row">
-              <select value={preset} onChange={e => setPresetOverride(e.target.value)}>
-                {!SELECTABLE.includes(preset) && <option value={preset}>{preset} (saved)</option>}
-                <option value="github">github</option>
-                <option value="bitbucket">bitbucket</option>
-              </select>
-              {preset === "bitbucket" && <input value={username} onChange={e => setUsername(e.target.value)} placeholder="Atlassian account email" />}
+          <section className="sec">
+            <div className="sec-head">
+              <h4><GitPullRequest />Forge</h4>
+              <StatusChip ok={["forge", "forge-username", "forge-token"].every(id => { const c = check(id); return !c || c.state === "ok"; })} />
+              <p className="why">Where pull requests are opened and merged. AgentGrid pushes; agents never hold your credentials.</p>
             </div>
+            <div className="sec-body">
+            {check("forge") && <CheckRow check={check("forge")!} />}
+            <div className="seg" role="group" aria-label="Forge">
+              {!SELECTABLE.includes(preset) && <button className="on" aria-pressed="true">{preset} (current)</button>}
+              {SELECTABLE.map(p => <button key={p} className={preset === p ? "on" : ""} aria-pressed={preset === p} onClick={() => setPresetOverride(p)}>{p === "github" ? "GitHub" : "Bitbucket"}</button>)}
+            </div>
+            {preset === "bitbucket" && <input className="input" value={username} onChange={e => setUsername(e.target.value)} placeholder="Atlassian account email" aria-label="Atlassian account email" />}
             {check("forge-username") && <CheckRow check={check("forge-username")!} />}
             {check("forge-token") && <CheckRow check={check("forge-token")!} />}
             {/* Bitbucket's third strategy is `fast_forward`, which is NOT a rebase — offering
@@ -256,32 +288,37 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               <button className="btn" disabled={busy} onClick={() => void run(async () => setForgeTest(await api.testForge()))}>Test forge</button>
             </div>
             {forgeTest && <div className={forgeTest.ok ? "ok" : "err"}>{forgeTest.message}</div>}
+            </div>
           </section>
 
           {Object.keys(projectRepos).length > 0 && (
-            <section>
-              <h4>Repos</h4>
-              {Object.entries(projectRepos).map(([project, repo]) => (
-                <div key={project} className="row"><span>{project}</span><span className="hint">{repo}</span></div>
-              ))}
+            <section className="sec">
+              <div className="sec-head"><h4><FolderGit2 />Repos</h4><p className="why">Which repo each Jira project's bugs are fixed in. Filled in as you use “Fix a bug”.</p></div>
+              <div className="sec-body maprows">
+                {Object.entries(projectRepos).map(([project, repo]) => (
+                  <div key={project} className="maprow"><span className="mono">{project}</span><span className="mono">{repo}</span></div>
+                ))}
+              </div>
             </section>
           )}
 
           {report.discovery.problems.length > 0 && (
-            <section>
-              <h4>Problems reading your Claude Code configuration</h4>
-              {report.discovery.problems.map(p => <div key={p} className="err">{p}</div>)}
+            <section className="sec">
+              <div className="sec-head"><h4>Problems reading your Claude Code configuration</h4><p className="why">AgentGrid lists your MCP servers from Claude Code's own files.</p></div>
+              <div className="sec-body">{report.discovery.problems.map(p => <div key={p} className="err">{p}</div>)}</div>
             </section>
           )}
 
-          <div className="row footer">
-            <button className="btn p" disabled={busy} onClick={() => void save()}>Save</button>
-            <button className="btn" onClick={onClose}>Close</button>
-          </div>
           {saved === "restart" && <div className="hint">Saved. A server restart is required for this to take effect.</div>}
           {saved === "live" && <div className="ok">Saved. The bug-fix workflow is now available.</div>}
         </>}
-      </div>
+        </div>
+        <div className="dlg-ft row footer">
+          <span className="help">Saved to <span className="mono">~/.agentgrid/integrations.json</span>.</span>
+          <button className="btn" onClick={onClose}>Close</button>
+          <button className="btn p" disabled={busy || !report} onClick={() => void save()}>Save</button>
+        </div>
+      </section>
     </div>
   );
 }
