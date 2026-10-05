@@ -82,4 +82,10 @@ describe("Mission Control tokens", () => {
     expect(css).toMatch(/\.plansec:last-child:nth-child\(odd\)\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/);
   });
 
+  it("defines the dialog primitives every dialog shares", () => {
+    for (const sel of [".dlg-hd", ".dlg-body", ".dlg-ft", ".dlg-ic", ".field", ".label", ".help", ".input", ".errtext", ".oktext", ".warntext", ".seg", ".step-n", ".opt", ".radio", ".next"]) {
+      expect(css).toMatch(new RegExp(`(^|[}\\s])${sel.replace(".", "\\.")}\\s*[{.:\\s,]`, "m"));
+    }
+    expect(css).toMatch(/\.modal\s*\{[^}]*backdrop-filter/);
+  });
 });
