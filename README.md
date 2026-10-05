@@ -68,6 +68,7 @@ npm run serve            # → http://127.0.0.1:4800
 9. **Live sessions are on the grid by default.** Any Claude Code session running on the machine (terminal or background) shows up as a dashed *ghost tile* with its status; **Pull in** turns it into an agent bound to that session: for a session open in a terminal it closes it there (Claude Code saves the conversation) and opens it in the grid's Terminal tab; background sessions are attached.
 10. **Sessions** (top bar) lists every Claude Code session on the machine — filter by name/repo/id, **rename** (✎, stored in Claude Code itself), or **pull in by session id** for anything older than the list — live terminal and background sessions with their status, plus recent history. **Adopt** a past session to put it on the grid: that agent then *continues that conversation* with every prompt you assign (🔗 on the tile). Background sessions get **Attach in Terminal**.
 11. **🐞 Fix a bug** (top bar) turns a tracked ticket into a merged PR, gated at every step: AgentGrid pulls the issue from your tracker, an agent analyses it and writes a plan you approve, and implements the fix in a private git worktree, showing you the diff. Approving the diff hands off to the server, which pushes exactly the commit you reviewed and opens the pull request itself — no agent ever holds a forge credential. From there it keeps watching: if a reviewer asks for changes, or your branch conflicts with the base, AgentGrid opens a new diff-review gate with the agent's fix — approving it pushes exactly the commit you reviewed, no more, no less. Once the PR is approved, a merge gate lets you pick the merge method and click Merge; AgentGrid confirms the merge really landed, tears down the worktree, and frees the agent for its next task. The finished card (merged, or closed without merging) stays up until you dismiss it. The first time you click it on an unconfigured machine, it explains exactly what's missing and gets out of your way — see **Set up the bug-fix workflow** below.
+12. **Bugs** (top bar) shows one bug fix end to end, on one page: where it is in the pipeline, what the agent is doing right now, everything blocking it (an approval waiting on you, a failed stage, failing checks, a conflict, a setup problem), and every assumption or open question the agent reported along the way — questions first, newest marked. The approve / request-changes / merge actions are on the same page. Plans, diffs and errors are rendered — sections, a real diff, readable error cards — never shown as raw markdown. Each bug has its own link (`#/bugs/bt3`); starting a fix opens it there, and a bug's card in the side panel has an **Open full view** link.
 
 Everything lives in `~/.agentgrid/` as plain files — roles, agents, assignments, and each agent's memory.
 
@@ -153,7 +154,8 @@ Add a file to add a role; the server watches the directory. `model` is required 
 | `o` | Open the selected agent's session in a terminal |
 | `⏎` / `⇧⏎` | Submit / newline in the assign box or answer field |
 | `/` | (in an empty assign box) recent prompts for that agent |
-| `esc` | Close dialog, then deselect |
+| `esc` | Close dialog, then deselect (on the bug screen: back to the grid) |
+| `↑` / `↓`, `⏎` | Move through / open bugs in the bug screen's list |
 
 The tab title shows `(N) AgentGrid` while N agents need you; the "● N need you" pill cycles through them. Desktop notifications are on by default for *needs you* and off for *done/failed* — toggle in the footer.
 
