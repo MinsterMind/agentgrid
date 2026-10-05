@@ -150,3 +150,31 @@ describe("BugScreen polish", () => {
   });
 });
 });
+
+describe("BugScreen — the list", () => {
+  it("shows each row's status in words with the stage it is at", () => {
+    renderScreen([task("plan-review"), task("implementing", { id: "bt2", issue: { ...ISSUE, key: "PAY-2" } })], "bt1");
+    const rows = screen.getAllByRole("option");
+    expect(rows[0]).toHaveTextContent(/Waiting on you · Plan review/);
+    expect(rows[1]).toHaveTextContent(/Running · Implementing/);
+    expect(rows[0]).toHaveAttribute("data-status", "waiting");
+  });
+
+  it("uses icons, not glyphs, for status", () => {
+    renderScreen([task("failed"), task("done", { id: "bt2" })], "bt1");
+    for (const row of screen.getAllByRole("option")) expect(row.textContent).not.toMatch(/[⚠✗✓●○–]/);
+    expect(screen.getAllByRole("option")[0].querySelector("svg")).not.toBeNull();
+  });
+
+  // Review Focus 1
+  it("keeps the full title on hover for a long one", () => {
+    const long = "A".repeat(140);
+    renderScreen([task("implementing", { issue: { ...ISSUE, title: long } })]);
+    expect(screen.getAllByRole("option")[0].querySelector(".t")).toHaveAttribute("title", long);
+  });
+
+  it("heads the list with its count", () => {
+    renderScreen([task("implementing"), task("done", { id: "bt2" })], "bt1");
+    expect(screen.getByRole("listbox").closest(".buglist")!.querySelector(".lh")).toHaveTextContent(/Bug fixes\s*2/);
+  });
+});

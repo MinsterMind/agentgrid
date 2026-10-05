@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { CheckCircle2, CircleDashed, Hand, Loader, MinusCircle, XCircle } from "lucide-react";
 import { api } from "../api";
 import { blockersFor, isNew, listStatus, nowFor, orderAssumptions, pipelineFor, stageLabel, type Blocker, type ListStatus, type StepState } from "../bugView";
 import { elapsed, relativeTime, usd } from "../format";
@@ -10,14 +11,16 @@ import { ErrorCard } from "./ErrorCard";
 import { Markdown } from "./Markdown";
 import { PlanView } from "./PlanView";
 
-const STATUS: Record<ListStatus, { icon: string; word: string }> = {
-  running: { icon: "●", word: "Running" }, waiting: { icon: "⚠", word: "Waiting on you" },
-  failed: { icon: "✗", word: "Failed" }, done: { icon: "✓", word: "Done" }, cancelled: { icon: "–", word: "Cancelled" },
+const STATUS: Record<ListStatus, { Icon: typeof Hand; word: string }> = {
+  running: { Icon: Loader, word: "Running" }, waiting: { Icon: Hand, word: "Waiting on you" },
+  failed: { Icon: XCircle, word: "Failed" }, done: { Icon: CheckCircle2, word: "Done" }, cancelled: { Icon: MinusCircle, word: "Cancelled" },
 };
 const STEP: Record<StepState, { icon: string; word: string }> = {
   done: { icon: "✓", word: "done" }, current: { icon: "●", word: "in progress" }, waiting: { icon: "⚠", word: "waiting on you" },
   failed: { icon: "✗", word: "failed" }, cancelled: { icon: "–", word: "cancelled" }, todo: { icon: "○", word: "not reached" },
 };
+/** For a failed or cancelled task, the stage it stopped at — "Failed · Implementing" says where. */
+const lastRealStage = (t: BugTask) => [...t.history].reverse().find(h => h.stage !== "failed" && h.stage !== "cancelled")?.stage ?? t.stage;
 const ACTIVE_FIRST: ListStatus[] = ["waiting", "running", "failed", "done", "cancelled"];
 
 /** Re-render every 30s so relative times and elapsed stay honest. */
@@ -69,19 +72,26 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
 
   return (
     <div className="bugscreen" data-testid="bug-screen">
-      <ul className="buglist" role="listbox" aria-label="Bug fixes" onKeyDown={e => {
-        if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
-        if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }
-      }}>
-        {tasks.map(({ t, status }) => (
-          <li key={t.id} role="option" aria-selected={t.id === shown?.id} tabIndex={t.id === shown?.id ? 0 : -1}
-            className={`bugrow ${status}`} onClick={() => onSelect(t.id)} onKeyDown={e => { if (e.key === "Enter") onSelect(t.id); }}>
-            <span className="bugrow-key">{t.issue.key}</span>
-            <span className="bugrow-title">{t.issue.title}</span>
-            <span className={`status ${status}`}>{STATUS[status].icon} {STATUS[status].word}</span>
-          </li>
-        ))}
-      </ul>
+      <aside className="buglist">
+        <div className="lh"><span>Bug fixes</span><span className="mono">{tasks.length}</span></div>
+        <ul role="listbox" aria-label="Bug fixes" onKeyDown={e => {
+          if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
+          if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }
+        }}>
+          {tasks.map(({ t, status }) => {
+            const { Icon, word } = STATUS[status];
+            return (
+              <li key={t.id} role="option" aria-selected={t.id === shown?.id} tabIndex={t.id === shown?.id ? 0 : -1}
+                className="bugrow" data-status={status} onClick={() => onSelect(t.id)} onKeyDown={e => { if (e.key === "Enter") onSelect(t.id); }}>
+                <span className="k">{t.issue.key}</span>
+                <span className="t" title={t.issue.title}>{t.issue.title}</span>
+                <span className={`s ${status}`}><Icon /> {word} · {stageLabel(t.stage === "failed" || t.stage === "cancelled" ? lastRealStage(t) : t.stage)}</span>
+              </li>
+            );
+          })}
+        </ul>
+        <div className="lfoot"><kbd>↑</kbd> <kbd>↓</kbd> move · <kbd>⏎</kbd> open</div>
+      </aside>
       {shown && <BugDetail key={shown.id} task={shown} state={state} now={now} onBugChanged={onBugChanged} onTranscript={onTranscript} onOpenSettings={onOpenSettings} />}
     </div>
   );
