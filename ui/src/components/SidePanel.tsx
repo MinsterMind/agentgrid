@@ -109,9 +109,9 @@ export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, 
       )}
       {a && <>
         <h4>Task</h4><div className="task">{a.prompt}</div>
-        <h4>Recent activity</h4>
+        <h4>Live transcript</h4>
         <div className="transcript">{feed.map((e, i) => <div key={i} className={`e ${e.kind}`}>▸ <span>{e.text}</span></div>)}{feed.length === 0 && <div className="e">…</div>}</div>
-        {a.pending && <PendingPrompt pending={a.pending} onDecide={d => onDecide(agent.id, a.pending!.toolUseId, d)} />}
+        {a.pending && <PendingPrompt who={agent.displayName} pending={a.pending} onDecide={d => onDecide(agent.id, a.pending!.toolUseId, d)} />}
         {a.state === "done" && <><h4>Outcome</h4><div className="outcome"><Markdown text={a.outcome ?? ""} /></div></>}
         {a.state === "failed" && <><h4>Failed</h4><ErrorCard text={a.error ?? "The run failed."} /></>}
         <div className="row">
@@ -121,7 +121,9 @@ export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, 
           {(a.state === "done" || a.state === "failed") && <button className="btn p" onClick={() => onAck(agent.id)}>Ack → free</button>}
           {canDelete && <button className="btn d" onClick={() => onDelete(agent.id)}>Delete agent</button>}
         </div>
-        <div className="ft"><span>{elapsed(a.startedAt ?? a.createdAt)} · {a.turns} turns</span><span>{usd(a.costUsd)}</span></div>
+        <div className="side-stats" data-testid="side-stats">
+          <span>ELAPSED {elapsed(a.startedAt ?? a.createdAt)}</span><span>TURNS {a.turns}</span><span>COST {usd(a.costUsd)}</span>
+        </div>
       </>}
       {!a && <>
         <p className="hint">{agent.resumeSessionId ? "Idle. The next task continues this session — or start fresh." : "Idle. Type in the tile to assign work."}</p>

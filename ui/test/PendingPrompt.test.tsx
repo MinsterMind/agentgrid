@@ -57,4 +57,10 @@ describe("PendingPrompt question", () => {
     await userEvent.click(screen.getByRole("button", { name: /send/i }));
     expect(onDecide).toHaveBeenCalledWith({ kind: "answers", answers: { "Q1?": "main", "Q2?": "develop" } });
   });
+  it("describes a permission request in a sentence above the exact command", () => {
+    render(<PendingPrompt who="Cody" pending={{ kind: "permission", toolUseId: "t", toolName: "Bash", input: { command: "kubectl rollout restart deploy/api" }, suggestions: [] }} onDecide={vi.fn()} />);
+    const box = screen.getByTestId("pending-permission");
+    expect(box).toHaveTextContent("Cody wants to run a shell command");
+    expect(box.querySelector(".cmd")).toHaveTextContent("kubectl rollout restart deploy/api");
+  });
 });

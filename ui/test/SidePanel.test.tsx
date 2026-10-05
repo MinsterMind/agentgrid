@@ -97,4 +97,10 @@ describe("SidePanel activity (feature: status + reply from Details)", () => {
     render(<SidePanel agent={{ ...agent, state: "failed" }} role={role} assignment={{ ...asg, state: "failed", pending: null, error: "The run stopped. Details here." }} {...fns} />);
     expect(screen.getByRole("alert")).toHaveTextContent("The run stopped.");
   });
+  it("labels its sections as an instrument panel and shows elapsed · turns · cost", () => {
+    render(<SidePanel agent={agent} role={role} assignment={asg} {...fns} />);
+    const stats = screen.getByTestId("side-stats");
+    expect(stats).toHaveTextContent(/ELAPSED/); expect(stats).toHaveTextContent(/TURNS\s*2/); expect(stats).toHaveTextContent(/COST\s*\$0\.30/);
+    expect(screen.getByTestId("pending-permission")).toHaveTextContent(/wants to run a shell command/);
+  });
 });

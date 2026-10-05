@@ -16,11 +16,11 @@ export function describeRequest(toolName: string): string {
   return `wants to use ${toolName}`;
 }
 
-export function PendingPrompt({ pending, onDecide }: { pending: Pending; onDecide: (d: Decision) => void }) {
+export function PendingPrompt({ pending, onDecide, who }: { pending: Pending; onDecide: (d: Decision) => void; who?: string }) {
   if (pending.kind === "permission") {
     return (
       <div className="qbox" data-testid="pending-permission">
-        <div className="qtitle">Permission: {pending.toolName}</div>
+        <div className="qtitle">{who ? `${who} ${describeRequest(pending.toolName)}` : describeRequest(pending.toolName).replace(/^wants/, "Wants")}</div>
         <pre className="cmd">{summarise(pending.input)}</pre>
         <div className="row">
           <button className="btn g" onClick={() => onDecide({ kind: "allow" })}>Allow</button>
