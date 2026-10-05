@@ -168,3 +168,15 @@ button.pill:disabled { opacity:.6; }
 .errcard-title { font-weight:600; color:#fecaca; } .errcard-head { color:#fca5a5; }
 .errcard summary { cursor:pointer; color:var(--dim); font-size:12px; }
 .errcard-details { white-space:pre-wrap; font:11.5px/1.5 ui-monospace, monospace; color:#e3b4b4; margin:6px 0 0; }
+
+.plan { display:flex; flex-direction:column; gap:10px; }
+.plansec h5 { margin:0 0 4px; font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--dim); }
+.plansec { background:#0f1115; border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+.diffview { width:100%; border-collapse:collapse; font:11.5px/1.5 ui-monospace, monospace; background:#0f1115; border-radius:6px; overflow:hidden; }
+.diffview td { padding:0 6px; vertical-align:top; } .diffview td.code { white-space:pre-wrap; word-break:break-all; width:100%; }
+.diffview td.ln { color:var(--dim2); text-align:right; user-select:none; min-width:3ch; border-right:1px solid var(--line); }
+.diffview tr.add { background:#0f2a18; } .diffview tr.add td.code { color:#bbf7d0; }
+.diffview tr.del { background:#2a1012; } .diffview tr.del td.code { color:#fecaca; }
+.diffview tr.hunk td, .diffview tr.file td, .diffview tr.note td { color:var(--dim); background:#151a24; padding:3px 8px; font-style:italic; }
+.skeleton { display:flex; flex-direction:column; gap:6px; } .skeleton div { height:10px; border-radius:4px; background:#1b1f27; animation:blink 1.4s infinite; } .skeleton div:nth-child(2) { width:80%; } .skeleton div:nth-child(3) { width:60%; }
+.fullview { display:inline-block; margin-top:8px; color:#93b4ff; font-size:12px; }

@@ -3,6 +3,8 @@ import type { Agent, Assignment, BugTask, Decision, MemoryFile, RoleDef, Session
 import { api } from "../api";
 import { PendingPrompt } from "./PendingPrompt";
 import { BugPanel } from "./BugPanel";
+import { ErrorCard } from "./ErrorCard";
+import { Markdown } from "./Markdown";
 const TerminalPane = lazy(() => import("./TerminalPane").then(m => ({ default: m.TerminalPane })));
 import { elapsed, usd } from "../format";
 
@@ -110,8 +112,8 @@ export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, 
         <h4>Recent activity</h4>
         <div className="transcript">{feed.map((e, i) => <div key={i} className={`e ${e.kind}`}>▸ <span>{e.text}</span></div>)}{feed.length === 0 && <div className="e">…</div>}</div>
         {a.pending && <PendingPrompt pending={a.pending} onDecide={d => onDecide(agent.id, a.pending!.toolUseId, d)} />}
-        {a.state === "done" && <><h4>Outcome</h4><pre className="outcome">{a.outcome}</pre></>}
-        {a.state === "failed" && <><h4>Failed</h4><pre className="outcome err">{a.error}</pre></>}
+        {a.state === "done" && <><h4>Outcome</h4><div className="outcome"><Markdown text={a.outcome ?? ""} /></div></>}
+        {a.state === "failed" && <><h4>Failed</h4><ErrorCard text={a.error ?? "The run failed."} /></>}
         <div className="row">
           {a.sessionId && <button className="btn" onClick={() => onOpenTerminal(agent.id)}>Open in Terminal ↗</button>}
           {(a.sessionId || agent.resumeSessionId) && onTranscript && <button className="btn" onClick={() => onTranscript(agent.id)}>Transcript</button>}

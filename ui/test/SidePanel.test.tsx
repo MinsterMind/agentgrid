@@ -87,4 +87,14 @@ describe("SidePanel activity (feature: status + reply from Details)", () => {
     await userEvent.type(screen.getByLabelText("Session name"), "Login fix{Enter}");
     expect(onRenameSession).toHaveBeenCalledWith("sess-abcdef12", "Login fix");
   });
+  it("renders a finished assignment's outcome as markdown", () => {
+    render(<SidePanel agent={{ ...agent, state: "done" }} role={role} assignment={{ ...asg, state: "done", pending: null, outcome: "**Fixed** the `bug`." }} {...fns} />);
+    expect(document.querySelector(".side strong")!.textContent).toBe("Fixed");
+    expect(document.body.textContent).not.toContain("**");
+  });
+
+  it("renders a failed assignment's error as an error card", () => {
+    render(<SidePanel agent={{ ...agent, state: "failed" }} role={role} assignment={{ ...asg, state: "failed", pending: null, error: "The run stopped. Details here." }} {...fns} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("The run stopped.");
+  });
 });

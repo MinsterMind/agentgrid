@@ -98,7 +98,8 @@ describe("BugPanel", () => {
     render(<BugPanel task={task("implementing")} onChanged={vi.fn()} />);
     expect(screen.getByText("PAY-42")).toBeInTheDocument();
     expect(screen.getByText(/Refresh token rotates twice/)).toBeInTheDocument();
-    expect(screen.getByTestId("bug-stage")).toHaveTextContent("implementing");
+    expect(screen.getByTestId("bug-stage")).toHaveTextContent("Implementing");
+    expect(screen.getByTestId("bug-stage")).toHaveAttribute("data-stage", "implementing");
   });
 
   it("plan gate renders the plan and approves it", async () => {
@@ -123,7 +124,7 @@ describe("BugPanel", () => {
   it("Approve & implement is disabled while the plan is still loading", async () => {
     bugPlan.mockImplementationOnce(() => new Promise(() => {})); // never resolves
     render(<BugPanel task={task("plan-review")} onChanged={vi.fn()} />);
-    expect(await screen.findByText("Loading…")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Loading the plan")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Approve & implement" })).toBeDisabled();
   });
 
@@ -146,7 +147,7 @@ describe("BugPanel", () => {
     expect(screen.getByTestId("diff-summary")).toHaveTextContent("2 files");
     expect(screen.getByTestId("diff-summary")).toHaveTextContent("+3");
     await userEvent.click(screen.getByRole("button", { name: /src\/auth\/session\.ts/ }));
-    expect(screen.getByText(/\+added line/)).toBeInTheDocument();
+    expect(screen.getByText("added line")).toBeInTheDocument();
     expect(screen.getByText(/could not isolate this file's hunks/i)).toBeInTheDocument();
   });
 
@@ -379,13 +380,14 @@ describe("the done card", () => {
     // closed without merging"), so this would fail if the classification ever went back to
     // matching prose instead of `pr.state`.
     expect(screen.getByText("Merged")).toBeInTheDocument();
-    const errBlock = container.querySelector(".outcome.err");
-    const lines = errBlock ? Array.from(errBlock.children) : [];
-    // Three lines in the source text must be three separate elements — not one collapsed
-    // text node, which `getByText`/`getNodeText` would match either way.
-    expect(lines).toHaveLength(3);
-    expect(lines[1]).toHaveTextContent(/git -C \/r worktree remove --force/);
-    expect(lines[2]).toHaveTextContent(/git -C \/r branch -D/);
+    // Each command in the cleanup message must be its own element with its own Copy — not one
+    // collapsed text node, which `getByText`/`getNodeText` would match either way.
+    expect(screen.getByRole("alert")).toHaveTextContent("worktree cleanup incomplete");
+    const cmds = Array.from(container.querySelectorAll(".errcard code.cmd"));
+    expect(cmds).toHaveLength(2);
+    expect(cmds[0]).toHaveTextContent(/^git -C \/r worktree remove --force/);
+    expect(cmds[1]).toHaveTextContent(/^git -C \/r branch -D/);
+    expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(2);
   });
 
   // The durable outcome is the discriminator (C3). Both proxies it replaced could be wrong in a
@@ -409,6 +411,23 @@ describe("the done card", () => {
     render(<BugPanel task={done()} onChanged={() => {}} onTranscript={onTranscript} />);
     await userEvent.click(screen.getByRole("button", { name: /Transcript/i }));
     expect(onTranscript).toHaveBeenCalledWith("bugfix@r");
+  });
+  it("renders the plan as sections, not markdown source", async () => {
+    bugPlan.mockResolvedValueOnce({ markdown: "## Root cause\nThe **token** rotates.\n\n## Fix\nOnce." });
+    const { container } = render(<BugPanel task={task("plan-review")} onChanged={vi.fn()} />);
+    expect(await screen.findByRole("heading", { name: "Root cause" })).toBeInTheDocument();
+    expect(container.querySelector(".planmd")).toBeNull();
+    expect(container.textContent).not.toContain("**");
+  });
+
+  it("shows a failed stage as an error card", () => {
+    render(<BugPanel task={task("failed", { error: "no commits on the task branch. Check the worktree." })} onChanged={vi.fn()} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("no commits on the task branch.");
+  });
+
+  it("links to the full view", () => {
+    render(<BugPanel task={task("implementing")} onChanged={vi.fn()} />);
+    expect(screen.getByRole("link", { name: /open full view/i })).toHaveAttribute("href", "#/bugs/bt1");
   });
 });
 
