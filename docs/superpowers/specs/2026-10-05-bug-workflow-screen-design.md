@@ -1,7 +1,7 @@
 # Bug Workflow Screen — Design Spec
 
 **Date:** 2026-10-05
-**Status:** Approved design, pre-implementation
+**Status:** Draft — awaiting review
 **Ships in:** 0.6.0
 
 ## 1. Problem
