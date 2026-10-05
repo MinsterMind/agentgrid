@@ -50,7 +50,7 @@ Each agent stage that makes decisions — `analyzing`, `implementing`, `review-f
 - `assumption` — something the agent decided without being told, which the human may want to
   overturn.
 - `question` — something the agent could not decide and proceeded around; the human answers it
-  through the existing **Request changes** note at the next gate (§9: no inline answering).
+  through the existing **Request changes** note at the next gate (§10: no inline answering).
 - An empty array is the right answer when there is nothing to report. The preset says so, so
   the agent does not invent items to fill the file.
 
@@ -189,19 +189,74 @@ one implementation.
 
 **Timeline.** `task.history`, newest first: time, stage, note.
 
-### 5.3 Components
+### 5.3 Presentation: nothing reaches the screen as raw markdown or raw text dumps
+
+Everything an agent, the tracker or the forge writes is shown **rendered and laid out**, never
+as the source it came in. Monospace is reserved for things that are literally code: commands,
+paths, branch names, commit ids and diff lines.
+
+**One markdown renderer.** A single `<Markdown>` component renders every markdown-bearing string
+on the screen: the plan, the ticket description, the PR body, stage notes, and assumption text
+(inline formatting only — bold, code, links). It uses `react-markdown` with `remark-gfm` (tables,
+task lists, strikethrough), with **raw HTML disabled** (no `rehype-raw`), links opened in a new
+tab with `rel="noreferrer"`, and images not loaded (shown as their alt text with a link). Agent and
+ticket text stays untrusted: this is rendering, never execution. It replaces the plan's
+`<pre className="planmd">`.
+
+**The plan as sections, not a document.** The analyze preset already asks for four headings. The
+plan card splits on them and shows each as its own titled block — **Root cause**, **Fix**,
+**Test strategy**, **Risks** — each rendered through `<Markdown>`. The Fix section's file list
+links each path to that file in the diff once a diff exists. A plan that does not have the
+headings (an agent ignored the preset) renders whole through `<Markdown>` with a quiet note:
+"This plan doesn't follow the usual sections." The split is a pure function in `bugView.ts`.
+
+**The diff as a diff.** Per-file collapsible rows (path, +/− counts, as today); expanding one
+shows a proper diff view: old/new line-number gutters, added/removed lines tinted, hunk headers
+(`@@ … @@`) shown as dividers labelled with the function context, no-newline markers
+dropped. Unified view only; no syntax highlighting (no new dependency for it). Replaces
+`<pre className="hunks">`.
+
+**Errors as messages, not dumps.** A stage failure renders as a card: the first line as a plain
+sentence headline; the rest, if any, under a collapsed **Details** disclosure in monospace;
+paths and commands in it get a **Copy** button (the existing cleanup hint, for instance, carries a
+`git worktree remove` command). Replaces `<pre className="outcome err">` in both `BugPanel` and
+the side panel's agent Failed/Outcome blocks, which render through `<Markdown>` too.
+
+**States, not blanks.** Every section has a designed loading state (skeleton lines, not
+"Loading…"), empty state (a sentence saying what will appear there and when) and error state
+(what failed and a Retry). Times are relative ("6 min ago") with the absolute time on hover;
+money is `$0.84`; stage ids are never shown raw — `review-feedback` reads "Addressing review",
+`creating-pr` reads "Opening the pull request", from one label map shared with the strip.
+
+**Visual language.** Status uses the app's existing colour tokens plus an icon *and* a word
+(never colour alone): running, waiting on you, failed, done, not reached. The strip is a
+horizontal stepper that wraps at narrow widths rather than scrolling. Blocking items are the
+most prominent block on the page when present (accent border, at the top of the detail column
+under the header); when empty they collapse to one muted line. Keyboard: ↑/↓ moves through the
+bug list, Enter opens, and every action is a real `<button>` with a visible focus ring. Both
+light and dark themes.
+
+### 5.4 Components
 
 | Unit | Does | Depends on |
 |---|---|---|
-| `bugView.ts` (pure) | `pipelineFor(task, waiting)`, `nowFor(...)`, `blockersFor(...)`, `listStatus(task)` | types only |
-| `BugGates.tsx` | the gate cards, moved out of `BugPanel` unchanged | api |
+| `bugView.ts` (pure) | `pipelineFor(task, waiting)`, `nowFor(...)`, `blockersFor(...)`, `listStatus(task)`, `planSections(md)`, `stageLabel(stage)`, `parseHunks(patch)` | types only |
+| `Markdown.tsx` | the one safe markdown renderer (§5.3) | `react-markdown`, `remark-gfm` |
+| `DiffView.tsx` | one file's hunks as a diff with gutters (§5.3) | `bugView.parseHunks` |
+| `ErrorCard.tsx` | headline + collapsible details + copy (§5.3) | — |
+| `BugGates.tsx` | the gate cards, moved out of `BugPanel`, now rendering the plan, diff and errors through the three components above | api, `Markdown`, `DiffView`, `ErrorCard` |
 | `BugScreen.tsx` | the full page: list + detail, composing the above | `bugView`, `BugGates`, reducer selectors |
 | `BugPanel.tsx` | compact side-panel view, now `BugGates` + "Open full view" | `BugGates` |
 
 All derivation lives in `bugView.ts` so every stage/state combination is unit-testable without
 rendering.
 
-## 6. Server changes
+## 6. Dependencies
+
+`react-markdown` and `remark-gfm`, added to `ui` only. Nothing else new: the diff view and the
+plan split are hand-written against the patch and heading formats this app already produces.
+
+## 7. Server changes
 
 - `types.ts`: `Assumption`; `assumptions` and `assumptionsProblem` on `BugTask`.
 - `store.ts`: normalise both in `init`; an `addAssumptions(id, items, problem)` patch.
@@ -215,7 +270,7 @@ rendering.
 - `fake/agent.ts`: writes one assumption and one question in fake analyze, so fake mode and e2e
   exercise the whole path.
 
-## 7. Failure handling
+## 8. Failure handling
 
 - Assumptions file missing / malformed / oversized → §4.3; never fails a stage.
 - Activity unavailable (no session yet, transcript not found) → "Now" falls back to stage and
@@ -225,7 +280,7 @@ rendering.
 - A bug removed while selected → the screen falls back to the first bug, or an empty state with
   "🐞 Fix a bug".
 
-## 8. Testing
+## 9. Testing
 
 - **`parseAssumptions`:** valid; empty array; missing; not JSON; not an array; unknown kind;
   non-string text; 21 items; 600-char text.
@@ -236,23 +291,30 @@ rendering.
 - **`bugView`:** `pipelineFor` for every `BugStage`, including failed/cancelled after each step and
   a round-2 monitor; `blockersFor` for each source in §5.2's table and the empty case; `nowFor` for
   agent, server, gate, monitoring and terminal stages.
+- **Presentation:** `planSections` with all four headings, with a missing heading, with none, and
+  with headings at a different level; `parseHunks` line numbering across multiple hunks, a
+  no-newline marker and a rename; `<Markdown>` renders a table and a task list, and renders a
+  `<script>`/`<img onerror>` in agent text as inert text, with no element created; `ErrorCard`
+  splits headline from details and copies a command; no raw markdown syntax (`##`, `**`, ``` ` ```
+  fences) appears in the rendered plan for the fake plan fixture.
 - **UI:** `BugScreen` renders list, strip, now, blockers, assumptions (questions first, new marked,
   problem line), timeline; selecting a bug switches the detail; gate actions call the same API as
   `BugPanel`; hash round-trip. `BugPanel` existing tests pass unchanged against `BugGates`.
 - **E2E:** `bugfix.spec.ts` opens the bug screen, sees the fake assumption and question after
   analyze, approves the plan *from the screen*, and watches the strip advance to Diff review.
 
-## 9. Out of scope
+## 10. Out of scope
 
-Answering a question inline (it is answered via Request changes); an all-bugs board; the full
+Syntax highlighting in the diff; a split (side-by-side) diff; answering a question inline (it is answered via Request changes); an all-bugs board; the full
 transcript on this screen; assumptions from AgentGrid itself (repo, base branch, merge policy);
 editing or dismissing assumptions; notifications for new questions.
 
-## 10. Risks
+## 11. Risks
 
 | Risk | Mitigation |
 |---|---|
 | Agents skip the file or pad it with noise | The preset makes an empty array the stated right answer; the list shows what came back, and a missing file is visibly "not reported yet" rather than "none" |
 | Agent text renders as markup | Plain text only (§4.4) |
+| Markdown rendering opens an injection path for ticket or agent text | Raw HTML disabled, images not loaded, links `noreferrer`; pinned by a test that feeds it script and event-handler markup (§9) |
 | Extracting `BugGates` regresses the side panel | It is a move, not a rewrite; `BugPanel`'s existing tests run unchanged against it |
 | Activity lags the stage (transcript-derived) | The stage and elapsed time come from the task itself; activity is the detail line, never the source of truth for position |
