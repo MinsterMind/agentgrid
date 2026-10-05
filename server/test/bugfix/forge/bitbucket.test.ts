@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFile, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { bitbucketAdapter, parseRepoSlug } from "../../../src/bugfix/forge/bitbucket.js";
+import { bitbucketAdapter, parseRepoSlug, hostnameFromSshConfig } from "../../../src/bugfix/forge/bitbucket.js";
 
 const fx = (n: string) => readFile(path.resolve("test/bugfix/fixtures/bb", n), "utf8");
 const json = async (n: string, status = 200) => new Response(await fx(n), { status, headers: { "content-type": "application/json" } });
@@ -26,7 +26,10 @@ const deps = (fetchFn: typeof fetch, ...tokenArg: [string | undefined] | []) => 
   // `repoDir` in these tests ("/r") is never a real git checkout, so slug resolution is
   // injected directly rather than shelling out to a nonexistent repo.
   return { username: "me@example.com", token: () => token, fetchFn,
-    gitRemoteUrl: async () => "git@bitbucket.org:acme/payments.git" };
+    gitRemoteUrl: async () => "git@bitbucket.org:acme/payments.git",
+    // Never shell out to the real ssh from a unit test: an alias resolves to itself unless a
+    // test says otherwise.
+    sshHostname: async (host: string) => host };
 };
 
 describe("parseRepoSlug", () => {
@@ -35,6 +38,92 @@ describe("parseRepoSlug", () => {
     expect(parseRepoSlug("https://me@bitbucket.org/acme/payments.git")).toEqual({ workspace: "acme", slug: "payments" });
     expect(parseRepoSlug("ssh://git@bitbucket.org/acme/payments")).toEqual({ workspace: "acme", slug: "payments" });
     expect(parseRepoSlug("git@github.com:acme/payments.git")).toBeNull();
+  });
+
+  it("accepts a trailing slash, an explicit port and a capitalised host", () => {
+    const want = { workspace: "gruve-team", slug: "pluseai_platform" };
+    expect(parseRepoSlug("https://bitbucket.org/gruve-team/pluseai_platform/")).toEqual(want);
+    expect(parseRepoSlug("https://bitbucket.org/gruve-team/pluseai_platform.git/")).toEqual(want);
+    expect(parseRepoSlug("ssh://git@bitbucket.org:22/gruve-team/pluseai_platform.git")).toEqual(want);
+    expect(parseRepoSlug("git@Bitbucket.org:gruve-team/pluseai_platform.git")).toEqual(want);
+  });
+
+  it("still refuses a host that merely contains bitbucket.org", () => {
+    expect(parseRepoSlug("git@evilbitbucket.org:acme/payments.git")).toBeNull();
+    expect(parseRepoSlug("https://bitbucket.org.evil.com/acme/payments.git")).toBeNull();
+  });
+});
+
+describe("hostnameFromSshConfig", () => {
+  it("reads the hostname line out of `ssh -G`", () => {
+    expect(hostnameFromSshConfig("user git\nhostname bitbucket.org\nport 22\n")).toBe("bitbucket.org");
+    expect(hostnameFromSshConfig("user git\nport 22\n")).toBeNull();
+  });
+});
+
+// The reported case: a work account behind an SSH host alias, `Host bitbucket.org-gruve` in
+// ~/.ssh/config with `HostName bitbucket.org`. git resolves it through ssh; AgentGrid must too.
+describe("a remote behind an SSH host alias", () => {
+  const ALIAS = "git@bitbucket.org-gruve:gruve-team/pluseai_platform.git";
+
+  it("resolves the alias through ssh and calls the API for the right repository", async () => {
+    const { calls, fetchFn } = recorder(async url =>
+      url.includes("/statuses") ? new Response(JSON.stringify({ values: [] }), { status: 200 })
+      : url.includes("/conflicts") ? new Response(JSON.stringify({ values: [] }), { status: 200 })
+      : json("pr-open.json"));
+    const asked: string[] = [];
+    const d = { ...deps(fetchFn), gitRemoteUrl: async () => ALIAS,
+      sshHostname: async (h: string) => { asked.push(h); return h === "bitbucket.org-gruve" ? "bitbucket.org" : h; } };
+    const r = await bitbucketAdapter(d).getPr("/r", 7);
+    expect(r).toMatchObject({ found: { number: 7 } });
+    expect(asked).toEqual(["bitbucket.org-gruve"]);
+    expect(calls[0].url).toContain("/repositories/gruve-team/pluseai_platform/pullrequests/7");
+  });
+
+  it("explains an alias that does not lead to bitbucket.org, naming the remote and the host", async () => {
+    const { calls, fetchFn } = recorder(async () => json("pr-open.json"));
+    const d = { ...deps(fetchFn), gitRemoteUrl: async () => ALIAS, sshHostname: async () => "git.example.com" };
+    const r = await bitbucketAdapter(d).getPr("/r", 7) as { unavailable: string };
+    expect(r.unavailable).toContain(ALIAS);
+    expect(r.unavailable).toMatch(/bitbucket\.org-gruve/);
+    expect(r.unavailable).toMatch(/git\.example\.com/);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("why a repository could not be resolved", () => {
+  it("never hands ssh a host that would read as an option", async () => {
+    const { calls, fetchFn } = recorder(async () => json("pr-open.json"));
+    const asked: string[] = [];
+    const d = { ...deps(fetchFn), gitRemoteUrl: async () => "git@-oProxyCommand=touch_x:acme/payments.git",
+      sshHostname: async (h: string) => { asked.push(h); return "bitbucket.org"; } };
+    const r = await bitbucketAdapter(d).getPr("/r", 7);
+    expect(asked).toEqual([]);
+    expect(r).toHaveProperty("unavailable");
+    expect(calls).toHaveLength(0);
+  });
+
+
+  it("says when there is no origin remote", async () => {
+    const { fetchFn } = recorder(async () => json("pr-open.json"));
+    const r = await bitbucketAdapter({ ...deps(fetchFn), gitRemoteUrl: async () => null }).getPr("/repo", 7) as { unavailable: string };
+    expect(r.unavailable).toMatch(/no "origin" remote/);
+    expect(r.unavailable).toContain("/repo");
+  });
+
+  it("never echoes a password embedded in the remote URL", async () => {
+    const { fetchFn } = recorder(async () => json("pr-open.json"));
+    const d = { ...deps(fetchFn), gitRemoteUrl: async () => "https://x-token-auth:s3cr3t@github.com/acme/payments.git" };
+    const r = await bitbucketAdapter(d).getPr("/r", 7) as { unavailable: string };
+    expect(r.unavailable).not.toContain("s3cr3t");
+    expect(r.unavailable).toContain("github.com/acme/payments.git");
+  });
+
+  it("merge says why, too", async () => {
+    const { fetchFn } = recorder(async () => json("pr-open.json"));
+    const r = await bitbucketAdapter({ ...deps(fetchFn), gitRemoteUrl: async () => null }).merge("/repo", 7, "squash");
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/no "origin" remote/);
   });
 });
 

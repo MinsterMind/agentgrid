@@ -15,16 +15,48 @@ export interface BitbucketDeps {
    *  `git -C <repoDir> remote get-url origin`. Injected in tests so the slug-resolution path
    *  can be exercised without a real git checkout. */
   gitRemoteUrl?: (repoDir: string) => Promise<string | null>;
+  /** What SSH actually connects to for `host` — resolving a `~/.ssh/config` alias such as
+   *  `bitbucket.org-work` the same way `git push` does. Defaults to `ssh -G <host>`; null when
+   *  it can't be asked. Injected in tests so no unit test shells out to ssh. */
+  sshHostname?: (host: string) => Promise<string | null>;
 }
 
-/** `git@bitbucket.org:ws/slug.git`, `https://user@bitbucket.org/ws/slug.git`, `ssh://git@bitbucket.org/ws/slug`. */
-export function parseRepoSlug(remoteUrl: string): { workspace: string; slug: string } | null {
-  // Host-anchored: `(?<![\w.-])` refuses a match where "bitbucket.org" is merely a substring
-  // of a longer label (e.g. `evilbitbucket.org:acme/payments.git`), which would otherwise
-  // parse as a valid slug.
-  const m = /(?<![\w.-])bitbucket\.org[:/]+([^/]+)\/([^/]+?)(?:\.git)?$/.exec(remoteUrl.trim());
-  return m ? { workspace: m[1], slug: m[2] } : null;
+/** A git remote as host + path, from either form git accepts: a URL (`https://user@host/ws/slug.git`,
+ *  `ssh://git@host:22/ws/slug`) or scp-like (`git@host:ws/slug.git`). Null for anything else. */
+export function parseRemote(remoteUrl: string): { host: string; path: string; scpLike: boolean } | null {
+  const u = remoteUrl.trim();
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(u)) {
+    try { const url = new URL(u); return url.hostname ? { host: url.hostname.toLowerCase(), path: url.pathname, scpLike: false } : null; }
+    catch { return null; }
+  }
+  // The host must start with a letter or digit: it is later passed to `ssh -G` as an argument,
+  // and one beginning with "-" would be read as an option.
+  const scp = /^(?:[^@/\s]+@)?([a-z0-9][^@:/\s]*):(?!\/\/)(.+)$/i.exec(u);
+  return scp ? { host: scp[1].toLowerCase(), path: scp[2], scpLike: true } : null;
 }
+
+/** `ws/slug`, `/ws/slug.git/` → workspace + slug; anything with more or fewer segments → null. */
+function slugFromPath(p: string): { workspace: string; slug: string } | null {
+  const parts = p.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "").split("/");
+  return parts.length === 2 && parts[0] && parts[1] ? { workspace: parts[0], slug: parts[1] } : null;
+}
+
+/** `git@bitbucket.org:ws/slug.git`, `https://user@bitbucket.org/ws/slug.git/`, `ssh://git@bitbucket.org:22/ws/slug`.
+ *  The host must BE bitbucket.org — not contain it — so `evilbitbucket.org` and
+ *  `bitbucket.org.evil.com` are refused. SSH aliases are resolved by the adapter, not here. */
+export function parseRepoSlug(remoteUrl: string): { workspace: string; slug: string } | null {
+  const r = parseRemote(remoteUrl);
+  return r && r.host === "bitbucket.org" ? slugFromPath(r.path) : null;
+}
+
+/** The `hostname` line of `ssh -G <host>` output. */
+export function hostnameFromSshConfig(stdout: string): string | null {
+  const m = /^hostname\s+(\S+)\s*$/im.exec(stdout);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** A remote URL fit for an error message: a password in `https://user:pass@host` is dropped. */
+const redactRemote = (url: string) => url.replace(/(\/\/[^:@/]+):[^@/]*@/, "$1@");
 
 /** Every request's outcome, mapped once so every method agrees on what a status code means. */
 type ApiResult =
@@ -79,6 +111,15 @@ function looksLikePr(pr: any): boolean {
   return typeof pr === "object" && pr !== null && !Array.isArray(pr) && typeof pr.id === "number";
 }
 
+const defaultSshHostname = async (host: string): Promise<string | null> => {
+  try {
+    const { stdout } = await run("ssh", ["-G", host], { timeout: 5_000 });
+    return hostnameFromSshConfig(stdout);
+  } catch {
+    return null;
+  }
+};
+
 const defaultGitRemoteUrl = async (repoDir: string): Promise<string | null> => {
   try {
     const { stdout } = await run("git", ["-C", repoDir, "remote", "get-url", "origin"]);
@@ -92,6 +133,7 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
   const getToken = deps.token ?? (() => process.env.BITBUCKET_API_TOKEN);
   const doFetch = deps.fetchFn ?? fetch;
   const getRemoteUrl = deps.gitRemoteUrl ?? defaultGitRemoteUrl;
+  const getSshHostname = deps.sshHostname ?? defaultSshHostname;
 
   async function api(path: string, init?: { method?: string; body?: string; headers?: Record<string, string> }): Promise<ApiResult> {
     const token = getToken();
@@ -125,15 +167,32 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
   /**
    * Resolve workspace/slug from the repo's `origin` remote — once per call, cached nowhere
    * (a task's repo does not change mid-run, but caching across tasks would be a bug waiting
-   * for a second repo). Returns null, never throws, when the remote can't be read or doesn't
-   * look like a bitbucket.org URL — the caller must treat that as "we don't know", not as
-   * grounds for an API call with an empty workspace/slug (which Bitbucket would 404, and a
-   * 404 means something specific: the forge positively reports the PR is absent).
+   * for a second repo). Never throws: when the remote can't be read or doesn't lead to
+   * bitbucket.org it returns why, in words the human can act on — the caller must treat that as
+   * "we don't know", not as grounds for an API call with an empty workspace/slug (which
+   * Bitbucket would 404, and a 404 means something specific: the forge positively reports the
+   * PR is absent).
    */
-  async function resolveSlug(repoDir: string): Promise<{ workspace: string; slug: string } | null> {
+  async function resolveRepo(repoDir: string): Promise<{ ok: true; workspace: string; slug: string } | { ok: false; reason: string }> {
+    const why = (reason: string) => ({ ok: false as const, reason: `could not determine the Bitbucket repository: ${reason}` });
     const url = await getRemoteUrl(repoDir);
-    if (!url) return null;
-    return parseRepoSlug(url);
+    if (!url) return why(`${repoDir} has no "origin" remote, or git could not read it`);
+    const shown = redactRemote(url);
+    const remote = parseRemote(url);
+    if (!remote) return why(`the origin remote of ${repoDir} (${shown}) is not a git URL AgentGrid understands`);
+    let host = remote.host;
+    // An scp-like or ssh:// remote goes through ssh, so its host may be a ~/.ssh/config alias
+    // (`bitbucket.org-work`) — ask ssh where it really leads, exactly as `git push` would.
+    if (host !== "bitbucket.org" && (remote.scpLike || /^ssh:/i.test(url.trim()))) {
+      const real = await getSshHostname(host);
+      if (real === "bitbucket.org") host = real;
+      else return why(`the origin remote of ${repoDir} (${shown}) points at ${remote.host}` +
+        (real && real !== remote.host ? `, which your SSH config resolves to ${real}` : "") + `, not bitbucket.org`);
+    }
+    if (host !== "bitbucket.org") return why(`the origin remote of ${repoDir} (${shown}) points at ${host}, not bitbucket.org`);
+    const slug = slugFromPath(remote.path);
+    if (!slug) return why(`the origin remote of ${repoDir} (${shown}) does not end in <workspace>/<repository>`);
+    return { ok: true, ...slug };
   }
 
   /** The check rollup for one PR, from its commit-status endpoint. Never throws; unreadable reads as null (unknown), not success. */
@@ -168,8 +227,8 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
    * Shared by `findPr` and by `createPr`'s duplicate-adoption path.
    */
   async function findPrByBranch(repoDir: string, branch: string): Promise<PrInfo | null> {
-    const slug = await resolveSlug(repoDir);
-    if (!slug) return null;
+    const slug = await resolveRepo(repoDir);
+    if (!slug.ok) return null;
     const query = async (state: "open" | "all"): Promise<{ ok: true; pr: any | null } | { ok: false }> => {
       const q = state === "open" ? `source.branch.name="${branch}" AND state="OPEN"` : `source.branch.name="${branch}"`;
       const r = await api(`/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests?q=${encodeURIComponent(q)}`);
@@ -192,10 +251,8 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
   }
 
   async function lookupByNumber(repoDir: string, number: number): Promise<PrLookup> {
-    const slug = await resolveSlug(repoDir);
-    if (!slug) {
-      return { unavailable: `could not determine the Bitbucket repository from ${repoDir}'s origin remote` };
-    }
+    const slug = await resolveRepo(repoDir);
+    if (!slug.ok) return { unavailable: slug.reason };
     const r = await api(`/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests/${number}`);
     if (r.kind === "no-token") return { unavailable: "BITBUCKET_API_TOKEN is not set" };
     if (r.kind === "refused") return { unavailable: "Bitbucket refused the request (token not accepted)" };
@@ -227,10 +284,8 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
     },
 
     async createPr(repoDir: string, ctx: CreatePrContext): Promise<PrLookup> {
-      const slug = await resolveSlug(repoDir);
-      if (!slug) {
-        return { unavailable: `could not determine the Bitbucket repository from ${repoDir}'s origin remote` };
-      }
+      const slug = await resolveRepo(repoDir);
+      if (!slug.ok) return { unavailable: slug.reason };
       let description: string;
       try {
         description = await readFile(ctx.bodyFile, "utf8");
@@ -271,8 +326,8 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
     },
 
     async listReviewEvents(repoDir: string, number: number, since: string): Promise<ReviewEvent[]> {
-      const slug = await resolveSlug(repoDir);
-      if (!slug) return [];
+      const slug = await resolveRepo(repoDir);
+      if (!slug.ok) return [];
       const r = await api(`/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests/${number}/activity`);
       if (r.kind !== "ok") return [];
       const values = Array.isArray(r.body?.values) ? r.body.values : [];
@@ -319,10 +374,8 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
       if (method === "rebase") {
         return { ok: false, message: "Bitbucket has no rebase merge strategy; refusing rather than silently substituting a fast-forward." };
       }
-      const slug = await resolveSlug(repoDir);
-      if (!slug) {
-        return { ok: false, message: `could not determine the Bitbucket repository from ${repoDir}'s origin remote` };
-      }
+      const slug = await resolveRepo(repoDir);
+      if (!slug.ok) return { ok: false, message: slug.reason };
       const merge_strategy = method === "squash" ? "squash" : "merge_commit";
       const r = await api(`/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests/${number}/merge`,
         { method: "POST", body: JSON.stringify({ merge_strategy, close_source_branch: true }) });
