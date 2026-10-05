@@ -1,7 +1,10 @@
 import type { Agent, Assignment, RoleDef, SessionInfo, SessionActivity } from "../types";
 import { SessionTile } from "./SessionTile";
 import { AgentTile } from "./AgentTile";
+import { Activity, CheckCircle2, Hand, Moon, RadioReceiver } from "lucide-react";
 import { sectionize } from "../state/sections";
+
+const ICON = { waiting: Hand, working: Activity, finished: CheckCircle2, free: Moon };
 
 export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, onSelect, onAssign, liveSessions = [], liveFor, activityFor, onPullIn, bugStageFor }: {
   agents: Agent[]; roles: RoleDef[]; assignments: Record<string, Assignment>; selectedId: string | null;
@@ -18,7 +21,10 @@ export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, o
     <div className="board">
       {sections.map(sec => (
         <section key={sec.key} className={`section ${sec.key}`} data-testid={`section-${sec.key}`}>
-          <h3 className="sect">{sec.title} <span className="count">{sec.agents.length}</span></h3>
+          <div className="sect-head">
+            <h3 className={`sect ${sec.key}`}>{(() => { const I = ICON[sec.key]; return <I />; })()} {sec.title} <span className="count">{sec.agents.length}</span></h3>
+            <p className="sect-desc">{sec.hint}</p>
+          </div>
           <div className="grid">
             {sec.agents.map(agent => (
               <AgentTile key={agent.id} agent={agent} index={index++} role={roles.find(r => r.name === agent.role)}
@@ -30,7 +36,10 @@ export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, o
       ))}
       {liveSessions.length > 0 && (
         <section className="section live" data-testid="section-live">
-          <h3 className="sect">Live Claude Code sessions <span className="count">{liveSessions.length}</span><span className="sub">running outside the grid · newest first</span></h3>
+          <div className="sect-head">
+            <h3 className="sect live"><RadioReceiver /> Running elsewhere <span className="count">{liveSessions.length}</span></h3>
+            <p className="sect-desc">Claude Code sessions open outside AgentGrid. Pull one in to manage it here.</p>
+          </div>
           <div className="strip">{[...liveSessions].sort((a, b) => b.at - a.at).map(l => <SessionTile key={l.sessionId} session={l} roles={roles} onPullIn={onPullIn ?? (async () => {})} />)}</div>
         </section>
       )}

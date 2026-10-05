@@ -24,8 +24,14 @@ body { margin:0; background:var(--bg); color:var(--text); font-size:13px; line-h
 .counter.c-needs-you:disabled { cursor:default; }
 .topbar .actions { display:flex; gap:8px; }
 .split { display:grid; grid-template-columns: 1fr 340px; gap:12px; padding:12px 16px; flex:1; min-height:0; }
-.board { overflow:auto; display:flex; flex-direction:column; gap:14px; }
-.grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:10px; align-content:start; }
+.board { overflow:auto; display:flex; flex-direction:column; gap:18px; padding-right:4px; }
+.grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap:12px; align-content:start; }
+.section { display:flex; flex-direction:column; gap:8px; }
+.sect-head { display:flex; flex-direction:column; gap:2px; }
+.sect { margin:0; font-family:var(--mono); font-size:11px; font-weight:500; text-transform:uppercase; letter-spacing:.6px; color:var(--text-muted); display:flex; align-items:center; gap:8px; }
+.sect.waiting { color:var(--st-needs-you); } .sect.working { color:var(--st-working); }
+.sect .count { font-family:var(--mono); color:var(--text-faint); } .sect .count::before { content:"["; } .sect .count::after { content:"]"; }
+.sect-desc { margin:0; font-size:12px; color:var(--text-faint); }
 .empty { color:var(--text-faint); padding:40px; grid-column:1/-1; text-align:center; }
 .tile { position:relative; background:var(--surface); border:1px solid var(--grid-line); border-radius:10px; padding:12px; min-height:120px; cursor:pointer; --ring:var(--st-idle); }
 .tile.selected { outline:2px solid var(--accent); }
@@ -129,11 +135,6 @@ svg.lucide { width:14px; height:14px; flex:none; }
 .tile.ghost[data-state="busy"] { --ring:var(--st-working); } .tile.ghost[data-state="blocked"] { --ring:var(--st-needs-you); } .tile.ghost[data-state="idle"] { --ring:var(--st-done); }
 .badge.live { background:#334155; color:#e2e8f0; }
 .tile.ghost select { background:var(--bg); border:1px solid var(--grid-line); color:var(--text); border-radius:6px; padding:3px 6px; font:inherit; font-size:11px; flex:1; }
-.section { border-left:3px solid var(--grid-line); padding-left:10px; }
-.section.waiting { border-left-color:var(--st-needs-you); } .section.working { border-left-color:var(--st-working); } .section.finished { border-left-color:var(--st-done); } .section.free { border-left-color:var(--st-idle); } .section.live { border-left-color:#64748b; }
-.sect { margin:0 0 8px; font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--text-muted); display:flex; align-items:center; gap:8px; }
-.sect .count { background:var(--surface-raised); border:1px solid var(--grid-line); border-radius:99px; padding:0 7px; font-size:10px; color:var(--text); }
-.sect .sub { text-transform:none; letter-spacing:0; color:var(--text-faint); font-weight:normal; }
 .tile { border-left-width:3px; }
 .tile[data-state="working"] { border-left-color:var(--st-working); } .tile[data-state="waiting"] { border-left-color:var(--st-needs-you); }
 .tile[data-state="done"] { border-left-color:var(--st-done); } .tile[data-state="failed"] { border-left-color:var(--st-failed); } .tile[data-state="free"] { border-left-color:var(--st-idle); }
@@ -149,7 +150,6 @@ svg.lucide { width:14px; height:14px; flex:none; }
 .livecard .lrepo { color:var(--accent); flex:none; } .livecard .lmeta { color:#64748b; flex:none; font-size:11px; }
 .livecard .lactions { display:flex; gap:6px; align-items:center; flex:none; }
 .livecard select { background:var(--bg); border:1px solid var(--grid-line); color:var(--text); border-radius:6px; padding:2px 6px; font:inherit; font-size:11px; }
-.section.live { border-left-color:var(--grid-line); margin-top:6px; }
 .row.byid input { flex:1; font-family:var(--mono); }
 .tasktitle { font-size:12px; color:#e2e8f0; margin-top:8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:500; }
 .act.phase { min-height:0; margin-top:4px; font-size:11px; } .act.phase.waiting { color:#ffd166; } .act.phase.working { color:#93c5fd; } .act.phase.idle { color:#86efac; }

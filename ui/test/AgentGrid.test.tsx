@@ -1,19 +1,24 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { AgentGrid } from "../src/components/AgentGrid";
-import type { Agent, RoleDef, SessionInfo } from "../src/types";
+import type { Agent, SessionInfo } from "../src/types";
 
-const roles: RoleDef[] = [{ name: "coder", avatar: "👩‍💻", model: "m", effort: "high", permissionMode: "default", settingSources: [], allowedTools: [], maxTurns: 1, prompt: "" }];
-const ag = (id: string, state: Agent["state"]): Agent => ({ id, role: "coder", repo: "/r/" + id, displayName: id, createdAt: id, state, currentAssignmentId: null });
-const live = (id: string, at: number): SessionInfo => ({ sessionId: id, cwd: "/w/" + id, title: id, kind: "interactive", status: "idle", at, canAdopt: true });
+const ag = (id: string, state: Agent["state"]): Agent => ({ id, role: "coder", repo: "/r/x", displayName: id, createdAt: id, state, currentAssignmentId: null });
+const base = { roles: [], assignments: {}, selectedId: null, recentFor: () => [], onSelect: vi.fn(), onAssign: vi.fn() };
 
-describe("AgentGrid layout", () => {
-  it("puts agent sections first and live sessions last, newest live first", () => {
-    render(<AgentGrid agents={[ag("a", "free"), ag("b", "waiting")]} roles={roles} assignments={{}} selectedId={null} recentFor={() => []} onSelect={vi.fn()} onAssign={vi.fn()}
-      liveSessions={[live("old", 1000), live("new", 3000), live("mid", 2000)]} onPullIn={async () => {}} />);
-    const sections = screen.getAllByTestId(/^section-/).map(e => e.getAttribute("data-testid"));
-    expect(sections).toEqual(["section-waiting", "section-free", "section-live"]);
-    const liveIds = screen.getAllByTestId(/^session-/).map(e => e.getAttribute("data-testid"));
-    expect(liveIds).toEqual(["session-new", "session-mid", "session-old"]);
+describe("AgentGrid", () => {
+  it("titles each section with its count and explanation", () => {
+    render(<AgentGrid {...base} agents={[ag("a", "working"), ag("b", "working")]} />);
+    const sec = screen.getByTestId("section-working");
+    expect(within(sec).getByRole("heading")).toHaveTextContent(/Working\s*2/);
+    expect(sec).toHaveTextContent("Running now. You don't need to watch them.");
+  });
+
+  it("explains running-elsewhere sessions", () => {
+    const live: SessionInfo = { sessionId: "s1", cwd: "/w/api", title: "zsh", kind: "interactive", status: "busy", at: Date.now() } as SessionInfo;
+    render(<AgentGrid {...base} agents={[]} liveSessions={[live]} />);
+    const sec = screen.getByTestId("section-live");
+    expect(within(sec).getByRole("heading")).toHaveTextContent(/Running elsewhere\s*1/);
+    expect(sec).toHaveTextContent("Claude Code sessions open outside AgentGrid. Pull one in to manage it here.");
   });
 });
