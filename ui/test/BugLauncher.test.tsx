@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { BugLauncher } from "../src/components/BugLauncher";
 
 const myIssues = vi.fn(async () => [{ key: "PAY-42", title: "Refresh token rotates twice", url: "u", status: "Open", priority: "High" }]);
-const bugPreflight = vi.fn(async (_repo: string) => ({ ok: true, problems: [] as string[] }));
+const bugPreflight = vi.fn(async (_repo: string): Promise<{ ok: boolean; problems: string[]; remote?: string | null }> => ({ ok: true, problems: [] as string[] }));
 const createBugTask = vi.fn(async (i: { issueRef: string; repo: string }) => ({ id: "bt1", ...i }));
 const getIntegrations = vi.fn(async () => ({ projectRepos: { PAY: "/r/payments" } }));
 const getSetup = vi.fn(async () => ({
@@ -137,12 +137,39 @@ describe("BugLauncher", () => {
   // auto-merge, and the merge gate is the point of this workflow. The control stays visible (it
   // is a real planned behaviour) but must not be selectable, or the launcher promises a merge
   // that will never happen.
-  it("does not offer auto-merge as a usable choice, since nothing implements it", () => {
+  it("does not offer auto-merge as a usable choice, since nothing implements it", async () => {
     render(<BugLauncher onCreated={() => {}} onClose={() => {}} onOpenSettings={() => {}} />);
-    const select = screen.getByLabelText(/when the PR is approved/i) as HTMLSelectElement;
-    expect(select).toHaveValue("ask");
-    const auto = Array.from(select.options).find(o => o.value === "auto")!;
-    expect(auto.disabled).toBe(true);
-    expect(auto.textContent).toMatch(/not yet available/i);
+    const auto = await screen.findByRole("radio", { name: /merge automatically/i });
+    expect(auto).toHaveAttribute("aria-disabled", "true");
+    expect(auto).toHaveTextContent(/coming later/i);
+    await userEvent.click(auto);
+    expect(screen.getByRole("radio", { name: /ask me before merging/i })).toHaveAttribute("aria-checked", "true");
+    expect(auto).toHaveAttribute("aria-checked", "false");
   });
 });
+
+describe("Fix a bug — layout and guidance", () => {
+  // Review Focus 4
+  it("flags a malformed ticket key inline, and accepts a pasted URL", async () => {
+    render(<BugLauncher onClose={vi.fn()} onOpenSettings={vi.fn()} />);
+    const key = await screen.findByLabelText("Issue URL or key");
+    await userEvent.type(key, "pay 42");
+    expect(screen.getByTestId("key-error")).toHaveTextContent(/PAY-123/);
+    await userEvent.clear(key); await userEvent.type(key, "https://acme.atlassian.net/browse/PAY-42");
+    expect(screen.queryByTestId("key-error")).toBeNull();
+  });
+
+  it("names the remote it found for the repo", async () => {
+    bugPreflight.mockImplementation(async () => ({ ok: true, problems: [], remote: "git@bitbucket.org:gruve-team/pay.git" }));
+    render(<BugLauncher onClose={vi.fn()} onOpenSettings={vi.fn()} />);
+    await userEvent.type(await screen.findByLabelText("Repo"), "/r/pay");
+    expect(await screen.findByText(/Remote found:/)).toHaveTextContent("git@bitbucket.org:gruve-team/pay.git");
+  });
+
+  it("explains what happens next and why Start is disabled", async () => {
+    render(<BugLauncher onClose={vi.fn()} onOpenSettings={vi.fn()} />);
+    expect(await screen.findByLabelText("What happens next")).toHaveTextContent(/you approve.*you review the diff/i);
+    expect(screen.getByRole("button", { name: "Start fixing" })).toHaveAttribute("title", expect.stringMatching(/ticket/i));
+  });
+});
+
