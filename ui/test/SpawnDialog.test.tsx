@@ -16,12 +16,13 @@ const tree: Record<string, { root: string; path: string; parent: string | null; 
 };
 tree["/home/u"] = tree[""];
 const pickFolder = vi.fn<() => Promise<{ path: string } | undefined>>();
-vi.mock("../src/api", () => ({ api: { listDir: vi.fn(async (p?: string) => tree[p ?? ""]), pickFolder: () => pickFolder() } }));
+const repoStatus = vi.fn(async (_p: string): Promise<unknown> => null);
+vi.mock("../src/api", () => ({ api: { listDir: vi.fn(async (p?: string) => tree[p ?? ""]), pickFolder: () => pickFolder(), repoStatus: (p: string) => repoStatus(p) } }));
 
 const roles: RoleDef[] = [{ name: "coder", avatar: "👩‍💻", model: "m", effort: "high", permissionMode: "default", settingSources: [], allowedTools: [], maxTurns: 1, prompt: "", description: "" }];
 const props = () => ({ roles, recentRepos: [], onSpawn: vi.fn(async () => {}), onClose: vi.fn() });
 const openPanel = () => userEvent.click(screen.getByRole("button", { name: /show folder list/i }));
-beforeEach(() => { vi.clearAllMocks(); pickFolder.mockReset(); });
+beforeEach(() => { vi.clearAllMocks(); pickFolder.mockReset(); repoStatus.mockReset(); repoStatus.mockResolvedValue(null); });
 
 describe("SpawnDialog native picker", () => {
   it("panel is collapsed by default; Browse… uses the native picker and fills the path", async () => {
@@ -72,7 +73,7 @@ describe("SpawnDialog repo browser", () => {
     render(<SpawnDialog {...p} />); await openPanel();
     await userEvent.click(await screen.findByRole("button", { name: /payments/ }));
     expect(screen.getByPlaceholderText("/Users/you/project")).toHaveValue("/home/u/payments");
-    await userEvent.click(screen.getByRole("button", { name: "Spawn" }));
+    await userEvent.click(screen.getByRole("button", { name: "Create agent" }));
     expect(p.onSpawn).toHaveBeenCalledWith({ role: "coder", repo: "/home/u/payments", displayName: undefined });
   });
 
@@ -84,3 +85,51 @@ describe("SpawnDialog repo browser", () => {
     expect(screen.getByPlaceholderText("/Users/you/project")).toHaveValue("/home/u/work");
   });
 });
+
+const role = (name: string, extra: Partial<RoleDef> = {}): RoleDef => ({ name, avatar: "🤖", model: "claude-opus-5", effort: "high", permissionMode: "default", settingSources: [], allowedTools: [], maxTurns: 1, prompt: "", description: "", ...extra });
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+describe("New agent dialog", () => {
+  it("offers roles as cards that say what each does and which model it uses", () => {
+    render(<SpawnDialog roles={[role("coder", { description: "Writes and changes code." })]} recentRepos={[]} onSpawn={vi.fn()} onClose={vi.fn()} />);
+    const card = screen.getByRole("radio", { name: /coder/i });
+    expect(card).toHaveTextContent("Writes and changes code.");
+    expect(card).toHaveTextContent(/claude-opus-5/);
+    expect(card).toHaveAttribute("aria-checked", "true");
+  });
+
+  // Review Focus 2
+  it("says what the chosen folder is, debounced, ignoring a late answer for an older path", async () => {
+    let resolveOld!: (v: unknown) => void;
+    repoStatus.mockImplementationOnce(() => new Promise(r => { resolveOld = r; }))
+      .mockResolvedValueOnce({ exists: true, isRepo: true, branch: "main", clean: true });
+    render(<SpawnDialog roles={[role("coder")]} recentRepos={[]} onSpawn={vi.fn()} onClose={vi.fn()} />);
+    const input = screen.getByPlaceholderText("/Users/you/project");
+    await userEvent.type(input, "/r/old"); await sleep(350);
+    await userEvent.clear(input); await userEvent.type(input, "/r/new"); await sleep(350);
+    resolveOld({ exists: false, isRepo: false, branch: null, clean: null });
+    expect(await screen.findByTestId("repo-status")).toHaveTextContent("Git repo on main · clean");
+    await sleep(50);
+    expect(screen.getByTestId("repo-status")).toHaveTextContent("Git repo on main · clean");
+    expect(repoStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [{ exists: true, isRepo: false, branch: null, clean: null }, "Not a git repo — the agent can still work here"],
+    [{ exists: false, isRepo: false, branch: null, clean: null }, "Folder not found"],
+    [{ exists: true, isRepo: true, branch: "dev", clean: false }, "Git repo on dev · uncommitted changes"],
+  ])("describes %o", async (st, text) => {
+    repoStatus.mockResolvedValue(st);
+    render(<SpawnDialog roles={[role("coder")]} recentRepos={["/r/x"]} onSpawn={vi.fn()} onClose={vi.fn()} />);
+    expect(await screen.findByTestId("repo-status")).toHaveTextContent(text);
+  });
+
+  it("creates the agent with an optional first task", async () => {
+    const onSpawn = vi.fn(async () => {});
+    render(<SpawnDialog roles={[role("coder")]} recentRepos={["/r/x"]} onSpawn={onSpawn} onClose={vi.fn()} />);
+    await userEvent.type(screen.getByLabelText(/first task/i), "Add tests");
+    await userEvent.click(screen.getByRole("button", { name: "Create agent" }));
+    expect(onSpawn).toHaveBeenCalledWith({ role: "coder", repo: "/r/x", displayName: undefined, task: "Add tests" });
+  });
+});
+

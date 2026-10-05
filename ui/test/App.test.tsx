@@ -22,6 +22,8 @@ vi.mock("../src/api", () => ({
     ack: vi.fn(() => Promise.resolve()),
     openTerminal: vi.fn(() => Promise.resolve({ opened: true, command: "" })),
     createAgent: vi.fn(() => Promise.resolve({})),
+    repoStatus: vi.fn(() => Promise.resolve(null)),
+    getSetup: vi.fn(() => Promise.resolve({ ready: true, wired: true, addCommand: "", discovery: { servers: [], problems: [] }, checks: [] })),
     memory: vi.fn(() => Promise.resolve([])),
     transcript: vi.fn(() => Promise.resolve([])),
   },
@@ -138,10 +140,10 @@ describe("App Escape handling", () => {
     expect(screen.getByTestId("tile-A")).toHaveClass("selected");
 
     await user.click(screen.getByRole("button", { name: "New agent" }));
-    expect(screen.getByText(/Spawn agent/i)).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "New agent" })).toBeInTheDocument();
 
     await user.keyboard("{Escape}");
-    expect(screen.queryByText(/Spawn agent/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "New agent" })).not.toBeInTheDocument();
     expect(screen.getByTestId("tile-A")).toHaveClass("selected");
 
     await user.keyboard("{Escape}");
@@ -180,4 +182,17 @@ describe("App Escape handling", () => {
     expect(screen.queryByText(/no pending prompt/)).toBeNull();
   });
 
+
+  // Review Focus 3
+  it("creates an agent and assigns its first task; if creating fails, nothing is assigned", async () => {
+    render(<App />);
+    act(() => onSnapshot(snapshot([agent("X", "free")])));
+    await userEvent.click(screen.getByRole("button", { name: "New agent" }));
+    (api.createAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("agent coder@x already exists"));
+    await userEvent.type(screen.getByPlaceholderText("/Users/you/project"), "/r/x");
+    await userEvent.type(screen.getByLabelText(/first task/i), "go");
+    await userEvent.click(screen.getByRole("button", { name: "Create agent" }));
+    expect(await screen.findByText(/already exists/)).toBeInTheDocument();
+    expect(api.assign).not.toHaveBeenCalled();
+  });
 });

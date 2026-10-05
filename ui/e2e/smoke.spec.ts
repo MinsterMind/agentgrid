@@ -5,7 +5,7 @@ test("spawn → assign → answer permission → ack", async ({ page }) => {
   await expect(page.getByTestId(/^tile-/)).toHaveCount(0);           // no agents yet (live-session ghost tiles may exist)
   await page.getByRole("button", { name: "New agent" }).click();
   await page.getByPlaceholder("/Users/you/project").fill("/tmp");
-  await page.getByRole("button", { name: "Spawn", exact: true }).click();
+  await page.getByRole("button", { name: "Create agent" }).click();
 
   const tile = page.getByTestId(/^tile-/).first();
   await expect(tile).toHaveAttribute("data-state", "free");
@@ -42,7 +42,7 @@ test("spawn dialog browses folders confined to the browse root", async ({ page }
   await dialog.getByRole("button", { name: "⬆ up" }).click();
   await dialog.getByRole("button", { name: /myrepo/ }).click();           // one click selects a repo
   await expect(page.getByPlaceholder("/Users/you/project")).toHaveValue(/\/myrepo$/);
-  await dialog.getByRole("button", { name: "Spawn", exact: true }).click();
+  await dialog.getByRole("button", { name: "Create agent" }).click();
   await expect(page.getByTestId("tile-architect@myrepo")).toBeVisible();
 });
 

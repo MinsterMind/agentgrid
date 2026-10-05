@@ -329,3 +329,10 @@ textarea.input { resize:none; }
 .panel.gates .gate { border-top:0; margin-top:0; padding-top:0; } .panel.gates .gate h4 { margin-top:0; }
 /* Dialogs not yet built from the primitives (Sessions, transcript) keep their own padding and scroll. */
 .dialog:not(:has(> .dlg-hd)) { padding:18px; gap:10px; overflow:auto; }
+.roles { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; }
+.role { display:flex; flex-direction:column; gap:4px; padding:10px; border-radius:6px; border:1px solid var(--grid-line); background:var(--bg); cursor:pointer; text-align:left; color:inherit; font:inherit; }
+.role:hover { border-color:#22D3EE55; } .role.sel { border-color:var(--accent); box-shadow:0 0 0 1px #22D3EE55, 0 0 14px #22D3EE22; background:rgba(34,211,238,.04); }
+.role .rn { font-size:12.5px; font-weight:600; } .role .rd { font-size:11px; color:var(--text-muted); line-height:1.4; } .role .rm { font-size:10px; color:var(--text-muted); }
+.recent-chips { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+.chipbtn { font-family:var(--mono); font-size:11px; min-height:22px; padding:0 8px; border-radius:4px; border:1px solid var(--grid-line); background:transparent; color:var(--text-muted); cursor:pointer; }
+.chipbtn:hover, .chipbtn.on { color:var(--accent); border-color:#22D3EE55; }

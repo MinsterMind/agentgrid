@@ -153,7 +153,7 @@ export function App() {
           ? <><kbd>↑</kbd><kbd>↓</kbd> move <kbd>⏎</kbd> open <kbd>Esc</kbd> back to agents</>
           : <><kbd>1</kbd>–<kbd>9</kbd> select <kbd>A</kbd> allow <kbd>D</kbd> deny <kbd>O</kbd> terminal <kbd>Esc</kbd> clear</>}</span>
       </footer>
-      {spawnOpen && <SpawnDialog roles={s.roles} recentRepos={recentRepos} onSpawn={async i => { const a = await api.createAgent(i); dispatch({ type: "select", id: a.id }); }} onClose={() => setSpawnOpen(false)} />}
+      {spawnOpen && <SpawnDialog roles={s.roles} recentRepos={recentRepos} onSpawn={async ({ task, ...input }) => { const a = await api.createAgent(input); dispatch({ type: "select", id: a.id }); if (task) await api.assign(a.id, task); }} onClose={() => setSpawnOpen(false)} />}
       {bugOpen && <BugLauncher onCreated={t => { setBugOpen(false); dispatch({ type: "select", id: t.agentId }); route.go({ view: "bugs", bugId: t.id }); }} onClose={() => setBugOpen(false)} onOpenSettings={() => { setBugOpen(false); setSettingsOpen(true); }} />}
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
       {sessionsOpen && <SessionsPanel roles={s.roles} agentNames={Object.fromEntries(s.agents.map(a => [a.id, a.displayName]))}
