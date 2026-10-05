@@ -106,6 +106,10 @@ export interface BugTask {
   assumptions: Assumption[];
   /** Why the last assumptions file could not be used, or null. Cleared by the next clean read. */
   assumptionsProblem: string | null;
+  /** The dispatch whose assumptions file was read last — set even when it reported nothing or
+   *  wrote no file, so the UI's "new" means "from the latest run", not "from the latest run that
+   *  happened to report something". Null for records written before it existed. */
+  assumptionsToken: string | null;
 }
 
 export type BugEvent =

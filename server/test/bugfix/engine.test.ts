@@ -1792,4 +1792,22 @@ describe("assumptions", () => {
     expect(bugs.get(t.id).assumptions).toEqual([]);
     expect(bugs.get(t.id).assumptionsProblem).toBeNull();
   });
+  it("records which dispatch it read last, even when that run reported nothing or wrote no file", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "# Plan");
+    await writeFile(assumptionsPathIn(fake.calls.at(-1)!.prompt), JSON.stringify([{ kind: "question", text: "Up or down?" }]));
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    const first = bugs.get(t.id).assumptionsToken;
+    expect(first).toMatch(/^[a-f0-9]+$/);
+    await engine.requestChanges(t.id, "round down");
+    const second = /assumptions-([a-f0-9]+)\.json/.exec(fake.calls.at(-1)!.prompt)![1];
+    await writeFile(assumptionsPathIn(fake.calls.at(-1)!.prompt), "[]");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    expect(bugs.get(t.id).assumptionsToken).toBe(second);
+    await engine.requestChanges(t.id, "again");
+    const third = /assumptions-([a-f0-9]+)\.json/.exec(fake.calls.at(-1)!.prompt)![1];
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");   // no file this time
+    expect(bugs.get(t.id).assumptionsToken).toBe(third);
+    expect(bugs.get(t.id).assumptions.map(a => a.text)).toEqual(["Up or down?"]);
+  });
 });

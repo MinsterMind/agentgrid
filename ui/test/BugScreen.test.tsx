@@ -33,7 +33,7 @@ function task(stage: BugTask["stage"], extra: Partial<BugTask> = {}): BugTask {
     stage, gate: stage === "plan-review" ? { kind: "plan", openedAt: "" } : stage === "diff-review" ? { kind: "diff", openedAt: "" } : stage === "approved" ? { kind: "merge", openedAt: "" } : null,
     mergePolicy: "ask", mergeMethod: "squash", approvedHead: null, outcome: null, checksRoundHead: null, pr: null, prCheckedAt: null,
     costUsd: 0.4, history: [{ stage: "intake", at: "2026-10-05T10:00:00Z", note: "" }, { stage, at: "2026-10-05T10:05:00Z", note: "" }], error: null,
-    createdAt: "", updatedAt: "2026-10-05T10:05:00Z", feedbackRounds: 0, assumptions: [], assumptionsProblem: null, ...extra };
+    createdAt: "", updatedAt: "2026-10-05T10:05:00Z", feedbackRounds: 0, assumptions: [], assumptionsProblem: null, assumptionsToken: null, ...extra };
 }
 
 beforeEach(() => { vi.clearAllMocks(); getSetup.mockImplementation(async () => SETUP); });
@@ -122,7 +122,7 @@ describe("BugScreen", () => {
   // Review Focus 4.
   it("falls back to the first bug when the selected one no longer exists", () => {
     const { onSelect } = renderScreen([task("implementing", { id: "bt1" })], "bt9");
-    expect(onSelect).toHaveBeenCalledWith("bt1");
+    expect(onSelect).toHaveBeenCalledWith("bt1", { replace: true });
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("PAY-42");
   });
 

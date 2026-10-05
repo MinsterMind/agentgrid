@@ -33,7 +33,7 @@ function When({ iso, now }: { iso?: string | null; now: number }) {
 }
 
 export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscript, onOpenSettings, onFixBug }: {
-  state: UiState; selectedId: string | null; onSelect: (id: string) => void; onBugChanged: (t: BugTask) => void;
+  state: UiState; selectedId: string | null; onSelect: (id: string, opts?: { replace?: boolean }) => void; onBugChanged: (t: BugTask) => void;
   onTranscript: (agentId: string) => void; onOpenSettings: () => void; onFixBug: () => void;
 }) {
   const now = useNow();
@@ -49,7 +49,7 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
 
   const task = tasks.find(x => x.t.id === selectedId)?.t ?? null;
   // Review Focus 4: a stale or missing selection falls back to the first bug, and the URL follows.
-  useEffect(() => { if (!task && tasks.length) onSelect(tasks[0].t.id); }, [task, tasks, onSelect]);
+  useEffect(() => { if (!task && tasks.length) onSelect(tasks[0].t.id, { replace: true }); }, [task, tasks, onSelect]);
   const shown = task ?? tasks[0]?.t ?? null;
 
   if (!tasks.length) {

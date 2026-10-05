@@ -102,10 +102,12 @@ export function App() {
   const openTerminal = useCallback((id: string) => api.openTerminal(id).then(r => { if (!r.opened) { navigator.clipboard?.writeText(r.command); setToast(`Copied: ${r.command}`); setTimeout(() => setToast(null), 6000); } }).catch(showErr), []);
 
   useKeyboard(useMemo(() => ({
-    select: (i: number) => { const a = visualOrder(s.agents)[i]; if (a) dispatch({ type: "select", id: a.id }); },
-    allow: () => { if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "allow" }); },
-    deny: () => { if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "deny" }); },
-    open: () => { if (selected && selectedAsg?.sessionId) void openTerminal(selected.id); },
+    // The grid's bare-key shortcuts act on the grid's selection, which the bug screen does not
+    // show — a stray "a" there would approve a permission request nobody can see.
+    select: (i: number) => { if (route.view === "bugs") return; const a = visualOrder(s.agents)[i]; if (a) dispatch({ type: "select", id: a.id }); },
+    allow: () => { if (route.view === "bugs") return; if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "allow" }); },
+    deny: () => { if (route.view === "bugs") return; if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "deny" }); },
+    open: () => { if (route.view === "bugs") return; if (selected && selectedAsg?.sessionId) void openTerminal(selected.id); },
     escape: () => { if (transcriptFor) { setTranscriptFor(null); return; } if (sessionsOpen) { setSessionsOpen(false); return; } if (spawnOpen) { setSpawnOpen(false); return; } if (bugOpen) { setBugOpen(false); return; } if (settingsOpen) { setSettingsOpen(false); return; } if (route.view === "bugs") { route.go({ view: "grid" }); return; } dispatch({ type: "select", id: null }); },
   }), [s.agents, selected, selectedAsg, decide, openTerminal, spawnOpen, sessionsOpen, transcriptFor, bugOpen, settingsOpen, route]));
 
@@ -114,7 +116,7 @@ export function App() {
       <TopBar counts={counts(s)} spend={todaySpend(s)} connected={s.connected} waitingCount={waitingIds(s).length} onCycleWaiting={cycleWaiting} onSpawn={() => setSpawnOpen(true)} onSessions={() => setSessionsOpen(true)} onFixBug={() => setBugOpen(true)} onOpenSettings={() => setSettingsOpen(true)}
         bugsActive={route.view === "bugs"} onToggleBugs={() => route.go(route.view === "bugs" ? { view: "grid" } : { view: "bugs" })} />
       {route.view === "bugs" ? (
-        <BugScreen state={s} selectedId={route.bugId} onSelect={id => route.go({ view: "bugs", bugId: id })}
+        <BugScreen state={s} selectedId={route.bugId} onSelect={(id, opts) => route.go({ view: "bugs", bugId: id }, opts)}
           onBugChanged={t => dispatch({ type: "change", event: { type: "bugtask", task: t } })} onTranscript={id => setTranscriptFor(id)}
           onOpenSettings={() => setSettingsOpen(true)} onFixBug={() => setBugOpen(true)} />
       ) : (

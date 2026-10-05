@@ -16,7 +16,7 @@ const { ApiError } = vi.hoisted(() => {
 });
 
 const bugPlan = vi.fn(async () => ({ markdown: "# Root cause\nThe token is rotated twice." }));
-const bugDiff = vi.fn(async () => ({ patch: "diff --git a/x b/x\n+added line\n", additions: 3, deletions: 1,
+const bugDiff = vi.fn(async () => ({ patch: "diff --git a/x b/x\n@@ -0,0 +1 @@\n+added line\n", additions: 3, deletions: 1,
   files: [{ path: "src/auth/session.ts", additions: 2, deletions: 1 }, { path: "test/session.test.ts", additions: 1, deletions: 0 }] }));
 const approveBug = vi.fn(async (_id: string, _mergeMethod?: string) => task("implementing"));
 const requestBugChanges = vi.fn(async (_id: string, _text: string) => task("analyzing"));
@@ -428,6 +428,13 @@ describe("the done card", () => {
   it("links to the full view", () => {
     render(<BugPanel task={task("implementing")} onChanged={vi.fn()} />);
     expect(screen.getByRole("link", { name: /open full view/i })).toHaveAttribute("href", "#/bugs/bt1");
+  });
+  // Re-graded minor: reviewer comments are forge markdown, and must render as such.
+  it("renders reviewer comments at a feedback diff gate as markdown", async () => {
+    render(<BugPanel task={atGate("diff-review", { kind: "diff", openedAt: "", reason: "feedback" }, { history: [{ stage: "review-feedback", at: "t", note: "Please **rename** `foo`." }] })} onChanged={vi.fn()} />);
+    const reason = screen.getByTestId("gate-reason");
+    expect(reason.querySelector("strong")!.textContent).toBe("rename");
+    expect(reason.textContent).not.toContain("**");
   });
 });
 

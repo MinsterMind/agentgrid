@@ -37,7 +37,10 @@ function positionStage(task: BugTask): BugStage {
 
 export function pipelineFor(task: BugTask, agentWaiting: boolean): Step[] {
   const pos = positionStage(task);
-  const at = Math.max(0, STEPS.findIndex(s => s.stages.includes(pos)));
+  // A diff gate reopened by a review round or a rebase comes after the PR exists: it belongs on
+  // Monitor, not before "Open PR" — the strip must not say the PR was never reached.
+  const afterPr = pos === "diff-review" && (!!task.gate?.reason || !!task.pr);
+  const at = afterPr ? STEPS.findIndex(s => s.id === "monitor") : Math.max(0, STEPS.findIndex(s => s.stages.includes(pos)));
   return STEPS.map((s, i): Step => {
     let state: StepState;
     if (task.stage === "done") state = "done";
@@ -59,7 +62,16 @@ export function listStatus(task: BugTask, agentWaiting: boolean): ListStatus {
 
 /** Agent text → one plain line: markdown syntax and newlines out, capped. */
 function oneLine(text: string, max = 140): string {
-  const plain = text.replace(/```[\s\S]*?```/g, " ").replace(/[#*_`>]+/g, "").replace(/\s+/g, " ").trim();
+  // Only markdown *syntax* goes: fences, line-leading # and >, links (kept as their text), code
+  // ticks, and emphasis markers that open at a word boundary. A blanket strip of * and _ turned
+  // `src/__tests__/foo_bar.ts` into a path that does not exist.
+  const plain = text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/^\s*#{1,6}\s+/gm, "").replace(/^\s*>\s?/gm, "")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/`/g, "")
+    .replace(/(^|[\s(])(\*\*|__|\*|_)(\S(?:.*?\S)?)\2(?=[\s).,!?:;]|$)/gm, "$1$3")
+    .replace(/\s+/g, " ").trim();
   return plain.length > max ? plain.slice(0, max - 1) + "…" : plain;
 }
 
@@ -89,7 +101,9 @@ export function nowFor({ task, pending, activity }: { task: BugTask; pending: Pe
   return { headline: stageLabel(task.stage), since, ...(raw ? { detail: oneLine(raw) } : {}) };
 }
 
-export const newestToken = (task: BugTask): string | null => task.assumptions.at(-1)?.id.split(":")[0] ?? null;
+/** The latest dispatch whose assumptions were read — the server records it even when that run
+ *  reported nothing. Records from before it existed fall back to the last item's run. */
+export const newestToken = (task: BugTask): string | null => task.assumptionsToken ?? task.assumptions.at(-1)?.id.split(":")[0] ?? null;
 export const isNew = (a: Assumption, task: BugTask): boolean => a.id.split(":")[0] === newestToken(task);
 
 const STAGE_ORDER: BugStage[] = ["analyzing", "implementing", "review-feedback", "rebase"];
@@ -150,17 +164,22 @@ export type DiffRow =
 
 export function parseHunks(patch: string): DiffRow[] {
   const rows: DiffRow[] = [];
-  let oldNo = 0, newNo = 0, renameFrom: string | null = null;
+  // Header lines (---, +++, index, mode…) only exist between `diff --git` and the first `@@`.
+  // Inside a hunk "--- x" is a removed "-- x" line — an SQL or Lua comment — not a header.
+  let oldNo = 0, newNo = 0, renameFrom: string | null = null, inHunk = false;
   for (const line of patch.replace(/\n$/, "").split("\n")) {
     const file = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
-    if (file) { rows.push({ kind: "file", text: file[2] }); renameFrom = null; continue; }
+    if (file) { rows.push({ kind: "file", text: file[2] }); renameFrom = null; inHunk = false; continue; }
     const from = /^rename from (.+)$/.exec(line); if (from) { renameFrom = from[1]; continue; }
     const to = /^rename to (.+)$/.exec(line);
     if (to && renameFrom) { const last = [...rows].reverse().find(r => r.kind === "file") as { kind: "file"; text: string } | undefined; if (last) last.text = `${renameFrom} → ${to[1]}`; continue; }
     if (/^Binary files /.test(line)) { rows.push({ kind: "note", text: "Binary file — not shown" }); continue; }
     const h = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@ ?(.*)$/.exec(line);
-    if (h) { oldNo = Number(h[1]); newNo = Number(h[2]); rows.push({ kind: "hunk", context: h[3].trim() }); continue; }
-    if (/^(index |--- |\+\+\+ |new file mode|deleted file mode|similarity index|old mode|new mode|\\ )/.test(line)) continue;
+    if (h) { oldNo = Number(h[1]); newNo = Number(h[2]); inHunk = true; rows.push({ kind: "hunk", context: h[3].trim() }); continue; }
+    if (line.startsWith("\\ ")) continue;   // "\ No newline at end of file"
+    if (!inHunk) continue;                    // a header line
+    // Some tools strip the leading space from an empty context line.
+    if (line === "") { rows.push({ kind: "ctx", oldNo: oldNo++, newNo: newNo++, text: "" }); continue; }
     if (line.startsWith("+")) rows.push({ kind: "add", oldNo: null, newNo: newNo++, text: line.slice(1) });
     else if (line.startsWith("-")) rows.push({ kind: "del", oldNo: oldNo++, newNo: null, text: line.slice(1) });
     else if (line.startsWith(" ")) rows.push({ kind: "ctx", oldNo: oldNo++, newNo: newNo++, text: line.slice(1) });

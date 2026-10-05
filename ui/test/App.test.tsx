@@ -52,7 +52,7 @@ function bugTask(id: string, stage: BugTask["stage"], error: string | null = nul
     trackerProject: "PAY", sourceRepo: "/r", worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main",
     agentId: "bugfix@w", stage, gate: null, mergePolicy: "ask", mergeMethod: "squash", approvedHead: null,
     outcome, checksRoundHead: null, pr: null, prCheckedAt: null, costUsd: 0, history: [], error, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-    feedbackRounds: 0, assumptions: [], assumptionsProblem: null,
+    feedbackRounds: 0, assumptions: [], assumptionsProblem: null, assumptionsToken: null,
   };
 }
 
@@ -155,5 +155,14 @@ describe("App Escape handling", () => {
     await userEvent.click(screen.getByRole("button", { name: "Grid" }));
     expect(window.location.hash).toBe("");
     expect(screen.queryByTestId("bug-screen")).toBeNull();
+  });
+  // Important #4: the grid's bare-key shortcuts act on an agent the bug screen does not show.
+  it("number keys do nothing while the bug screen is showing", async () => {
+    render(<App />);
+    act(() => onSnapshot(snapshot([agent("a1", "free")])));
+    await userEvent.click(screen.getByRole("button", { name: "Bugs" }));
+    await userEvent.keyboard("1");
+    await userEvent.click(screen.getByRole("button", { name: "Grid" }));
+    expect(screen.getByText(/select an agent/i)).toBeInTheDocument();
   });
 });

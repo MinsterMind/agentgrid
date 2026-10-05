@@ -5,6 +5,7 @@ import type { BugTask, PrInfo } from "../types";
 import { stageLabel } from "../bugView";
 import { DiffView, hunksFor } from "./DiffView";
 import { ErrorCard } from "./ErrorCard";
+import { Markdown } from "./Markdown";
 import { PlanView } from "./PlanView";
 
 interface DiffData { patch: string; files: Array<{ path: string; additions: number; deletions: number }>; additions: number; deletions: number }
@@ -140,7 +141,7 @@ export function BugGates({ task, onChanged, onTranscript }: { task: BugTask; onC
               <b>Reviewers asked for changes.</b>
               {(() => {
                 const comments = [...task.history].reverse().find(h => h.stage === "review-feedback")?.note;
-                return comments ? <p>{comments}</p> : null;
+                return comments ? <Markdown text={comments} /> : null;
               })()}
             </div>
           )}

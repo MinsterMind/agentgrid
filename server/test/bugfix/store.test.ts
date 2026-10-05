@@ -203,6 +203,7 @@ describe("patchPr", () => {
     const reloaded = new BugTaskStore(home); await reloaded.init();
     expect(reloaded.get(t.id).assumptions).toEqual([]);
     expect(reloaded.get(t.id).assumptionsProblem).toBeNull();
+    expect(reloaded.get(t.id).assumptionsToken).toBeNull();
   });
 
   it("a new task starts with no assumptions", async () => {
@@ -215,8 +216,17 @@ describe("patchPr", () => {
     const t = await mk();
     const a = { id: "k:0", stage: "analyzing" as const, round: 0, kind: "assumption" as const, text: "a", at: "t" };
     const b = { ...a, id: "j:0", text: "b" };
-    await Promise.all([store.addAssumptions(t.id, [a], null), store.addAssumptions(t.id, [b], "p")]);
+    await Promise.all([store.addAssumptions(t.id, [a], null, "k"), store.addAssumptions(t.id, [b], "p", "j")]);
     expect(store.get(t.id).assumptions.map(x => x.text).sort()).toEqual(["a", "b"]);
     expect(store.get(t.id).assumptionsProblem).toBe("p");
+    expect(store.get(t.id).assumptionsToken).toBe("j");
+  });
+
+  it("addAssumptions with an undefined problem leaves the existing one alone", async () => {
+    const t = await mk();
+    await store.addAssumptions(t.id, [], "earlier problem", "a");
+    await store.addAssumptions(t.id, [], undefined, "b");
+    expect(store.get(t.id).assumptionsProblem).toBe("earlier problem");
+    expect(store.get(t.id).assumptionsToken).toBe("b");
   });
 });

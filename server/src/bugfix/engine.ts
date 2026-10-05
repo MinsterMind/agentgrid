@@ -723,7 +723,7 @@ export class BugFixEngine {
     try {
       const raw = await this.deps.bugs.readArtifact(taskId, `assumptions-${meta.token}.json`);
       const r = parseAssumptions(raw, { ...meta, at: new Date().toISOString() });
-      if (r.read) await this.deps.bugs.addAssumptions(taskId, r.items, r.problem);
+      await this.deps.bugs.addAssumptions(taskId, r.items, r.read ? r.problem : undefined, meta.token);
     } catch { /* a store write failing here must not take the stage down with it */ }
   }
 

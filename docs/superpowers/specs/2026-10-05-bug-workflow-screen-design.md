@@ -97,6 +97,7 @@ export interface Assumption {
 // on BugTask:
 assumptions: Assumption[];
 assumptionsProblem: string | null;    // last read problem, cleared by the next clean read
+assumptionsToken: string | null;      // the dispatch read last, even if it reported nothing — "new" means from this run
 ```
 
 Both are normalised in `BugTaskStore.init` (`[]` and `null`) for records written before 0.6.0 —
@@ -148,7 +149,7 @@ stacks above the detail as a short scrolling list.
 | Analyze | `analyzing` |
 | Plan review | `plan-review` |
 | Implement | `implementing` |
-| Diff review | `diff-review` |
+| Diff review | `diff-review` (the first one; one reopened by a review round or rebase — `gate.reason` set, or a PR exists — sits on Monitor) |
 | Open PR | `opening-pr`, `pushing`, `creating-pr` |
 | Monitor | `monitoring`, `review-feedback`, `rebase` |
 | Merge | `approved`, `merging`, `done` |

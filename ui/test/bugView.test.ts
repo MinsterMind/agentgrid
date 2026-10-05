@@ -11,7 +11,7 @@ function task(stage: BugStage, extra: Partial<BugTask> = {}): BugTask {
     gate: stage === "plan-review" ? { kind: "plan", openedAt: "t" } : stage === "diff-review" ? { kind: "diff", openedAt: "t" } : stage === "approved" ? { kind: "merge", openedAt: "t" } : null,
     mergePolicy: "ask", mergeMethod: "squash", approvedHead: null, outcome: null, checksRoundHead: null, pr: null, prCheckedAt: null,
     costUsd: 0, history: [{ stage: "intake", at: "2026-10-05T10:00:00Z", note: "" }, { stage, at: "2026-10-05T10:05:00Z", note: "" }],
-    error: null, createdAt: "", updatedAt: "", feedbackRounds: 0, assumptions: [], assumptionsProblem: null, ...extra };
+    error: null, createdAt: "", updatedAt: "", feedbackRounds: 0, assumptions: [], assumptionsProblem: null, assumptionsToken: null, ...extra };
 }
 const A = (over: Partial<Assumption>): Assumption => ({ id: "t1:0", stage: "analyzing", round: 0, kind: "assumption", text: "x", at: "t", ...over });
 
@@ -211,4 +211,45 @@ describe("parseHunks", () => {
     const r = parseHunks("diff --git a/old.png b/new.png\nsimilarity index 90%\nrename from old.png\nrename to new.png\nBinary files a/old.png and b/new.png differ");
     expect(r).toEqual([{ kind: "file", text: "old.png → new.png" }, { kind: "note", text: "Binary file — not shown" }]);
   });
+describe("final-review fixes", () => {
+  // Important #2: "new" is the last dispatch read, not the last item stored.
+  it("a question from an earlier run is not new once a later run reported nothing", () => {
+    const t = task("diff-review", { assumptionsToken: "impl", assumptions: [A({ id: "an:0", kind: "question" })] });
+    expect(isNew(t.assumptions[0], t)).toBe(false);
+    expect(blockersFor({ task: t, pending: null, setup: null, setupError: false }).map(b => b.kind)).not.toContain("questions");
+  });
+  it("records written before the token existed fall back to the last item's run", () => {
+    const t = task("plan-review", { assumptionsToken: null, assumptions: [A({ id: "an:0", kind: "question" })] });
+    expect(isNew(t.assumptions[0], t)).toBe(true);
+  });
+
+  // Important #3: inside a hunk, "--- x" is a removed "-- x" line, not a header.
+  it("keeps removed lines that start with -- and added lines that start with ++", () => {
+    const rows = parseHunks(["diff --git a/q.sql b/q.sql", "--- a/q.sql", "+++ b/q.sql", "@@ -1,3 +1,3 @@",
+      " select 1;", "--- drop the old index", "+++ counter", " select 2;"].join("\n"));
+    expect(rows.filter(r => r.kind !== "file" && r.kind !== "hunk")).toEqual([
+      { kind: "ctx", oldNo: 1, newNo: 1, text: "select 1;" },
+      { kind: "del", oldNo: 2, newNo: null, text: "-- drop the old index" },
+      { kind: "add", oldNo: null, newNo: 2, text: "++ counter" },
+      { kind: "ctx", oldNo: 3, newNo: 3, text: "select 2;" },
+    ]);
+  });
+  it("an empty line inside a hunk is an empty context line, not dropped", () => {
+    const rows = parseHunks("diff --git a/x b/x\n@@ -1,3 +1,3 @@\n a\n\n b");
+    expect(rows.filter(r => r.kind === "ctx").map(r => (r as { newNo: number }).newNo)).toEqual([1, 2, 3]);
+  });
+
+  // Important #5: a diff gate reopened after the PR exists sits on Monitor, not before the PR.
+  it("a diff gate reopened by a review round is placed on Monitor", () => {
+    const pr = { number: 1, url: "u", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: null, headSha: null, lastSeenEventAt: "" };
+    const t = task("diff-review", { gate: { kind: "diff", openedAt: "t", reason: "feedback" }, pr, feedbackRounds: 1 });
+    expect(pipelineFor(t, false).map(s => s.state)).toEqual(["done", "done", "done", "done", "done", "done", "waiting", "todo"]);
+  });
+
+  // Re-graded minor: the Now line must not corrupt paths or keep link syntax.
+  it("the Now line keeps paths intact and turns links into their text", () => {
+    const n = nowFor({ task: task("implementing"), pending: null, activity: { sessionId: "s", phase: "working", lastMessage: "Editing src/__tests__/foo_bar.ts — see [docs](http://x) and **this**", lastPrompt: "", updatedAt: "" } as never });
+    expect(n.detail).toBe("Editing src/__tests__/foo_bar.ts — see docs and this");
+  });
+});
 });

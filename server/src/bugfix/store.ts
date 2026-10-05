@@ -56,6 +56,7 @@ export class BugTaskStore extends EventEmitter {
       t.checksRoundHead ??= null;
       t.assumptions ??= [];
       t.assumptionsProblem ??= null;
+      t.assumptionsToken ??= null;
       this.tasks.set(t.id, t);
       const n = Number(t.id.slice(2));
       if (n >= this.next) this.next = n + 1;
@@ -105,7 +106,7 @@ export class BugTaskStore extends EventEmitter {
       id: `bt${this.next++}`, ...input, stage: "intake", gate: null, approvedHead: null, outcome: null, checksRoundHead: null, pr: null, prCheckedAt: null,
       costUsd: 0, history: [{ stage: "intake", at: now, note: "" }], error: null,
       createdAt: now, updatedAt: now, feedbackRounds: 0,
-      assumptions: [], assumptionsProblem: null,
+      assumptions: [], assumptionsProblem: null, assumptionsToken: null,
     };
     await mkdir(this.dir(task.id), { recursive: true });
     return withWriteChain(this.file(task.id), () => this.save(task));
@@ -130,14 +131,16 @@ export class BugTaskStore extends EventEmitter {
       this.save({ ...this.get(id), ...p, id, updatedAt: new Date().toISOString() }));
   }
 
-  /** Append a stage's assumptions and record the read's problem (null clears it). Computed from
+  /** Append a stage's assumptions, record which dispatch they came from, and record the read's
+   *  problem (null clears it; undefined — no file was read — leaves it alone). Computed from
    *  the record *inside* the write chain, so two stages finishing back to back can't drop each
    *  other's items the way a read-then-`patch` would. */
-  async addAssumptions(id: string, items: Assumption[], problem: string | null): Promise<BugTask> {
+  async addAssumptions(id: string, items: Assumption[], problem: string | null | undefined, token: string): Promise<BugTask> {
     this.get(id);
     return withWriteChain(this.file(id), () => {
       const cur = this.get(id);
-      return this.save({ ...cur, assumptions: [...cur.assumptions, ...items], assumptionsProblem: problem, updatedAt: new Date().toISOString() });
+      return this.save({ ...cur, assumptions: [...cur.assumptions, ...items], assumptionsToken: token,
+        ...(problem !== undefined ? { assumptionsProblem: problem } : {}), updatedAt: new Date().toISOString() });
     });
   }
 
