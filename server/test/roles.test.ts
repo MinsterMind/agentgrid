@@ -24,7 +24,7 @@ describe("parseRole", () => {
       name: "reviewer", avatar: "🧐", model: "claude-opus-5", effort: "high",
       permissionMode: "default", settingSources: ["user", "project"],
       allowedTools: ["Read", "Grep", "Bash(git *)"], maxTurns: 40, maxBudgetUsd: 3,
-      prompt: "You review code.",
+      prompt: "You review code.", description: "You review code.",
     });
   });
   it("applies defaults and fallback name", () => {
@@ -104,5 +104,19 @@ describe("loadRoles / ensureDefaultRoles", () => {
       await ensureDefaultRoles(dir, defaults);
       expect((await loadRoles(dir)).find(r => r.name === "bugfix")!.model).toBe("mine");
     });
+  });
+});
+
+describe("role description", () => {
+  it("reads description from frontmatter", () => {
+    expect(parseRole("---\nmodel: m\ndescription: Writes code.\n---\nYou are…", "x").description).toBe("Writes code.");
+  });
+  // Review Focus 1
+  it("falls back to the prompt's first sentence for a role written before descriptions existed", () => {
+    expect(parseRole("---\nmodel: m\n---\nYou review diffs carefully. You never edit.", "x").description).toBe("You review diffs carefully.");
+    expect(parseRole("---\nmodel: m\n---\n", "x").description).toBe("");
+  });
+  it("every shipped role has its own description", async () => {
+    for (const r of await loadRoles(path.resolve("roles"))) expect(r.description.length).toBeGreaterThan(10);
   });
 });

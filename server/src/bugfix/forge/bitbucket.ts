@@ -56,7 +56,7 @@ export function hostnameFromSshConfig(stdout: string): string | null {
 }
 
 /** A remote URL fit for an error message: a password in `https://user:pass@host` is dropped. */
-const redactRemote = (url: string) => url.replace(/(\/\/[^:@/]+):[^@/]*@/, "$1@");
+export const redactRemote = (url: string) => url.replace(/(\/\/[^:@/]+):[^@/]*@/, "$1@");
 
 /** Every request's outcome, mapped once so every method agrees on what a status code means. */
 type ApiResult =

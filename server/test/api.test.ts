@@ -105,6 +105,15 @@ describe("GET /api/fs", () => {
   });
 });
 
+describe("GET /api/repo-status", () => {
+  it("reports a folder under the browse root and refuses one outside", async () => {
+    await mkdir(path.join(browseRoot, "plain"));
+    const ok = await request(app).get("/api/repo-status").query({ path: path.join(browseRoot, "plain") }).expect(200);
+    expect(ok.body).toEqual({ exists: true, isRepo: false, branch: null, clean: null });
+    await request(app).get("/api/repo-status").query({ path: "/etc" }).expect(400);
+  });
+});
+
 describe("POST /api/fs/pick", () => {
   it("returns the chosen path, 204 on cancel, and passes through picker failures", async () => {
     const calls: string[] = [];

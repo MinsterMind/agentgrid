@@ -6,8 +6,8 @@ import { AgentTile } from "../src/components/AgentTile";
 import type { Agent, RoleDef, SessionInfo } from "../src/types";
 
 const roles: RoleDef[] = [
-  { name: "coder", avatar: "👩‍💻", model: "m", effort: "high", permissionMode: "default", settingSources: [], allowedTools: [], maxTurns: 1, prompt: "" },
-  { name: "reviewer", avatar: "🧐", model: "m", effort: "high", permissionMode: "default", settingSources: [], allowedTools: [], maxTurns: 1, prompt: "" },
+  { name: "coder", avatar: "👩‍💻", model: "m", effort: "high", permissionMode: "default", settingSources: [], allowedTools: [], maxTurns: 1, prompt: "", description: "" },
+  { name: "reviewer", avatar: "🧐", model: "m", effort: "high", permissionMode: "default", settingSources: [], allowedTools: [], maxTurns: 1, prompt: "", description: "" },
 ];
 const live: SessionInfo = { sessionId: "s-live", cwd: "/w/hrns", title: "hrns-7e", kind: "interactive", status: "busy", at: Date.now() - 120_000, canAdopt: true };
 

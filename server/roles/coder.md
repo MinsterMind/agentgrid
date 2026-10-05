@@ -1,6 +1,7 @@
 ---
 name: coder
 avatar: 👩‍💻
+description: 'Writes and changes code, runs the tests, commits small.'
 model: claude-opus-5
 effort: xhigh
 permissionMode: acceptEdits

@@ -8,6 +8,8 @@ export type PermissionMode = "default" | "plan" | "acceptEdits" | "bypassPermiss
 export type SettingSource = "user" | "project" | "local";
 
 export interface RoleDef {
+  /** One line on what this role does — shown on the New agent dialog's role cards. */
+  description: string;
   name: string;
   avatar: string;
   model: string;

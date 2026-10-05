@@ -15,6 +15,7 @@ import { parseAssumptions } from "./assumptions.js";
 import { nextStage } from "./stages.js";
 import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask, type PrInfo } from "./types.js";
 import { describeComments, PR_STAGES, type PrFinding } from "./watcher.js";
+import { redactRemote } from "./forge/bitbucket.js";
 import type { MergeMethod } from "./forge/types.js";
 
 /** After this many rounds the watcher's findings stop dispatching and only report. A
@@ -131,16 +132,17 @@ export class BugFixEngine {
     });
   }
 
-  async preflight(repo: string): Promise<{ ok: boolean; problems: string[] }> {
+  async preflight(repo: string): Promise<{ ok: boolean; problems: string[]; remote: string | null }> {
     const problems: string[] = [];
-    if (!(await this.deps.git.hasRemote(repo))) problems.push("this repo has no `origin` remote");
+    const remote = await this.deps.git.hasRemote(repo);
+    if (!remote) problems.push("this repo has no `origin` remote");
     if (!this.deps.forge) problems.push("no forge configured — PR creation and tracking are unavailable");
     else {
       const auth = await this.deps.forge.authStatus();
       if (!auth.ok) problems.push(`forge not authenticated: ${auth.message}`);
     }
     try { this.deps.store.getRole(this.role); } catch { problems.push(`the "${this.role}" role could not be resolved — it ships with AgentGrid, so this usually means a broken install`); }
-    return { ok: problems.length === 0, problems };
+    return { ok: problems.length === 0, problems, remote: remote ? redactRemote(remote) : null };
   }
 
   async intake(input: { issueRef: string; repo: string; mergePolicy?: "ask" | "auto"; mergeMethod?: "squash" | "merge" | "rebase" }): Promise<BugTask> {

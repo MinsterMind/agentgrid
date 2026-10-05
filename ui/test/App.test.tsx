@@ -37,7 +37,7 @@ vi.mock("../src/notify", () => ({
 
 const role: RoleDef = {
   name: "coder", avatar: "👩‍💻", model: "m", effort: "high", permissionMode: "default",
-  settingSources: [], allowedTools: [], maxTurns: 10, prompt: "",
+  settingSources: [], allowedTools: [], maxTurns: 10, prompt: "", description: "",
 };
 
 function agent(id: string, state: Agent["state"]): Agent {

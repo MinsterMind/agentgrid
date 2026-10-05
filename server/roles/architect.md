@@ -1,6 +1,7 @@
 ---
 name: architect
 avatar: 🏛️
+description: 'Designs before building. Writes plans, not code.'
 model: claude-opus-5
 effort: xhigh
 permissionMode: plan

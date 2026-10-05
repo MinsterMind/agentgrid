@@ -5,7 +5,7 @@ import { AgentTile } from "../src/components/AgentTile";
 import { elapsed, usd } from "../src/format";
 import type { Agent, Assignment, RoleDef } from "../src/types";
 
-const role: RoleDef = { name: "devops", avatar: "🛠️", model: "m", effort: "high", permissionMode: "default", settingSources: [], allowedTools: [], maxTurns: 1, prompt: "" };
+const role: RoleDef = { name: "devops", avatar: "🛠️", model: "m", effort: "high", permissionMode: "default", settingSources: [], allowedTools: [], maxTurns: 1, prompt: "", description: "" };
 const agent = (state: Agent["state"], cur: string | null = "a41"): Agent =>
   ({ id: "devops@hrns", role: "devops", repo: "/u/MinsterMind/hrns", displayName: "Dev", createdAt: "", state, currentAssignmentId: cur });
 const asg = (extra: Partial<Assignment>): Assignment =>

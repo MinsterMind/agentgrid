@@ -19,6 +19,9 @@ export function parseRole(markdown: string, fallbackName: string): RoleDef {
     maxTurns: Number(data.maxTurns ?? 100),
     ...(data.maxBudgetUsd !== undefined ? { maxBudgetUsd: Number(data.maxBudgetUsd) } : {}),
     prompt: content.trim(),
+    description: typeof data.description === "string" && data.description.trim()
+      ? data.description.trim()
+      : (content.trim().match(/^[^.!?\n]*[.!?]/)?.[0] ?? "").trim(),
   };
 }
 

@@ -18,8 +18,8 @@ const renameSession = vi.fn(async (_id: string, _t: string) => {});
 vi.mock("../src/api", () => ({ api: { listSessions: () => listSessions(), adoptSession: (id: string, i: { role: string }) => adoptSession(id, i), attachSession: (id: string) => attachSession(id), getSession: (id: string) => getSession(id), renameSession: (id: string, t: string) => renameSession(id, t) } }));
 
 const roles: RoleDef[] = [
-  { name: "coder", avatar: "👩‍💻", model: "m", effort: "high", permissionMode: "default", settingSources: [], allowedTools: [], maxTurns: 1, prompt: "" },
-  { name: "reviewer", avatar: "🧐", model: "m", effort: "high", permissionMode: "default", settingSources: [], allowedTools: [], maxTurns: 1, prompt: "" },
+  { name: "coder", avatar: "👩‍💻", model: "m", effort: "high", permissionMode: "default", settingSources: [], allowedTools: [], maxTurns: 1, prompt: "", description: "" },
+  { name: "reviewer", avatar: "🧐", model: "m", effort: "high", permissionMode: "default", settingSources: [], allowedTools: [], maxTurns: 1, prompt: "", description: "" },
 ];
 const agentNames = { "coder@hrns": "Cody" };
 beforeEach(() => vi.clearAllMocks());

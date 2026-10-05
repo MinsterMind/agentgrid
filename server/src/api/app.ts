@@ -4,7 +4,7 @@ import { Store, NotFound, Conflict } from "../store/store.js";
 import { Manager } from "../runner/manager.js";
 import { sseHandler } from "./sse.js";
 import { shellQuote } from "../shell.js";
-import { listDir } from "../fs.js";
+import { listDir, repoStatus } from "../fs.js";
 import { pickFolder } from "../picker.js";
 import { attachCommand } from "../terminal.js";
 import { listAllSessions, listHistorySessions, getHistorySession, renameSession, takeOverSession, type LiveSession, type HistorySession } from "../sessions.js";
@@ -91,6 +91,11 @@ export function createApp(deps: AppDeps) {
     const p = req.query.path;
     if (p !== undefined && typeof p !== "string") throw new BadRequest("path must be a string");
     res.json(await listDir(deps.browseRoot ?? os.homedir(), p));
+  }));
+  app.get("/api/repo-status", wrap(async (req, res) => {
+    const p = req.query.path;
+    if (typeof p !== "string" || !p) throw new BadRequest("path must be a string");
+    res.json(await repoStatus(deps.browseRoot ?? os.homedir(), p));
   }));
   const sessions = () => listAllSessions(store.listAgents(), store.assignmentSessionIds(), { live: async () => store.rawLiveSessions(), history: deps.sessions?.history ?? listHistorySessions, gridPids: store.gridPids });
   const lookup = deps.sessions?.lookup ?? getHistorySession;

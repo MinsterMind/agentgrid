@@ -1,6 +1,7 @@
 ---
 name: bugfix
 avatar: 🐞
+description: 'Used by "Fix a bug": works in its own worktree, gated at every step.'
 model: claude-opus-5
 effort: xhigh
 permissionMode: acceptEdits

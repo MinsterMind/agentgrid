@@ -1,6 +1,7 @@
 ---
 name: devops
 avatar: 🛠️
+description: 'Infra, builds and deploys. Asks before every command.'
 model: claude-opus-5
 effort: high
 permissionMode: default

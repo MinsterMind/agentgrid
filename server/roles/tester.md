@@ -1,6 +1,7 @@
 ---
 name: tester
 avatar: 🧪
+description: 'Writes and runs tests for a change, and reports what fails.'
 model: claude-opus-5
 effort: high
 permissionMode: acceptEdits

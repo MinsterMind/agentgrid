@@ -1913,3 +1913,20 @@ describe("a pull request opened outside AgentGrid", () => {
     expect(bugs.get(id).gate).toMatchObject({ reason: "external" });
   });
 });
+
+describe("preflight", () => {
+  it("names the remote it found, without a password", async () => {
+    const g = fakeGit(gitState).git; g.hasRemote = async () => "https://me:s3cret@bitbucket.org/acme/pay.git";
+    const e = new BugFixEngine({ store, bugs, manager: new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, a, x) => ({ cwd: a.repo, abortController: x.abortController, canUseTool: x.canUseTool } as Options) }),
+      git: g, integrations: new IntegrationsStore(home), tracker: { listMyIssues: async () => [], fetchIssue: async () => ISSUE, comment: async () => {} }, forge, presetsDir: path.resolve("presets") });
+    const p = await e.preflight(repo);
+    expect(p.remote).toBe("https://me@bitbucket.org/acme/pay.git");
+    expect(JSON.stringify(p)).not.toContain("s3cret");
+  });
+  it("remote is null when there is none", async () => {
+    const g = fakeGit(gitState).git; g.hasRemote = async () => null;
+    const e = new BugFixEngine({ store, bugs, manager: new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, a, x) => ({ cwd: a.repo, abortController: x.abortController, canUseTool: x.canUseTool } as Options) }),
+      git: g, integrations: new IntegrationsStore(home), tracker: { listMyIssues: async () => [], fetchIssue: async () => ISSUE, comment: async () => {} }, forge, presetsDir: path.resolve("presets") });
+    expect((await e.preflight(repo)).remote).toBeNull();
+  });
+});

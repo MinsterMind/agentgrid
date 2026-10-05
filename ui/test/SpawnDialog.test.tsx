@@ -18,7 +18,7 @@ tree["/home/u"] = tree[""];
 const pickFolder = vi.fn<() => Promise<{ path: string } | undefined>>();
 vi.mock("../src/api", () => ({ api: { listDir: vi.fn(async (p?: string) => tree[p ?? ""]), pickFolder: () => pickFolder() } }));
 
-const roles: RoleDef[] = [{ name: "coder", avatar: "👩‍💻", model: "m", effort: "high", permissionMode: "default", settingSources: [], allowedTools: [], maxTurns: 1, prompt: "" }];
+const roles: RoleDef[] = [{ name: "coder", avatar: "👩‍💻", model: "m", effort: "high", permissionMode: "default", settingSources: [], allowedTools: [], maxTurns: 1, prompt: "", description: "" }];
 const props = () => ({ roles, recentRepos: [], onSpawn: vi.fn(async () => {}), onClose: vi.fn() });
 const openPanel = () => userEvent.click(screen.getByRole("button", { name: /show folder list/i }));
 beforeEach(() => { vi.clearAllMocks(); pickFolder.mockReset(); });

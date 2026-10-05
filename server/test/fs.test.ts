@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { mkdtemp, mkdir, writeFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { listDir, NotFoundDir, OutsideRoot } from "../src/fs.js";
+import { listDir, NotFoundDir, OutsideRoot, repoStatus } from "../src/fs.js";
+import { execFileSync } from "node:child_process";
 
 let root: string;
 
@@ -42,5 +43,25 @@ describe("listDir", () => {
   it("404s on missing or non-directory paths", async () => {
     await expect(listDir(root, path.join(root, "nope"))).rejects.toThrow(NotFoundDir);
     await expect(listDir(root, path.join(root, "file.txt"))).rejects.toThrow(NotFoundDir);
+  });
+});
+
+describe("repoStatus", () => {
+  it("reports branch and cleanliness of a git repo", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "rs-")); const repo = path.join(root, "r"); await mkdir(repo);
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+    execFileSync("git", ["-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "--allow-empty", "-m", "x"], { cwd: repo });
+    expect(await repoStatus(root, repo)).toEqual({ exists: true, isRepo: true, branch: "main", clean: true });
+    await writeFile(path.join(repo, "f"), "x");
+    expect((await repoStatus(root, repo)).clean).toBe(false);
+  });
+  it("says a plain folder is not a repo, and a missing one does not exist", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "rs-")); await mkdir(path.join(root, "plain"));
+    expect(await repoStatus(root, path.join(root, "plain"))).toEqual({ exists: true, isRepo: false, branch: null, clean: null });
+    expect(await repoStatus(root, path.join(root, "nope"))).toEqual({ exists: false, isRepo: false, branch: null, clean: null });
+  });
+  it("refuses a path outside the root", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "rs-"));
+    await expect(repoStatus(root, "/etc")).rejects.toThrow(/inside/);
   });
 });

@@ -1,6 +1,7 @@
 ---
 name: demo-prep
 avatar: 🎤
+description: 'Prepares demos: scripts, data and a clean walkthrough.'
 model: claude-opus-5
 effort: high
 permissionMode: acceptEdits

@@ -1,6 +1,7 @@
 ---
 name: reviewer
 avatar: 🧐
+description: 'Reads diffs and points out problems. Doesn''t edit code.'
 model: claude-opus-5
 effort: high
 permissionMode: default
