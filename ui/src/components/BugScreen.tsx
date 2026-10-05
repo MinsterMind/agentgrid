@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, CheckCircle2, CircleDashed, CircleDot, History, Lightbulb, MessageCircleQuestion, OctagonAlert, Radio, TriangleAlert, ClipboardList, Code2, Copy, ExternalLink, FileDiff, GitMerge, GitPullRequest, Hand, Inbox, Loader, Minus, MinusCircle, Radar, ScrollText, Search, X, XCircle } from "lucide-react";
+import { Bug, Check, CheckCircle2, CircleDashed, CircleDot, History, Lightbulb, MessageCircleQuestion, OctagonAlert, Radio, TriangleAlert, ClipboardList, Code2, Copy, ExternalLink, FileDiff, GitMerge, GitPullRequest, Hand, Inbox, Loader, Minus, MinusCircle, Radar, ScrollText, Search, X, XCircle } from "lucide-react";
 import { api } from "../api";
 import { blockersFor, isNew, listStatus, nowFor, orderAssumptions, pipelineFor, stageLabel, type Blocker, type ListStatus, type StepState } from "../bugView";
 import { elapsed, relativeTime, usd } from "../format";
@@ -65,8 +65,10 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
   if (!tasks.length) {
     return (
       <div className="bugscreen empty-screen" data-testid="bug-screen">
-        <p>No bug fixes yet. Start one and it will appear here, step by step.</p>
-        <button className="btn p" onClick={onFixBug}>🐞 Fix a bug</button>
+        <span className="dlg-ic"><Bug /></span>
+        <h2>No bug fixes yet</h2>
+        <p>Turn a ticket into a merged pull request. You approve the plan, the diff and the merge — each fix appears here, step by step.</p>
+        <button className="btn p" onClick={onFixBug}><Bug /> Fix a bug</button>
       </div>
     );
   }

@@ -126,11 +126,12 @@ describe("BugScreen", () => {
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("PAY-42");
   });
 
-  it("has an empty state with a way to start", () => {
+  it("has an empty state that explains the screen and starts a fix", () => {
     const onFixBug = vi.fn();
     render(<BugScreen state={stateWith([]) as never} selectedId={null} onSelect={vi.fn()} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={onFixBug} />);
-    expect(screen.getByText(/no bug fixes yet/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "🐞 Fix a bug" })).toBeInTheDocument();
+    expect(screen.getByText(/No bug fixes yet/)).toBeInTheDocument();
+    expect(screen.getByText(/You approve the plan, the diff and the merge/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Fix a bug" })).toBeInTheDocument();
   });
 
   it("says when setup could not be checked", async () => {

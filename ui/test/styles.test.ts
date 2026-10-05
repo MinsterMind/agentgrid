@@ -65,4 +65,9 @@ describe("Mission Control tokens", () => {
     expect(btn).not.toMatch(/(^|[ ;{])height:/);
   });
 
+
+  it("keeps Now its own height beside Blocking, and drops the side panel's gate divider inside the Actions panel", () => {
+    expect(css).toMatch(/\.row2\s*\{[^}]*align-items:\s*start/);
+    expect(css).toMatch(/\.panel\.gates \.gate\s*\{[^}]*border-top:\s*0/);
+  });
 });
