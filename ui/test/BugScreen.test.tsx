@@ -232,4 +232,24 @@ describe("BugScreen — panels", () => {
     expect(items[0]).toHaveAttribute("data-tone", "waiting");
     expect(items[1]).toHaveAttribute("data-tone", "done");
   });
+
+describe("BugScreen — review fixes", () => {
+  // M1: a finished bug's newest timeline entry keeps its own colour even if its agent is busy elsewhere.
+  it("a failed bug's newest timeline entry is red even while its agent waits on other work", () => {
+    const agentRec = { id: "bugfix@r", role: "bugfix", repo: "/r", displayName: "Kai", createdAt: "", state: "waiting", currentAssignmentId: "a9" };
+    const asg = { id: "a9", agentId: "bugfix@r", prompt: "other", createdAt: "", startedAt: null, endedAt: null, sessionId: null, state: "waiting",
+      activity: "", pending: { kind: "permission", toolUseId: "t", toolName: "Bash", input: {}, suggestions: [] }, outcome: null, error: null, turns: 0, costUsd: 0 };
+    const t = task("failed", { history: [{ stage: "intake", at: "a", note: "" }, { stage: "implementing", at: "b", note: "" }, { stage: "failed", at: "c", note: "" }] });
+    const state = { ...stateWith([t]), agents: [agentRec], assignments: { a9: asg } };
+    render(<BugScreen state={state as never} selectedId="bt1" onSelect={vi.fn()} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={vi.fn()} />);
+    expect(within(screen.getByRole("region", { name: /timeline/i })).getAllByRole("listitem")[0]).toHaveAttribute("data-tone", "failed");
+  });
+
+  // M5
+  it("shows the full worktree path on hover", () => {
+    renderScreen([task("implementing")]);
+    expect(document.querySelector(".dhead .path")).toHaveAttribute("title", "/w");
+  });
+});
+
 });

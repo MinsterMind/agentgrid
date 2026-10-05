@@ -150,7 +150,7 @@ function BugDetail({ task, state, now, onBugChanged, onTranscript, onOpenSetting
           <div className="meta">
             <a href={task.issue.url} target="_blank" rel="noreferrer"><ExternalLink /> Ticket</a>
             {task.pr && <a href={task.pr.url} target="_blank" rel="noreferrer"><GitPullRequest /> Pull request #{task.pr.number}</a>}
-            <span className="mono path" title="Worktree">{task.worktree}</span>
+            <span className="mono path" title={task.worktree}><span className="sr-only">Worktree: </span>{task.worktree}</span>
             <button className="btn sm" onClick={() => void navigator.clipboard?.writeText(task.worktree)}><Copy /> Copy path</button>
             {agent && <span className="chip">Bug fixer · {agent.displayName}</span>}
             {agent && <button className="btn sm" onClick={() => onTranscript(agent.id)}><ScrollText /> Transcript</button>}
@@ -242,7 +242,7 @@ function BugDetail({ task, state, now, onBugChanged, onTranscript, onOpenSetting
       <section className="panel timeline" aria-label="Timeline">
         <h3 className="panel-title"><History /> Timeline</h3>
         <ol>{[...task.history].reverse().map((h, i) => (
-<li key={i} data-tone={i === 0 && (task.gate || pending) ? "waiting" : h.stage === "failed" ? "failed" : h.stage === "cancelled" ? "neutral" : i === 0 && !TERMINAL.includes(h.stage) ? "current" : "done"}>
+<li key={i} data-tone={i === 0 && !TERMINAL.includes(task.stage) && (task.gate || pending) ? "waiting" : h.stage === "failed" ? "failed" : h.stage === "cancelled" ? "neutral" : i === 0 && !TERMINAL.includes(h.stage) ? "current" : "done"}>
             <When iso={h.at} now={now} /><span className="d" aria-hidden /><span><b>{stageLabel(h.stage)}</b>{h.note && <> — <Markdown inline text={h.note} /></>}</span>
           </li>
         ))}</ol>

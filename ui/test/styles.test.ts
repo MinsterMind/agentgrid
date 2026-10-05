@@ -47,7 +47,7 @@ describe("Mission Control tokens", () => {
   });
 
   // I2: --text-faint (#56616D) fails AA for text; essential copy must not use it.
-  it.each([".sect-desc", ".hint", ".dim", ".empty", ".tile-state.free", ".side h4"])("%s is readable, not faint", sel => {
+  it.each([".sect-desc", ".hint", ".dim", ".empty", ".tile-state.free", ".side h4", ".panel-desc"])("%s is readable, not faint", sel => {
     const rules = css.split("}").filter(r => r.split("{")[0].split(",").some(s => s.trim() === sel || s.trim().endsWith(" " + sel)));
     expect(rules.length).toBeGreaterThan(0);
     for (const r of rules) { expect(r).not.toContain("--text-faint"); expect(r).not.toContain("--st-idle"); }
@@ -70,4 +70,16 @@ describe("Mission Control tokens", () => {
     expect(css).toMatch(/\.row2\s*\{[^}]*align-items:\s*start/);
     expect(css).toMatch(/\.panel\.gates \.gate\s*\{[^}]*border-top:\s*0/);
   });
+
+  // phase 2 I1: two plan columns only on the bug screen; the 340px side panel stays one column.
+  it("lays plan cards in two columns only on the bug screen", () => {
+    expect(css).not.toMatch(/(^|\})\s*\.plan\.structured\s*\{[^}]*grid-template-columns:\s*1fr 1fr/);
+    expect(css).toMatch(/\.bugdetail \.plan\.structured\s*\{[^}]*grid-template-columns:\s*1fr 1fr/);
+    expect(css).toMatch(/\.plansec\s*\{[^}]*overflow-wrap:\s*anywhere/);
+  });
+  // phase 2 M4
+  it("lets an odd last plan card span the row instead of leaving an empty cell", () => {
+    expect(css).toMatch(/\.plansec:last-child:nth-child\(odd\)\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/);
+  });
+
 });
