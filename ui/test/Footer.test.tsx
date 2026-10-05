@@ -20,6 +20,7 @@ vi.mock("../src/api", () => ({
     ack: vi.fn(() => Promise.resolve()),
     openTerminal: vi.fn(() => Promise.resolve({ opened: true, command: "" })),
     createAgent: vi.fn(() => Promise.resolve({})),
+    getSetup: vi.fn(() => Promise.resolve({ ready: true, wired: true, addCommand: "", discovery: { servers: [], problems: [] }, checks: [] })),
     memory: vi.fn(() => Promise.resolve([])),
     transcript: vi.fn(() => Promise.resolve([])),
   },
@@ -44,7 +45,7 @@ describe("Footer", () => {
   it("shows the grid's keys as kbd chips, and the bug screen's on the bug screen", async () => {
     render(<App />);
     const foot = document.querySelector(".foot")!;
-    expect(Array.from(foot.querySelectorAll("kbd")).map(k => k.textContent)).toEqual(["1", "9", "A", "D", "O", "Esc"]);
+    expect(Array.from(foot.querySelectorAll("kbd")).map(k => k.textContent)).toEqual(["1", "9", "A", "D", "O", "N", "B", "S", "Esc"]);
     await userEvent.click(screen.getByRole("button", { name: /^Bugs/ }));
     expect(Array.from(document.querySelector(".foot")!.querySelectorAll("kbd")).map(k => k.textContent)).toEqual(["↑", "↓", "⏎", "Esc"]);
   });

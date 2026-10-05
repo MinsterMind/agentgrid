@@ -195,4 +195,21 @@ describe("App Escape handling", () => {
     expect(await screen.findByText(/already exists/)).toBeInTheDocument();
     expect(api.assign).not.toHaveBeenCalled();
   });
+  it("shows first run with no agents and no bug fixes, and the grid once there is an agent", () => {
+    render(<App />);
+    act(() => onSnapshot(snapshot([])));
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(/side by side/);
+    act(() => onSnapshot(snapshot([agent("A", "free")])));
+    expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
+    expect(screen.getByTestId("tile-A")).toBeInTheDocument();
+  });
+
+  it("n, b and s open New agent, Fix a bug and Sessions — but not while typing", async () => {
+    render(<App />);
+    act(() => onSnapshot(snapshot([agent("A", "free")])));
+    await userEvent.keyboard("n");
+    expect(screen.getByRole("dialog", { name: "New agent" })).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText(/first task/i), "s");                  // typing "s" doesn't open Sessions
+    expect(screen.queryByText(/Sessions/i, { selector: ".dialog h2, .dialog h3" })).toBeNull();
+  });
 });

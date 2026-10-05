@@ -88,4 +88,18 @@ describe("Mission Control tokens", () => {
     }
     expect(css).toMatch(/\.modal\s*\{[^}]*backdrop-filter/);
   });
+
+  // The legacy stacked-label rule (kept for the Sessions panel) must not hit the new field labels.
+  it("keeps the legacy dialog label rule off the new .label and .help labels", () => {
+    expect(css).not.toMatch(/(^|\})\s*\.dialog label\s*\{/);
+    expect(css).toMatch(/\.dialog label:not\(\.label\):not\(\.help\)\s*\{/);
+  });
+
+  // From the phase 3 Settings screenshot: a fix (command row or hint) goes under its check, and
+  // the segmented control keeps its natural width.
+  it("puts a check's fix under it, and keeps the segmented control compact", () => {
+    expect(css).toMatch(/\.checkrow\s*\{[^}]*flex-wrap:\s*wrap/);
+    expect(css).toMatch(/\.checkrow > \.row, \.checkrow > \.hint\s*\{[^}]*flex-basis:\s*100%/);
+    expect(css).toMatch(/\.seg\s*\{[^}]*align-self:\s*flex-start/);
+  });
 });

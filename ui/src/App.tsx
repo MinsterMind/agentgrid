@@ -11,12 +11,13 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { TranscriptView } from "./components/TranscriptView";
 import { BugScreen } from "./components/BugScreen";
+import { FirstRun } from "./components/FirstRun";
 import { useHashRoute } from "./hooks/useHashRoute";
 import { listStatus } from "./bugView";
 import { useKeyboard } from "./hooks/useKeyboard";
 import { notifyBugTask, notifyFinished, notifyWaiting, setTitleCount, settings } from "./notify";
 import { bugMerged } from "./format";
-import type { Decision } from "./types";
+import type { Decision, SetupReport } from "./types";
 
 export function App() {
   const [s, dispatch] = useReducer(reducer, initial);
@@ -28,6 +29,9 @@ export function App() {
   const [transcriptFor, setTranscriptFor] = useState<string | null>(null);
   const [openTerminalRequest, setOpenTerminalRequest] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
+  // Readiness for the first-run screen's chips; re-read when Settings closes, since that is where it changes.
+  const [setup, setSetup] = useState<SetupReport | null>(null);
+  useEffect(() => { if (!settingsOpen) api.getSetup().then(setSetup).catch(() => {}); }, [settingsOpen]);
   const prevStates = useRef<Record<string, string>>({});
   const showErr = (e: unknown) => { setToast((e as Error).message); setTimeout(() => setToast(null), 4000); };
 
@@ -111,6 +115,7 @@ export function App() {
     select: (i: number) => { if (route.view === "bugs") return; const a = visualOrder(s.agents)[i]; if (a) dispatch({ type: "select", id: a.id }); },
     allow: () => { if (route.view === "bugs") return; if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "allow" }); },
     deny: () => { if (route.view === "bugs") return; if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "deny" }); },
+    newAgent: () => setSpawnOpen(true), fixBug: () => setBugOpen(true), sessions: () => setSessionsOpen(true),
     open: () => { if (route.view === "bugs") return; if (selected && selectedAsg?.sessionId) void openTerminal(selected.id); },
     escape: () => { if (transcriptFor) { setTranscriptFor(null); return; } if (sessionsOpen) { setSessionsOpen(false); return; } if (spawnOpen) { setSpawnOpen(false); return; } if (bugOpen) { setBugOpen(false); return; } if (settingsOpen) { setSettingsOpen(false); return; } if (route.view === "bugs") { route.go({ view: "grid" }); return; } dispatch({ type: "select", id: null }); },
   }), [s.agents, selected, selectedAsg, decide, openTerminal, spawnOpen, sessionsOpen, transcriptFor, bugOpen, settingsOpen, route]));
@@ -126,6 +131,9 @@ export function App() {
         <BugScreen state={s} selectedId={route.bugId} onSelect={(id, opts) => route.go({ view: "bugs", bugId: id }, opts)}
           onBugChanged={t => dispatch({ type: "change", event: { type: "bugtask", task: t } })} onTranscript={id => setTranscriptFor(id)}
           onOpenSettings={() => setSettingsOpen(true)} onFixBug={() => setBugOpen(true)} />
+      ) : s.agents.length === 0 && Object.keys(s.bugTasks).length === 0 ? (
+        <FirstRun liveSessions={unclaimedLiveSessions(s).length} setup={setup} onNewAgent={() => setSpawnOpen(true)}
+          onSessions={() => setSessionsOpen(true)} onFixBug={() => setBugOpen(true)} onOpenSettings={() => setSettingsOpen(true)} />
       ) : (
       <div className="split">
         <AgentGrid agents={s.agents} roles={s.roles} assignments={s.assignments} selectedId={s.selectedId} recentFor={recentFor}
@@ -151,7 +159,7 @@ export function App() {
         <label><input type="checkbox" defaultChecked={settings.notifyFinished} onChange={e => (settings.notifyFinished = e.target.checked)} /> notify on done/failed</label>
         <span className="keys">{route.view === "bugs"
           ? <><kbd>↑</kbd><kbd>↓</kbd> move <kbd>⏎</kbd> open <kbd>Esc</kbd> back to agents</>
-          : <><kbd>1</kbd>–<kbd>9</kbd> select <kbd>A</kbd> allow <kbd>D</kbd> deny <kbd>O</kbd> terminal <kbd>Esc</kbd> clear</>}</span>
+          : <><kbd>1</kbd>–<kbd>9</kbd> select <kbd>A</kbd> allow <kbd>D</kbd> deny <kbd>O</kbd> terminal <kbd>N</kbd> new <kbd>B</kbd> bug <kbd>S</kbd> sessions <kbd>Esc</kbd> clear</>}</span>
       </footer>
       {spawnOpen && <SpawnDialog roles={s.roles} recentRepos={recentRepos} onSpawn={async ({ task, ...input }) => { const a = await api.createAgent(input); dispatch({ type: "select", id: a.id }); if (task) await api.assign(a.id, task); }} onClose={() => setSpawnOpen(false)} />}
       {bugOpen && <BugLauncher onCreated={t => { setBugOpen(false); dispatch({ type: "select", id: t.agentId }); route.go({ view: "bugs", bugId: t.id }); }} onClose={() => setBugOpen(false)} onOpenSettings={() => { setBugOpen(false); setSettingsOpen(true); }} />}
