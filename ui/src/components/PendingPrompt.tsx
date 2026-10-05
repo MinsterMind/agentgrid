@@ -3,9 +3,17 @@ import type { Decision, Pending } from "../types";
 
 interface Q { question: string; header: string; multiSelect?: boolean; options: Array<{ label: string; description: string }> }
 
-function summarise(input: Record<string, unknown>): string {
+export function summarise(input: Record<string, unknown>): string {
   const v = input.command ?? input.file_path ?? input.url ?? input.pattern;
   return typeof v === "string" ? v : JSON.stringify(input, null, 1).slice(0, 600);
+}
+
+/** A pending tool request in plain words — what the agent wants to do, not which API it calls. */
+export function describeRequest(toolName: string): string {
+  if (toolName === "Bash") return "wants to run a shell command";
+  if (["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(toolName)) return "wants to change a file";
+  if (toolName === "WebFetch" || toolName === "WebSearch") return "wants to look something up online";
+  return `wants to use ${toolName}`;
 }
 
 export function PendingPrompt({ pending, onDecide }: { pending: Pending; onDecide: (d: Decision) => void }) {

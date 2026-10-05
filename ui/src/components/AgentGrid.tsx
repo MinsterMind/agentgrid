@@ -1,4 +1,4 @@
-import type { Agent, Assignment, RoleDef, SessionInfo, SessionActivity } from "../types";
+import type { Agent, Assignment, Decision, RoleDef, SessionInfo, SessionActivity } from "../types";
 import { SessionTile } from "./SessionTile";
 import { AgentTile } from "./AgentTile";
 import { Activity, CheckCircle2, Hand, Moon, RadioReceiver } from "lucide-react";
@@ -6,9 +6,10 @@ import { sectionize } from "../state/sections";
 
 const ICON = { waiting: Hand, working: Activity, finished: CheckCircle2, free: Moon };
 
-export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, onSelect, onAssign, liveSessions = [], liveFor, activityFor, onPullIn, bugStageFor }: {
+export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, onSelect, onAssign, onDecide, liveSessions = [], liveFor, activityFor, onPullIn, bugStageFor }: {
   agents: Agent[]; roles: RoleDef[]; assignments: Record<string, Assignment>; selectedId: string | null;
   recentFor: (agentId: string) => string[]; onSelect: (id: string) => void; onAssign: (id: string, prompt: string) => void;
+  /** Answer an agent's pending request from its tile. */ onDecide?: (agentId: string, toolUseId: string, d: Decision) => void;
   /** Live sessions with no tile yet. */ liveSessions?: SessionInfo[];
   /** Live session bound to an adopted agent, if its process is running. */ liveFor?: (agent: Agent) => SessionInfo | null;
   activityFor?: (agent: Agent) => SessionActivity | null;
@@ -29,7 +30,7 @@ export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, o
             {sec.agents.map(agent => (
               <AgentTile key={agent.id} agent={agent} index={index++} role={roles.find(r => r.name === agent.role)}
                 assignment={agent.currentAssignmentId ? assignments[agent.currentAssignmentId] ?? null : null}
-                selected={agent.id === selectedId} recent={recentFor(agent.id)} onSelect={onSelect} onAssign={onAssign} live={liveFor?.(agent) ?? null} activity={activityFor?.(agent) ?? null} bugStage={bugStageFor?.(agent)} />
+                selected={agent.id === selectedId} recent={recentFor(agent.id)} onSelect={onSelect} onAssign={onAssign} onDecide={onDecide} live={liveFor?.(agent) ?? null} activity={activityFor?.(agent) ?? null} bugStage={bugStageFor?.(agent)} />
             ))}
           </div>
         </section>

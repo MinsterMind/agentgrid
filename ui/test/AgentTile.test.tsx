@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AgentTile } from "../src/components/AgentTile";
 import { elapsed, usd } from "../src/format";
@@ -32,9 +32,57 @@ describe("AgentTile", () => {
     expect(tile).toHaveTextContent("Bash: kubectl get pods");
     expect(tile).toHaveTextContent("#a41"); expect(tile).toHaveTextContent("$0.31");
   });
-  it("waiting shows a badge with the pending kind", () => {
-    render(<AgentTile {...base} agent={agent("waiting")} assignment={asg({ state: "waiting", pending: { kind: "question", toolUseId: "t", toolName: "AskUserQuestion", input: {}, suggestions: [] } })} />);
-    expect(screen.getByText("question")).toBeInTheDocument();
+  const permission = { kind: "permission" as const, toolUseId: "tu1", toolName: "Bash", input: { command: "kubectl rollout restart deploy/api" }, suggestions: [{}] };
+  const oneQuestion = { kind: "question" as const, toolUseId: "tu2", toolName: "AskUserQuestion" as const, suggestions: [],
+    input: { questions: [{ question: "Which env?", header: "Env", options: [{ label: "staging", description: "" }, { label: "prod", description: "" }] }] } };
+
+  it("names every state in words", () => {
+    for (const [state, word] of [["working", "Working"], ["waiting", "Needs you"], ["done", "Done"], ["failed", "Failed"], ["free", "Idle"]] as const) {
+      const { unmount } = render(<AgentTile {...base} agent={agent(state, state === "free" ? null : "a41")} assignment={state === "free" ? null : asg({ state: state === "waiting" ? "waiting" : state })} />);
+      expect(screen.getByTestId("tile-state")).toHaveTextContent(word);
+      unmount();
+    }
+  });
+
+  it("shows the exact command and answers Allow / Deny right on the tile", async () => {
+    const onDecide = vi.fn(); const onSelect = vi.fn();
+    render(<AgentTile {...base} onSelect={onSelect} onDecide={onDecide} agent={agent("waiting")} assignment={asg({ state: "waiting", pending: permission })} />);
+    const card = screen.getByTestId("tile-request");
+    expect(card).toHaveTextContent("Wants to run a shell command");
+    expect(card).toHaveTextContent("kubectl rollout restart deploy/api");
+    await userEvent.click(within(card).getByRole("button", { name: "Allow" }));
+    expect(onDecide).toHaveBeenCalledWith("devops@hrns", "tu1", { kind: "allow" });
+    await userEvent.click(within(card).getByRole("button", { name: "Deny" }));
+    expect(onDecide).toHaveBeenCalledWith("devops@hrns", "tu1", { kind: "deny" });
+    expect(onSelect).not.toHaveBeenCalled();                          // Review Focus 1: the tile underneath is not selected
+    expect(within(card).queryByRole("button", { name: /always/i })).toBeNull();
+  });
+
+  it("answers a single one-choice question with its options", async () => {
+    const onDecide = vi.fn();
+    render(<AgentTile {...base} onDecide={onDecide} agent={agent("waiting")} assignment={asg({ state: "waiting", pending: oneQuestion })} />);
+    const card = screen.getByTestId("tile-request");
+    expect(card).toHaveTextContent("Which env?");
+    await userEvent.click(within(card).getByRole("button", { name: "staging" }));
+    expect(onDecide).toHaveBeenCalledWith("devops@hrns", "tu2", { kind: "answers", answers: { "Which env?": "staging" } });
+  });
+
+  // Review Focus 3
+  it("sends a multi-part question to the side panel instead of answering half of it", async () => {
+    const onSelect = vi.fn();
+    const multi = { ...oneQuestion, input: { questions: [oneQuestion.input.questions[0], { question: "Region?", header: "Region", options: [{ label: "eu", description: "" }] }] } };
+    render(<AgentTile {...base} onSelect={onSelect} onDecide={vi.fn()} agent={agent("waiting")} assignment={asg({ state: "waiting", pending: multi })} />);
+    const card = screen.getByTestId("tile-request");
+    expect(within(card).queryByRole("button", { name: "staging" })).toBeNull();
+    await userEvent.click(within(card).getByRole("button", { name: /answer in the side panel/i }));
+    expect(onSelect).toHaveBeenCalledWith("devops@hrns");
+  });
+
+  // Review Focus 2
+  it("waiting with nothing pending yet says so, with no empty buttons", () => {
+    render(<AgentTile {...base} onDecide={vi.fn()} agent={agent("waiting")} assignment={asg({ state: "waiting", pending: null })} />);
+    expect(screen.getByTestId("tile-request")).toHaveTextContent(/waiting for you/i);
+    expect(screen.queryByRole("button", { name: "Allow" })).toBeNull();
   });
   it("done shows outcome; failed shows error", () => {
     const { rerender } = render(<AgentTile {...base} agent={agent("done")} assignment={asg({ state: "done", outcome: "Opened PR #88" })} />);
@@ -67,6 +115,6 @@ describe("AgentTile task line", () => {
     rerender(<AgentTile {...base} agent={{ ...agent("free", null), resumeSessionId: "s" }} assignment={null}
       activity={{ sessionId: "s", phase: "waiting", lastMessage: "", lastPrompt: "deploy staging", updatedAt: "", pendingTool: { name: "Bash", summary: "kubectl apply" } }} />);
     expect(screen.getByTestId("tile-devops@hrns").querySelector(".tasktitle")).toHaveTextContent("deploy staging");
-    expect(screen.getByTestId("tile-phase")).toHaveTextContent("needs approval: Bash");
+    expect(screen.getByTestId("tile-phase")).toHaveTextContent("Needs approval in the terminal: Bash");
   });
 });

@@ -38,7 +38,7 @@ describe("AgentTile with a live adopted session", () => {
   const agent: Agent = { id: "coder@hrns", role: "coder", repo: "/w/hrns", displayName: "Cody", createdAt: "", state: "free", currentAssignmentId: null, resumeSessionId: "s-live" };
   it("replaces the assign box with a live note while the terminal is open", () => {
     render(<AgentTile agent={agent} role={roles[0]} assignment={null} selected={false} index={0} onSelect={vi.fn()} onAssign={vi.fn()} live={live} />);
-    expect(screen.getByTestId("live-note")).toHaveTextContent(/live in terminal/);
+    expect(screen.getByTestId("live-note")).toHaveTextContent(/Live in a terminal/);
     expect(screen.queryByPlaceholderText(/assign work/i)).toBeNull();
   });
   it("shows the assign box once the session is no longer live", () => {
