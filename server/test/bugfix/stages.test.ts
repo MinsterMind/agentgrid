@@ -202,3 +202,34 @@ describe("server-side PR creation", () => {
       .toMatchObject({ stage: "failed", error: "boom" });
   });
 });
+
+// A PR opened outside AgentGrid for a task that failed while pushing or opening one.
+describe("a pull request opened outside AgentGrid", () => {
+  const failedAtPr = task("failed", { history: [{ stage: "creating-pr", at: "t", note: "" }, { stage: "failed", at: "t", note: "" }] });
+
+  it("at the approved commit, is adopted straight into monitoring with a note naming it", () => {
+    const t = nextStage(failedAtPr, { type: "pr-adopted", number: 7, reviewed: true });
+    expect(t).toMatchObject({ stage: "monitoring", run: null, gate: null, error: null });
+    expect(t.note).toMatch(/#7.*outside AgentGrid/);
+  });
+
+  it("with commits nobody reviewed here, opens the diff gate first", () => {
+    const t = nextStage(failedAtPr, { type: "pr-adopted", number: 7, reviewed: false });
+    expect(t).toMatchObject({ stage: "diff-review", run: null, gate: { kind: "diff", reason: "external" } });
+    expect(t.note).toMatch(/#7/);
+  });
+
+  it("is only for a failed task", () => {
+    expect(() => nextStage(task("monitoring"), { type: "pr-adopted", number: 7, reviewed: true })).toThrow(/failed/);
+  });
+
+  it("approving that gate pushes, like any reopened diff gate", () => {
+    const atGate = task("diff-review", { gate: { kind: "diff", openedAt: "t", reason: "external" } });
+    expect(nextStage(atGate, { type: "approve" })).toMatchObject({ stage: "pushing", run: null });
+  });
+
+  it("requesting changes there sends the agent to address them on the PR's branch", () => {
+    const atGate = task("diff-review", { gate: { kind: "diff", openedAt: "t", reason: "external" } });
+    expect(nextStage(atGate, { type: "request-changes", text: "drop the debug log" })).toMatchObject({ stage: "review-feedback", run: "review-feedback" });
+  });
+});

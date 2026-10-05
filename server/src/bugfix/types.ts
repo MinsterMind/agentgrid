@@ -50,7 +50,7 @@ export interface BugTask {
   baseBranch: string;
   agentId: string;
   stage: BugStage;
-  gate: { kind: GateKind; openedAt: string; reason?: "feedback" | "rebase" } | null;
+  gate: { kind: GateKind; openedAt: string; reason?: "feedback" | "rebase" | "external" } | null;
   mergePolicy: "ask" | "auto";
   mergeMethod: "squash" | "merge" | "rebase";
   /** The commit HEAD pointed at when the diff gate opened — i.e. exactly what the human
@@ -132,14 +132,18 @@ export type BugEvent =
   | { type: "review-approved" }
   | { type: "conflicting" }
   | { type: "pr-closed" }
-  | { type: "pr-merged" };
+  | { type: "pr-merged" }
+  /** A PR for the task's branch, found on the forge after the task failed while pushing or
+   *  opening one — someone opened it outside AgentGrid. `reviewed`: it is at the commit the
+   *  human approved here, so it can be watched as-is; otherwise its diff is reviewed first. */
+  | { type: "pr-adopted"; number: number; reviewed: boolean };
 
 export interface Transition {
   stage: BugStage;
   /** Set only on the transitions that END a task, and then it is the durable answer to "did
    *  this merge?" — see `BugTask.outcome`. Absent leaves whatever the task already had. */
   outcome?: "merged" | "closed";
-  gate: { kind: GateKind; openedAt: string; reason?: "feedback" | "rebase" } | null;
+  gate: { kind: GateKind; openedAt: string; reason?: "feedback" | "rebase" | "external" } | null;
   error: string | null;
   note: string;
   /** Stage the engine must now run an assignment for; null when waiting on a human or resting

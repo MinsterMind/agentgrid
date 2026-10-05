@@ -265,4 +265,10 @@ describe("deferred minors", () => {
     expect(nowFor({ task: task("monitoring", { pr, prCheckedAt: "2026-10-05T10:00:00Z" }), pending: null, activity: null }).sinceKind).toBe("checked");
   });
 });
+describe("a pull request opened outside AgentGrid", () => {
+  it("names it in the gate headline", () => {
+    const t = task("diff-review", { gate: { kind: "diff", openedAt: "t", reason: "external" } });
+    expect(nowFor({ task: t, pending: null, activity: null }).headline).toBe("Waiting on you: review the pull request opened outside AgentGrid");
+  });
+});
 });

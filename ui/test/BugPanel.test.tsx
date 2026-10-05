@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BugPanel } from "../src/components/BugPanel";
 import type { BugTask } from "../src/types";
@@ -48,7 +48,7 @@ function monitoring(extra: Partial<BugTask> = {}): BugTask {
   return task("monitoring", extra);
 }
 
-function atGate(stage: string, gate: { kind: string; openedAt: string; reason?: "feedback" | "rebase" }, extra: Partial<BugTask> = {}): BugTask {
+function atGate(stage: string, gate: { kind: string; openedAt: string; reason?: "feedback" | "rebase" | "external" }, extra: Partial<BugTask> = {}): BugTask {
   return task(stage, { gate: gate as BugTask["gate"], ...extra });
 }
 
@@ -446,5 +446,14 @@ describe("errors as cards everywhere", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("the pull request was closed without merging.");
   });
 });
+  it("explains a diff gate reopened for a pull request opened outside AgentGrid, and links it", async () => {
+    const pr = { number: 7, url: "https://bb/pr/7", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: null, headSha: "b".repeat(40), lastSeenEventAt: "" };
+    render(<BugPanel task={atGate("diff-review", { kind: "diff", openedAt: "", reason: "external" }, { pr, approvedHead: "b".repeat(40) })} onChanged={vi.fn()} />);
+    const reason = screen.getByTestId("gate-reason");
+    expect(reason).toHaveTextContent(/opened outside AgentGrid/i);
+    expect(reason).toHaveTextContent(/haven't reviewed/i);
+    expect(within(reason).getByRole("link", { name: /#7/ })).toHaveAttribute("href", "https://bb/pr/7");
+    expect(await screen.findByRole("button", { name: "Approve" })).toBeInTheDocument();
+  });
 });
 

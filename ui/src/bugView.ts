@@ -80,7 +80,8 @@ function gateHeadline(task: BugTask): string {
   if (!g) return "";
   if (g.kind === "plan") return "Waiting on you: approve the plan";
   if (g.kind === "diff") return g.reason === "rebase" ? "Waiting on you: review the rebased branch"
-    : g.reason === "feedback" ? "Waiting on you: review the changes made for the reviewers" : "Waiting on you: review the diff";
+    : g.reason === "feedback" ? "Waiting on you: review the changes made for the reviewers"
+    : g.reason === "external" ? "Waiting on you: review the pull request opened outside AgentGrid" : "Waiting on you: review the diff";
   return "Waiting on you: merge the pull request";
 }
 

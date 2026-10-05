@@ -13,8 +13,8 @@ import type { TrackerProvider } from "./tracker.js";
 import { renderStagePrompt, type StageNote } from "./prompts.js";
 import { parseAssumptions } from "./assumptions.js";
 import { nextStage } from "./stages.js";
-import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask } from "./types.js";
-import { describeComments, type PrFinding } from "./watcher.js";
+import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask, type PrInfo } from "./types.js";
+import { describeComments, PR_STAGES, type PrFinding } from "./watcher.js";
 import type { MergeMethod } from "./forge/types.js";
 
 /** After this many rounds the watcher's findings stop dispatching and only report. A
@@ -205,7 +205,22 @@ export class BugFixEngine {
 
   approve(taskId: string): Promise<BugTask> { return this.advance(taskId, { type: "approve" }); }
   cancel(taskId: string): Promise<BugTask> { return this.advance(taskId, { type: "cancel" }); }
-  retry(taskId: string): Promise<BugTask> { return this.advance(taskId, { type: "retry" }); }
+  /** Retry a failed task. One that failed on the way to a pull request first asks the forge
+   *  whether a PR for its branch now exists — someone may have opened it by hand — and adopts it
+   *  rather than re-running a stage whose work is already done (and whose pin check would refuse
+   *  a branch that moved while doing it). */
+  retry(taskId: string): Promise<BugTask> {
+    const task = this.deps.bugs.get(taskId);
+    const last = [...task.history].reverse().find(h => h.stage !== "failed")?.stage;
+    const forge = this.deps.forge;
+    if (task.stage !== "failed" || !forge || !(PR_STAGES as readonly string[]).includes(last ?? "")) return this.advance(taskId, { type: "retry" });
+    return this.serial(taskId, async () => {
+      const pr = await forge.findPr(task.sourceRepo, task.branch).catch(() => null);
+      return pr && pr.state !== "CLOSED"
+        ? this.adoptExternalPrLocked(taskId, pr, new Date().toISOString())
+        : this.advanceLocked(taskId, { type: "retry" });
+    });
+  }
 
   /** The merge gate's approve. When a method is chosen at the gate, it's recorded before the
    *  transition runs, so `doMerge` reads the one the human actually picked, not the task's
@@ -282,6 +297,10 @@ export class BugFixEngine {
    * become transitions, under the same per-task lock as every other mutation.
    */
   async onPrFinding(f: PrFinding): Promise<void> {
+    if (f.external) {
+      if (f.pr) await this.serial(f.taskId, () => this.adoptExternalPrLocked(f.taskId, f.pr!, f.checkedAt ?? new Date().toISOString()));
+      return;
+    }
     const task = this.deps.bugs.get(f.taskId);
     // Nothing was read, so there is no fresher view to record — `f.pr` on this path is the LAST
     // KNOWN view echoed back, and writing it would advance `prCheckedAt` to a moment at which
@@ -330,11 +349,61 @@ export class BugFixEngine {
 
   /** Queue a transition for this task behind whatever is already running for it. */
   private advance(taskId: string, event: Parameters<typeof nextStage>[1]): Promise<BugTask> {
+    return this.serial(taskId, () => this.advanceLocked(taskId, event));
+  }
+
+  /** Run `fn` with exclusive access to `taskId`, behind whatever is already queued for it. */
+  private serial<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.taskChains.get(taskId) ?? Promise.resolve();
-    const run = prev.catch(() => {}).then(() => this.advanceLocked(taskId, event));
+    const run = prev.catch(() => {}).then(fn);
     this.taskChains.set(taskId, run);
     run.finally(() => { if (this.taskChains.get(taskId) === run) this.taskChains.delete(taskId); }).catch(() => {});
     return run;
+  }
+
+  /**
+   * A pull request for a failed task's branch, found on the forge: someone opened it outside
+   * AgentGrid after "Opening the pull request" or "Pushing" failed. The forge is the truth, so
+   * the task follows it — but AgentGrid still only watches and merges what a human reviewed here:
+   *   - at the commit approved at the diff gate (or already merged): watch it, as if AgentGrid
+   *     had opened it;
+   *   - at a commit that is in the worktree but was never reviewed: pin it and reopen the diff
+   *     gate on exactly that commit;
+   *   - at a commit the worktree doesn't have, or closed without merging: stay failed, saying so.
+   * Runs inside the task's chain; re-reads the task, which may have moved on since the forge
+   * was read.
+   */
+  private async adoptExternalPrLocked(taskId: string, pr: PrInfo, readAt: string): Promise<BugTask> {
+    const { bugs, git, tracker } = this.deps;
+    const task = bugs.get(taskId);
+    if (task.stage !== "failed") return task;
+    const n = pr.number;
+    await bugs.patchPr(taskId, pr, readAt);
+    if (pr.state === "CLOSED") {
+      return bugs.patch(taskId, { error: `Pull request #${n} for ${task.branch} was opened outside AgentGrid and then closed without merging. Retry to open a new one, or cancel the fix.` });
+    }
+    const announce = () => tracker.comment(task.issue.key, `Fix in progress — pull request: ${pr.url}`).catch(() => {});
+    let head: string | null = null;
+    try { head = await git.revParse(task.worktree); } catch { /* worktree gone: compare against the PR alone */ }
+    // An adapter that cannot report the PR's head leaves only the worktree to go on.
+    const prHead = pr.headSha ?? head;
+    if (pr.state === "MERGED" || sameCommit(prHead, task.approvedHead)) {
+      const t = await this.advanceLocked(taskId, { type: "pr-adopted", number: n, reviewed: true });
+      await announce();
+      return t;
+    }
+    if (!head || !sameCommit(head, prHead)) {
+      return bugs.patch(taskId, { error: `Pull request #${n} was opened outside AgentGrid at ${(prHead ?? "an unknown commit").slice(0, 12)}, which isn't checked out in the worktree ${task.worktree}. Bring it in (git -C ${task.worktree} pull) so AgentGrid can show you its diff, then press Retry.` });
+    }
+    // Pin what the human is about to review, exactly as `verify()` does when an agent stage
+    // opens the diff gate.
+    const diff = await git.diff(task.worktree, task.baseBranch);
+    await bugs.patch(taskId, { approvedHead: head });
+    await bugs.writeArtifact(taskId, "diff.patch", diff.patch);
+    await bugs.writeArtifact(taskId, "diffstat.json", JSON.stringify({ files: diff.files, additions: diff.additions, deletions: diff.deletions }, null, 2));
+    const t = await this.advanceLocked(taskId, { type: "pr-adopted", number: n, reviewed: false });
+    await announce();
+    return t;
   }
 
   /** The actual transition. Only ever runs with exclusive access to `taskId`, granted by
@@ -835,4 +904,11 @@ export class BugFixEngine {
     if (agent.state === "working" || agent.state === "waiting") await manager.cancel(task.agentId).catch(() => {});
     else if (agent.state === "done" || agent.state === "failed") await manager.ack(task.agentId).catch(() => {});
   }
+}
+
+/** Two commit ids name the same commit — allowing for a forge that reports a short hash
+ *  (Bitbucket's are 12 characters). Null on either side is "unknown", never a match. */
+function sameCommit(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b || a.length < 7 || b.length < 7) return false;
+  return a.startsWith(b) || b.startsWith(a);
 }

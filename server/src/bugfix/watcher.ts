@@ -15,7 +15,21 @@ export interface PrFinding {
    *  `BugTaskStore.patchPr` uses it to refuse a view that was read before the one already
    *  stored. Always set by the watcher; an absent stamp is treated by the engine as "now". */
   checkedAt?: string;
+  /** A PR found for the branch of a task that FAILED while pushing or opening one — i.e. opened
+   *  outside AgentGrid. The engine decides what that means; `event` is null. */
+  external?: true;
 }
+
+/** Stages that fail BEFORE a pull request exists — the only failures after which someone may
+ *  have opened the PR by hand. Not "pushing": that pushes to a PR AgentGrid already opened, so
+ *  finding a PR on the branch there says nothing new. */
+export const PR_STAGES = ["opening-pr", "creating-pr"] as const;
+const lastRealStage = (t: BugTask) => [...t.history].reverse().find(h => h.stage !== "failed")?.stage;
+/** A failed task worth asking the forge about: it broke on the way to a PR and none is recorded
+ *  yet. Once one is (adopted, or found but not usable as-is), the watcher stops asking — the
+ *  task carries its explanation, and Retry asks again when the human has acted on it. */
+export const awaitsExternalPr = (t: BugTask): boolean =>
+  t.stage === "failed" && !t.pr && (PR_STAGES as readonly string[]).includes(lastRealStage(t) ?? "");
 
 export interface WatcherDeps {
   bugs: BugTaskStore;
@@ -87,13 +101,22 @@ export class PrWatcher {
     const { bugs, forge } = this.deps;
     if (!forge) return;
     const watched = bugs.list().filter(t => WATCHED_STAGES.includes(t.stage) && t.pr);
-    const live = new Set(watched.map(t => t.id));
+    const orphans = bugs.list().filter(awaitsExternalPr);
+    const live = new Set([...watched, ...orphans].map(t => t.id));
     for (const id of [...this.backoff.keys()]) if (!live.has(id)) this.backoff.delete(id);
 
     for (const task of watched) {
       const b = this.backoff.get(task.id) ?? { dueAt: this.now(), intervalMs: this.baseMs, failures: 0, warned: false };
       if (this.now() < b.dueAt) { this.backoff.set(task.id, b); continue; }
       await this.tick(task, b, forge);
+    }
+    for (const task of orphans) {
+      const b = this.backoff.get(task.id) ?? { dueAt: this.now(), intervalMs: this.baseMs, failures: 0, warned: false };
+      if (this.now() < b.dueAt) { this.backoff.set(task.id, b); continue; }
+      const checkedAt = new Date(this.now()).toISOString();
+      const found = await forge.findPr(task.sourceRepo, task.branch).catch(() => null);
+      this.schedule(task.id, b, false);
+      if (found) await this.deps.onFinding({ taskId: task.id, pr: found, event: null, external: true, checkedAt });
     }
   }
 

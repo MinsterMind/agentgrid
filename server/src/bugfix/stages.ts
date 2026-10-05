@@ -3,7 +3,7 @@ import { AGENT_STAGES, GATE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEven
 
 const gate = (kind: GateKind): NonNullable<Transition["gate"]> => ({ kind, openedAt: new Date().toISOString() });
 const go = (stage: BugStage, run: BugStage | null, note = "", error: string | null = null): Transition => ({ stage, run, gate: null, note, error });
-const wait = (stage: BugStage, kind: GateKind, reason?: "feedback" | "rebase"): Transition =>
+const wait = (stage: BugStage, kind: GateKind, reason?: "feedback" | "rebase" | "external"): Transition =>
   ({ stage, run: null, gate: { ...gate(kind), ...(reason ? { reason } : {}) }, note: "", error: null });
 /** A server stage: the engine runs it, so `run` stays null — `run` means "dispatch an agent". */
 const serverRun = (stage: BugStage, note = ""): Transition => ({ stage, run: null, gate: null, note, error: null });
@@ -16,7 +16,8 @@ const MONITORING_ONLY: BugEvent["type"][] = ["review-changes-requested", "checks
  * Phase 2 adds the monitoring events; `monitoring` rests here.
  */
 export function nextStage(task: BugTask, event: BugEvent): Transition {
-  if (TERMINAL_STAGES.includes(task.stage) && event.type !== "retry") {
+  // `pr-adopted` is the one other way out of "failed": the forge itself shows the work landed.
+  if (TERMINAL_STAGES.includes(task.stage) && event.type !== "retry" && !(event.type === "pr-adopted" && task.stage === "failed")) {
     throw new Conflict(`task ${task.id} is in terminal stage ${task.stage}`);
   }
   if (MONITORING_ONLY.includes(event.type) && task.stage !== "monitoring") {
@@ -34,6 +35,12 @@ export function nextStage(task: BugTask, event: BugEvent): Transition {
       return { stage: "done", run: null, gate: null, note: "", outcome: "closed",
                error: "the pull request was closed without merging" };
     case "pr-merged": return serverRun("merging");
+    case "pr-adopted": {
+      if (task.stage !== "failed") throw new Conflict(`a pull request can only be adopted for a failed task (is ${task.stage})`);
+      if (event.reviewed) return go("monitoring", null, `Pull request #${event.number} was opened outside AgentGrid; watching it now`);
+      return { ...wait("diff-review", "diff", "external"),
+        note: `Pull request #${event.number} was opened outside AgentGrid with commits not reviewed here; review its diff` };
+    }
 
     case "stage-failed":
       // A gate stage isn't running anything — nothing dispatched for it, so nothing can
@@ -75,7 +82,7 @@ export function nextStage(task: BugTask, event: BugEvent): Transition {
       if (task.stage === "plan-review") return go("analyzing", "analyzing", event.text);
       if (task.stage === "approved") return go("review-feedback", "review-feedback", event.text);
       const back: BugStage = task.gate?.reason === "rebase" ? "rebase"
-        : task.gate?.reason === "feedback" ? "review-feedback" : "implementing";
+        : task.gate?.reason === "feedback" || task.gate?.reason === "external" ? "review-feedback" : "implementing";
       return go(back, back, event.text);
     }
 

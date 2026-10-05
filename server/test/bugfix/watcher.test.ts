@@ -368,3 +368,57 @@ describe("PrWatcher", () => {
     });
   });
 });
+
+describe("PrWatcher: a PR opened outside AgentGrid", () => {
+  async function failedTask(lastStage: BugTask["stage"], extra: Partial<BugTask> = {}) {
+    const bugs = new BugTaskStore(await mkdtemp(path.join(tmpdir(), "ag-watch-")));
+    await bugs.init();
+    const t = await bugs.create({ issue, trackerProject: "W", sourceRepo: "/r", worktree: "/r/.worktrees/bugfix-W-1",
+      branch: "bugfix/W-1", baseBranch: "main", agentId: "ag1", mergePolicy: "ask", mergeMethod: "squash" });
+    await bugs.patch(t.id, { stage: "failed", history: [...t.history, { stage: lastStage, at: "t", note: "" }, { stage: "failed", at: "t", note: "" }], ...extra });
+    return { bugs, id: t.id };
+  }
+  const forgeFinding = (found: PrInfo | null, calls: string[]): ForgeAdapter => ({
+    ...forgeWith([{ found: null }]), findPr: async (_repo: string, branch: string) => { calls.push(branch); return found; },
+  });
+
+  it("looks for a PR on the branch of a task that failed while opening one, and reports it", async () => {
+    const { bugs, id } = await failedTask("creating-pr");
+    const { found, onFinding } = collect();
+    const calls: string[] = [];
+    const w = new PrWatcher({ bugs, forge: forgeFinding(pr(), calls), onFinding, now: () => 0, jitter: ms => ms });
+    await w.poll();
+    expect(calls).toEqual(["bugfix/W-1"]);
+    expect(found).toEqual([expect.objectContaining({ taskId: id, pr: pr(), event: null, external: true })]);
+  });
+
+  it("also for a task that failed while writing the PR", async () => {
+    const { bugs } = await failedTask("opening-pr");
+    const calls: string[] = [];
+    await new PrWatcher({ bugs, forge: forgeFinding(null, calls), onFinding: () => {}, now: () => 0, jitter: ms => ms }).poll();
+    expect(calls).toHaveLength(1);
+  });
+
+  it("never for a task that failed anywhere else — including a push to a PR AgentGrid already opened", async () => {
+    for (const stage of ["implementing", "pushing"] as const) {
+      const { bugs } = await failedTask(stage);
+      const calls: string[] = [];
+      await new PrWatcher({ bugs, forge: forgeFinding(pr(), calls), onFinding: () => {}, now: () => 0, jitter: ms => ms }).poll();
+      expect(calls).toEqual([]);
+    }
+  });
+
+  it("reports nothing when there is no PR yet", async () => {
+    const { bugs } = await failedTask("creating-pr");
+    const { found, onFinding } = collect();
+    await new PrWatcher({ bugs, forge: forgeFinding(null, []), onFinding, now: () => 0, jitter: ms => ms }).poll();
+    expect(found).toEqual([]);
+  });
+
+  it("stops looking once a PR has been recorded for the task", async () => {
+    const { bugs } = await failedTask("creating-pr", { pr: pr({ state: "CLOSED" }) });
+    const calls: string[] = [];
+    await new PrWatcher({ bugs, forge: forgeFinding(pr(), calls), onFinding: () => {}, now: () => 0, jitter: ms => ms }).poll();
+    expect(calls).toEqual([]);
+  });
+});

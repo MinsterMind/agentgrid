@@ -1821,3 +1821,95 @@ describe("assumptions", () => {
     expect(bugs.get(t.id).assumptionsProblem).toBeNull();
   });
 });
+
+// The reported case: PR creation failed, the user had the agent open the PR from a terminal,
+// and AgentGrid went on showing "failed".
+describe("a pull request opened outside AgentGrid", () => {
+  const APPROVED = "a".repeat(40);
+  async function failedAtCreatingPr() {
+    const home2 = await mkdtemp(path.join(tmpdir(), "eng-ext-"));
+    const store2 = new Store(home2, path.resolve("roles")); await store2.init();
+    await writeFile(path.join(home2, "roles", "bugfix.md"), `---\nname: bugfix\navatar: 🐞\nmodel: claude-opus-5\n---\nYou fix bugs.`);
+    await store2.reloadRoles();
+    const bugs2 = new BugTaskStore(home2); await bugs2.init();
+    const fake2 = makeFakeQuery();
+    const git2: { commits: number; head?: string } = { commits: 0 };
+    const said: Array<[string, string]> = [];
+    const ext = { pr: null as PrInfo | null };
+    const e2 = new BugFixEngine({
+      store: store2, bugs: bugs2,
+      manager: new Manager(store2, { queryFn: fake2.queryFn, buildOptions: (_r, a, e) => ({ cwd: a.repo, abortController: e.abortController, canUseTool: e.canUseTool } as Options) }),
+      git: fakeGit(git2).git, integrations: new IntegrationsStore(home2),
+      tracker: { listMyIssues: async () => [], fetchIssue: async () => ISSUE, comment: async (k, t) => { said.push([k, t]); } },
+      forge: { ...forge, createPr: async () => ({ unavailable: "could not determine the Bitbucket repository" }), findPr: async () => ext.pr },
+      presetsDir: path.resolve("presets"),
+    });
+    e2.attach();
+    const finish = async () => { fake2.emit(success("done")); fake2.end(); };
+    const t = await e2.intake({ issueRef: "PAY-42", repo });
+    await bugs2.writeArtifact(t.id, "plan.md", "# Plan");
+    await finish(); await until(() => bugs2.get(t.id).stage === "plan-review");
+    await e2.approve(t.id); git2.commits = 1;
+    await finish(); await until(() => bugs2.get(t.id).stage === "diff-review");
+    await e2.approve(t.id);
+    await bugs2.writeArtifact(t.id, "pr-body.md", "PR body");
+    await finish(); await until(() => bugs2.get(t.id).stage === "failed");
+    return { e2, bugs: bugs2, id: t.id, git2, said, ext };
+  }
+  const extPr = (over: Partial<PrInfo> = {}): PrInfo => ({ number: 7, url: "https://bb/pr/7", state: "OPEN", reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: APPROVED.slice(0, 12), lastSeenEventAt: "t", ...over });
+
+  it("at the approved commit, is adopted and watched, and the ticket hears about it", async () => {
+    const { e2, bugs, id, said } = await failedAtCreatingPr();
+    await e2.onPrFinding({ taskId: id, pr: extPr(), event: null, external: true, checkedAt: new Date().toISOString() });
+    const t = bugs.get(id);
+    expect(t.stage).toBe("monitoring");
+    expect(t.pr).toMatchObject({ number: 7, url: "https://bb/pr/7" });
+    expect(t.error).toBeNull();
+    expect(t.history.at(-1)!.note).toMatch(/#7.*outside AgentGrid/);
+    expect(said).toContainEqual(["PAY-42", expect.stringContaining("https://bb/pr/7")]);
+  });
+
+  it("with commits nobody reviewed here, opens the diff gate on what is actually in the PR", async () => {
+    const { e2, bugs, id, git2 } = await failedAtCreatingPr();
+    git2.head = "b".repeat(40);                                   // the terminal session committed more
+    await e2.onPrFinding({ taskId: id, pr: extPr({ headSha: "b".repeat(40) }), event: null, external: true, checkedAt: new Date().toISOString() });
+    const t = bugs.get(id);
+    expect(t.stage).toBe("diff-review");
+    expect(t.gate).toMatchObject({ kind: "diff", reason: "external" });
+    expect(t.approvedHead).toBe("b".repeat(40));                 // what the human is about to review
+    expect(t.pr).toMatchObject({ number: 7 });
+    expect(await bugs.readArtifact(id, "diff.patch")).toContain("diff --git");
+  });
+
+  it("whose commit isn't in the worktree, stays failed and says how to bring it in", async () => {
+    const { e2, bugs, id } = await failedAtCreatingPr();
+    await e2.onPrFinding({ taskId: id, pr: extPr({ headSha: "c".repeat(40) }), event: null, external: true, checkedAt: new Date().toISOString() });
+    const t = bugs.get(id);
+    expect(t.stage).toBe("failed");
+    expect(t.error).toMatch(/#7/);
+    expect(t.error).toMatch(/worktree/);
+    expect(t.pr).toMatchObject({ number: 7 });
+  });
+
+  it("that was closed without merging, stays failed and says so", async () => {
+    const { e2, bugs, id } = await failedAtCreatingPr();
+    await e2.onPrFinding({ taskId: id, pr: extPr({ state: "CLOSED" }), event: null, external: true, checkedAt: new Date().toISOString() });
+    expect(bugs.get(id).stage).toBe("failed");
+    expect(bugs.get(id).error).toMatch(/#7.*closed without merging/);
+  });
+
+  it("that was already merged, is adopted so the merge is recorded", async () => {
+    const { e2, bugs, id } = await failedAtCreatingPr();
+    await e2.onPrFinding({ taskId: id, pr: extPr({ state: "MERGED", headSha: "d".repeat(40) }), event: null, external: true, checkedAt: new Date().toISOString() });
+    expect(bugs.get(id).stage).toBe("monitoring");                // the watcher's merged path finishes it
+  });
+
+  it("Retry adopts it instead of failing on the moved branch", async () => {
+    const { e2, bugs, id, git2, ext } = await failedAtCreatingPr();
+    git2.head = "b".repeat(40);
+    ext.pr = extPr({ headSha: "b".repeat(40) });
+    await e2.retry(id);
+    expect(bugs.get(id).stage).toBe("diff-review");
+    expect(bugs.get(id).gate).toMatchObject({ reason: "external" });
+  });
+});

@@ -137,6 +137,12 @@ export function BugGates({ task, onChanged, onTranscript }: { task: BugTask; onC
               })()}
             </div>
           )}
+          {task.gate?.reason === "external" && (
+            <div className="hint" data-testid="gate-reason">
+              <b>{task.pr ? <a href={task.pr.url} target="_blank" rel="noreferrer">Pull request #{task.pr.number}</a> : "A pull request"} was opened outside AgentGrid.</b>{" "}
+              It has commits you haven't reviewed here. Approving starts watching it; requesting changes sends the agent to fix them on its branch.
+            </div>
+          )}
           {task.gate?.reason === "rebase" && (
             <p className="hint" data-testid="gate-reason"><b>This branch conflicts with <code>{task.baseBranch}</code>.</b></p>
           )}
