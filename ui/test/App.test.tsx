@@ -52,7 +52,7 @@ function bugTask(id: string, stage: BugTask["stage"], error: string | null = nul
     trackerProject: "PAY", sourceRepo: "/r", worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main",
     agentId: "bugfix@w", stage, gate: null, mergePolicy: "ask", mergeMethod: "squash", approvedHead: null,
     outcome, checksRoundHead: null, pr: null, prCheckedAt: null, costUsd: 0, history: [], error, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-    feedbackRounds: 0,
+    feedbackRounds: 0, assumptions: [], assumptionsProblem: null,
   };
 }
 
