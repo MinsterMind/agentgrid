@@ -61,6 +61,7 @@ let onChange: (e: GridEvent) => void;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  history.replaceState(null, "", "/");
   (api.subscribe as ReturnType<typeof vi.fn>).mockImplementation((snap: (s: GridState) => void, chg: (e: GridEvent) => void) => {
     onSnapshot = snap; onChange = chg;
     return () => {};
@@ -145,5 +146,14 @@ describe("App Escape handling", () => {
 
     await user.keyboard("{Escape}");
     expect(screen.getByTestId("tile-A")).not.toHaveClass("selected");
+  });
+  it("the Bugs button switches to the bug screen and back, and the hash follows", async () => {
+    render(<App />);
+    await userEvent.click(screen.getByRole("button", { name: "Bugs" }));
+    expect(window.location.hash).toBe("#/bugs");
+    expect(screen.getByTestId("bug-screen")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Grid" }));
+    expect(window.location.hash).toBe("");
+    expect(screen.queryByTestId("bug-screen")).toBeNull();
   });
 });

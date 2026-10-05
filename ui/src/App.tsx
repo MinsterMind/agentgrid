@@ -10,6 +10,8 @@ import { BugLauncher } from "./components/BugLauncher";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { TranscriptView } from "./components/TranscriptView";
+import { BugScreen } from "./components/BugScreen";
+import { useHashRoute } from "./hooks/useHashRoute";
 import { useKeyboard } from "./hooks/useKeyboard";
 import { notifyBugTask, notifyFinished, notifyWaiting, setTitleCount, settings } from "./notify";
 import { bugMerged } from "./format";
@@ -17,6 +19,7 @@ import type { Decision } from "./types";
 
 export function App() {
   const [s, dispatch] = useReducer(reducer, initial);
+  const route = useHashRoute();
   const [spawnOpen, setSpawnOpen] = useState(false);
   const [bugOpen, setBugOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -103,12 +106,18 @@ export function App() {
     allow: () => { if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "allow" }); },
     deny: () => { if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "deny" }); },
     open: () => { if (selected && selectedAsg?.sessionId) void openTerminal(selected.id); },
-    escape: () => { if (transcriptFor) { setTranscriptFor(null); return; } if (sessionsOpen) { setSessionsOpen(false); return; } if (spawnOpen) { setSpawnOpen(false); return; } if (bugOpen) { setBugOpen(false); return; } if (settingsOpen) { setSettingsOpen(false); return; } dispatch({ type: "select", id: null }); },
-  }), [s.agents, selected, selectedAsg, decide, openTerminal, spawnOpen, sessionsOpen, transcriptFor, bugOpen, settingsOpen]));
+    escape: () => { if (transcriptFor) { setTranscriptFor(null); return; } if (sessionsOpen) { setSessionsOpen(false); return; } if (spawnOpen) { setSpawnOpen(false); return; } if (bugOpen) { setBugOpen(false); return; } if (settingsOpen) { setSettingsOpen(false); return; } if (route.view === "bugs") { route.go({ view: "grid" }); return; } dispatch({ type: "select", id: null }); },
+  }), [s.agents, selected, selectedAsg, decide, openTerminal, spawnOpen, sessionsOpen, transcriptFor, bugOpen, settingsOpen, route]));
 
   return (
     <div className="app">
-      <TopBar counts={counts(s)} spend={todaySpend(s)} connected={s.connected} waitingCount={waitingIds(s).length} onCycleWaiting={cycleWaiting} onSpawn={() => setSpawnOpen(true)} onSessions={() => setSessionsOpen(true)} onFixBug={() => setBugOpen(true)} onOpenSettings={() => setSettingsOpen(true)} />
+      <TopBar counts={counts(s)} spend={todaySpend(s)} connected={s.connected} waitingCount={waitingIds(s).length} onCycleWaiting={cycleWaiting} onSpawn={() => setSpawnOpen(true)} onSessions={() => setSessionsOpen(true)} onFixBug={() => setBugOpen(true)} onOpenSettings={() => setSettingsOpen(true)}
+        bugsActive={route.view === "bugs"} onToggleBugs={() => route.go(route.view === "bugs" ? { view: "grid" } : { view: "bugs" })} />
+      {route.view === "bugs" ? (
+        <BugScreen state={s} selectedId={route.bugId} onSelect={id => route.go({ view: "bugs", bugId: id })}
+          onBugChanged={t => dispatch({ type: "change", event: { type: "bugtask", task: t } })} onTranscript={id => setTranscriptFor(id)}
+          onOpenSettings={() => setSettingsOpen(true)} onFixBug={() => setBugOpen(true)} />
+      ) : (
       <div className="split">
         <AgentGrid agents={s.agents} roles={s.roles} assignments={s.assignments} selectedId={s.selectedId} recentFor={recentFor}
           onSelect={id => dispatch({ type: "select", id })}
@@ -126,13 +135,14 @@ export function App() {
           bugTask={selected ? bugTaskFor(s, selected) : null}
           onBugChanged={t => dispatch({ type: "change", event: { type: "bugtask", task: t } })} />
       </div>
+      )}
       <footer className="foot">
         <label><input type="checkbox" defaultChecked={settings.notifyWaiting} onChange={e => (settings.notifyWaiting = e.target.checked)} /> notify when someone needs me</label>
         <label><input type="checkbox" defaultChecked={settings.notifyFinished} onChange={e => (settings.notifyFinished = e.target.checked)} /> notify on done/failed</label>
-        <span className="dim">keys: 1–9 select · a allow · d deny · o terminal · esc</span>
+        <span className="dim">{route.view === "bugs" ? "keys: ↑↓ move · enter open · esc grid" : "keys: 1–9 select · a allow · d deny · o terminal · esc"}</span>
       </footer>
       {spawnOpen && <SpawnDialog roles={s.roles} recentRepos={recentRepos} onSpawn={async i => { const a = await api.createAgent(i); dispatch({ type: "select", id: a.id }); }} onClose={() => setSpawnOpen(false)} />}
-      {bugOpen && <BugLauncher onCreated={t => { setBugOpen(false); dispatch({ type: "select", id: t.agentId }); }} onClose={() => setBugOpen(false)} onOpenSettings={() => { setBugOpen(false); setSettingsOpen(true); }} />}
+      {bugOpen && <BugLauncher onCreated={t => { setBugOpen(false); dispatch({ type: "select", id: t.agentId }); route.go({ view: "bugs", bugId: t.id }); }} onClose={() => setBugOpen(false)} onOpenSettings={() => { setBugOpen(false); setSettingsOpen(true); }} />}
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
       {sessionsOpen && <SessionsPanel roles={s.roles} agentNames={Object.fromEntries(s.agents.map(a => [a.id, a.displayName]))}
         onAdopted={id => { setSessionsOpen(false); dispatch({ type: "select", id }); }} onClose={() => setSessionsOpen(false)} />}
