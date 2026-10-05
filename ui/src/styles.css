@@ -10,12 +10,19 @@
 * { box-sizing: border-box; }
 body { margin:0; background:var(--bg); color:var(--text); font-size:13px; line-height:1.4; font-family:"Inter", -apple-system, system-ui, sans-serif; }
 .app { display:flex; flex-direction:column; height:100vh; }
-.topbar { display:flex; align-items:center; gap:12px; padding:10px 16px; border-bottom:1px solid var(--grid-line); }
-.brand { font-weight:700; letter-spacing:.3px; }
-.sum { display:flex; gap:8px; margin-left:auto; font-size:12px; color:var(--text-muted); }
-.pill { padding:2px 9px; border-radius:99px; background:var(--surface-raised); border:1px solid var(--grid-line); color:inherit; font:inherit; }
-.pill.w { border-color:var(--st-needs-you); color:#ffd166; } .pill.w.hot { background:#3a2a05; cursor:pointer; } .pill.f { border-color:var(--st-failed); color:#fca5a5; }
-button.pill:disabled { opacity:.6; }
+.topbar { display:flex; align-items:center; gap:20px; padding:10px 16px; border-bottom:1px solid var(--grid-line); background:var(--surface); flex-shrink:0; }
+.brand { font-weight:600; font-size:14px; letter-spacing:.5px; }
+.views { display:flex; gap:6px; } .badge-n { padding:0 5px; margin-left:2px; }
+.counters { display:flex; gap:14px; margin-left:auto; align-items:center; }
+.counter { display:flex; flex-direction:column; align-items:center; min-width:58px; background:none; border:0; color:inherit; font:inherit; padding:4px 8px; border-radius:6px; }
+.counter .num { font-family:var(--mono); font-size:20px; font-weight:600; line-height:1; }
+.counter .lbl { font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.5px; margin-top:4px; color:var(--text-muted); }
+.counter.zero .num { color:var(--text-faint); }
+.c-working .num { color:var(--st-working); } .c-done .num { color:var(--st-done); } .c-failed .num { color:var(--st-failed); }
+.counter.c-needs-you.hot { cursor:pointer; background:rgba(251,191,36,.05); box-shadow:var(--glow-needs-you); animation:pulse-amber 1.6s infinite; }
+.counter.c-needs-you.hot .num, .counter.c-needs-you.hot .lbl { color:var(--st-needs-you); }
+.counter.c-needs-you:disabled { cursor:default; }
+.topbar .actions { display:flex; gap:8px; }
 .split { display:grid; grid-template-columns: 1fr 340px; gap:12px; padding:12px 16px; flex:1; min-height:0; }
 .board { overflow:auto; display:flex; flex-direction:column; gap:14px; }
 .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:10px; align-content:start; }

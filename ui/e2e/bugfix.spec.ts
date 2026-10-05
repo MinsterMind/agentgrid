@@ -5,7 +5,7 @@ import { test, expect } from "@playwright/test";
 // real stage machine are exercised — only the model, the tracker and the forge are substituted.
 test("bug fix: launch, approve the plan, approve the diff, land on an open PR", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "🐞 Fix a bug" }).click();
+  await page.getByRole("button", { name: "Fix a bug" }).click();
 
   const dialog = page.locator(".dialog");
   await expect(dialog.getByText("Fake bug for demos")).toBeVisible();
@@ -37,7 +37,7 @@ test("bug fix: launch, approve the plan, approve the diff, land on an open PR", 
 
   // Back to the grid for the rest of the flow. Launching selected the bug's agent, so its side
   // panel is open, and it links back to the full view.
-  await page.getByRole("button", { name: "Grid" }).click();
+  await page.getByRole("button", { name: "Agents" }).click();
   const panel = page.getByTestId("bug-panel");
   await expect(panel).toBeVisible();
   await expect(panel.getByText("FAKE-1").first()).toBeVisible();

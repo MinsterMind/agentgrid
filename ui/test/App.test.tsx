@@ -137,7 +137,7 @@ describe("App Escape handling", () => {
     await user.click(screen.getByTestId("tile-A"));
     expect(screen.getByTestId("tile-A")).toHaveClass("selected");
 
-    await user.click(screen.getByRole("button", { name: /\+ Spawn/i }));
+    await user.click(screen.getByRole("button", { name: "New agent" }));
     expect(screen.getByText(/Spawn agent/i)).toBeInTheDocument();
 
     await user.keyboard("{Escape}");
@@ -149,10 +149,10 @@ describe("App Escape handling", () => {
   });
   it("the Bugs button switches to the bug screen and back, and the hash follows", async () => {
     render(<App />);
-    await userEvent.click(screen.getByRole("button", { name: "Bugs" }));
+    await userEvent.click(screen.getByRole("button", { name: /^Bugs/ }));
     expect(window.location.hash).toBe("#/bugs");
     expect(screen.getByTestId("bug-screen")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Grid" }));
+    await userEvent.click(screen.getByRole("button", { name: "Agents" }));
     expect(window.location.hash).toBe("");
     expect(screen.queryByTestId("bug-screen")).toBeNull();
   });
@@ -160,9 +160,9 @@ describe("App Escape handling", () => {
   it("number keys do nothing while the bug screen is showing", async () => {
     render(<App />);
     act(() => onSnapshot(snapshot([agent("a1", "free")])));
-    await userEvent.click(screen.getByRole("button", { name: "Bugs" }));
+    await userEvent.click(screen.getByRole("button", { name: /^Bugs/ }));
     await userEvent.keyboard("1");
-    await userEvent.click(screen.getByRole("button", { name: "Grid" }));
+    await userEvent.click(screen.getByRole("button", { name: "Agents" }));
     expect(screen.getByText(/select an agent/i)).toBeInTheDocument();
   });
 });

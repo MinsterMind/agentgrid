@@ -12,6 +12,7 @@ import { SessionsPanel } from "./components/SessionsPanel";
 import { TranscriptView } from "./components/TranscriptView";
 import { BugScreen } from "./components/BugScreen";
 import { useHashRoute } from "./hooks/useHashRoute";
+import { listStatus } from "./bugView";
 import { useKeyboard } from "./hooks/useKeyboard";
 import { notifyBugTask, notifyFinished, notifyWaiting, setTitleCount, settings } from "./notify";
 import { bugMerged } from "./format";
@@ -113,8 +114,11 @@ export function App() {
 
   return (
     <div className="app">
-      <TopBar counts={counts(s)} spend={todaySpend(s)} connected={s.connected} waitingCount={waitingIds(s).length} onCycleWaiting={cycleWaiting} onSpawn={() => setSpawnOpen(true)} onSessions={() => setSessionsOpen(true)} onFixBug={() => setBugOpen(true)} onOpenSettings={() => setSettingsOpen(true)}
-        bugsActive={route.view === "bugs"} onToggleBugs={() => route.go(route.view === "bugs" ? { view: "grid" } : { view: "bugs" })} />
+      <TopBar counts={counts(s)} spend={todaySpend(s)} connected={s.connected} waitingCount={waitingIds(s).length}
+        bugsWaiting={Object.values(s.bugTasks).filter(t => listStatus(t, false) === "waiting").length}
+        view={route.view} onView={v => route.go(v === "bugs" ? { view: "bugs" } : { view: "grid" })}
+        onCycleWaiting={cycleWaiting} onSpawn={() => setSpawnOpen(true)} onSessions={() => setSessionsOpen(true)}
+        onFixBug={() => setBugOpen(true)} onOpenSettings={() => setSettingsOpen(true)} />
       {route.view === "bugs" ? (
         <BugScreen state={s} selectedId={route.bugId} onSelect={(id, opts) => route.go({ view: "bugs", bugId: id }, opts)}
           onBugChanged={t => dispatch({ type: "change", event: { type: "bugtask", task: t } })} onTranscript={id => setTranscriptFor(id)}

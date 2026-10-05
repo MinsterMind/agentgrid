@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test";
 test("spawn → assign → answer permission → ack", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByTestId(/^tile-/)).toHaveCount(0);           // no agents yet (live-session ghost tiles may exist)
-  await page.getByRole("button", { name: "+ Spawn" }).click();
+  await page.getByRole("button", { name: "New agent" }).click();
   await page.getByPlaceholder("/Users/you/project").fill("/tmp");
   await page.getByRole("button", { name: "Spawn", exact: true }).click();
 
@@ -26,7 +26,7 @@ test("spawn → assign → answer permission → ack", async ({ page }) => {
 
 test("spawn dialog browses folders confined to the browse root", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "+ Spawn" }).click();
+  await page.getByRole("button", { name: "New agent" }).click();
   const dialog = page.locator(".dialog");
   await expect(dialog.getByRole("button", { name: "⬆ up" })).toHaveCount(0);   // collapsed by default
   await dialog.getByRole("button", { name: /show folder list/i }).click();
