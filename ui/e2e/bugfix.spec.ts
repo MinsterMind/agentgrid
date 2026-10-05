@@ -48,13 +48,16 @@ test("bug fix: launch, approve the plan, approve the diff, land on an open PR", 
   await expect(panel.getByText("fake-fix.txt")).toBeVisible();
   await panel.getByRole("button", { name: /Create PR|Approve/ }).click();
 
-  // The PR stage ran and the server confirmed an open pull request on the forge.
-  await expect(page.getByTestId("bug-stage")).toHaveAttribute("data-stage", "monitoring", { timeout: 30_000 });
-  await expect(panel.getByRole("link", { name: /#1|pull|PR/i }).first()).toBeVisible();
+  // The PR stage ran and the server confirmed an open pull request on the forge. Wait for the PR
+  // itself, not for "monitoring": the fake watcher can find its review within one poll, so that
+  // stage may come and go before the page is ever looked at.
+  await expect(panel.getByRole("link", { name: /PR #\d+/ })).toBeVisible({ timeout: 30_000 });
 
-  // The watcher finds a review on its own and a feedback round opens.
-  await expect(page.getByTestId("bug-stage")).toHaveAttribute("data-stage", "diff-review", { timeout: 30_000 });
-  await expect(panel.getByText(/reviewers asked for changes/i)).toBeVisible();
+  // The watcher finds a review on its own and a feedback round opens. The reason line exists only
+  // on a reopened diff gate — the first diff gate already said "diff-review", so the stage alone
+  // would pass before anything happened.
+  await expect(panel.getByText(/reviewers asked for changes/i)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("bug-stage")).toHaveAttribute("data-stage", "diff-review");
   await panel.getByRole("button", { name: /Approve/ }).click();
 
   // The server pushes and the task goes back to monitoring, then the approval arrives.
