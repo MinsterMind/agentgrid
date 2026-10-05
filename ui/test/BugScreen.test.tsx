@@ -138,4 +138,15 @@ describe("BugScreen", () => {
     renderScreen([task("implementing")]);
     expect(await screen.findByText("Could not check setup")).toBeInTheDocument();
   });
+describe("BugScreen polish", () => {
+  it("shows a failed stage's error once, with Blocking pointing at it", () => {
+    renderScreen([task("failed", { error: "no commits on the task branch", history: [{ stage: "intake", at: "a", note: "" }, { stage: "implementing", at: "b", note: "" }, { stage: "failed", at: "c", note: "" }] })]);
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.getByRole("region", { name: /blocking/i })).toHaveTextContent("The Implementing stage failed");
+  });
+  it("reads elapsed time as a duration while a stage runs", () => {
+    renderScreen([task("implementing")]);
+    expect(screen.getByRole("region", { name: /now/i })).toHaveTextContent(/for \d/);
+  });
+});
 });

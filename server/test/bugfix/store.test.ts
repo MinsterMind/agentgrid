@@ -222,11 +222,11 @@ describe("patchPr", () => {
     expect(store.get(t.id).assumptionsToken).toBe("j");
   });
 
-  it("addAssumptions with an undefined problem leaves the existing one alone", async () => {
+  it("a later run clears an earlier run's problem", async () => {
     const t = await mk();
     await store.addAssumptions(t.id, [], "earlier problem", "a");
-    await store.addAssumptions(t.id, [], undefined, "b");
-    expect(store.get(t.id).assumptionsProblem).toBe("earlier problem");
+    await store.addAssumptions(t.id, [], null, "b");
+    expect(store.get(t.id).assumptionsProblem).toBeNull();
     expect(store.get(t.id).assumptionsToken).toBe("b");
   });
 });

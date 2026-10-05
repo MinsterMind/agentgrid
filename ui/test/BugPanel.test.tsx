@@ -436,5 +436,15 @@ describe("the done card", () => {
     expect(reason.querySelector("strong")!.textContent).toBe("rename");
     expect(reason.textContent).not.toContain("**");
   });
+describe("errors as cards everywhere", () => {
+  it("the monitoring error is an error card", () => {
+    render(<BugPanel task={monitoring({ error: "Stopped addressing review: hit 5 feedback rounds. Merge or close it yourself." })} onChanged={vi.fn()} />);
+    expect(screen.getByTestId("monitoring-error")).toHaveAttribute("role", "alert");
+  });
+  it("a closed task's error is an error card", () => {
+    render(<BugPanel task={done({ outcome: "closed", error: "the pull request was closed without merging. Nothing was merged." })} onChanged={vi.fn()} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("the pull request was closed without merging.");
+  });
+});
 });
 

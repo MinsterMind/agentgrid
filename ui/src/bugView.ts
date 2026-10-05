@@ -84,21 +84,23 @@ function gateHeadline(task: BugTask): string {
   return "Waiting on you: merge the pull request";
 }
 
-export interface Now { headline: string; detail?: string; since?: string }
+/** `sinceKind` says how to read `since`: how long a stage has been running, how long a gate has
+ *  been waiting, or when the PR was last checked — a bare "6 min ago" reads as a timestamp. */
+export interface Now { headline: string; detail?: string; since?: string; sinceKind?: "running" | "waiting" | "checked" }
 export function nowFor({ task, pending, activity }: { task: BugTask; pending: Pending | null; activity: SessionActivity | null }): Now {
   const since = task.history.at(-1)?.at;
   if (task.stage === "done") return { headline: task.outcome === "closed" || (!task.outcome && task.pr?.state === "CLOSED") ? "Closed without merging" : "Merged" };
   if (task.stage === "cancelled") return { headline: "Cancelled" };
   if (task.stage === "failed") return { headline: `Failed while ${stageLabel(positionStage(task)).toLowerCase()}` };
-  if (task.gate) return { headline: gateHeadline(task), since: task.gate.openedAt || since };
+  if (task.gate) return { headline: gateHeadline(task), since: task.gate.openedAt || since, sinceKind: "waiting" };
   if (pending) return { headline: `${stageLabel(task.stage)} · waiting on you`, detail: pending.kind === "question" ? "The agent has a question" : `The agent wants to run ${pending.toolName}` };
-  if (task.stage === "pushing") return { headline: "AgentGrid is pushing the branch", since };
-  if (task.stage === "creating-pr") return { headline: "AgentGrid is opening the pull request", since };
-  if (task.stage === "merging") return { headline: "AgentGrid is merging", since };
-  if (task.stage === "monitoring") return { headline: task.pr ? `Watching PR #${task.pr.number}` : "Watching the PR", ...(task.prCheckedAt ? { since: task.prCheckedAt } : {}) };
-  if (task.stage === "intake") return { headline: "Setting up the worktree", since };
+  if (task.stage === "pushing") return { headline: "AgentGrid is pushing the branch", since, sinceKind: "running" };
+  if (task.stage === "creating-pr") return { headline: "AgentGrid is opening the pull request", since, sinceKind: "running" };
+  if (task.stage === "merging") return { headline: "AgentGrid is merging", since, sinceKind: "running" };
+  if (task.stage === "monitoring") return { headline: task.pr ? `Watching PR #${task.pr.number}` : "Watching the PR", ...(task.prCheckedAt ? { since: task.prCheckedAt, sinceKind: "checked" as const } : {}) };
+  if (task.stage === "intake") return { headline: "Setting up the worktree", since, sinceKind: "running" };
   const raw = activity?.pendingTool?.summary || activity?.lastMessage || "";
-  return { headline: stageLabel(task.stage), since, ...(raw ? { detail: oneLine(raw) } : {}) };
+  return { headline: stageLabel(task.stage), since, sinceKind: "running", ...(raw ? { detail: oneLine(raw) } : {}) };
 }
 
 /** The latest dispatch whose assumptions were read — the server records it even when that run
@@ -152,7 +154,9 @@ export function planSections(md: string): { sections: PlanSection[]; structured:
   push();
   // A bare document title ("# Plan" with nothing under it) is not a section.
   if (sections.length > 1 && !sections[0].body) sections.shift();
-  const structured = sections.some(s => /root cause/i.test(s.title)) && sections.some(s => /^fix\b/i.test(s.title));
+  // "## 1. Root cause" and "## 2) Fix" are the usual sections, numbered.
+  const bare = (t: string) => t.replace(/^\d+[.)]\s*/, "");
+  const structured = sections.some(s => /root cause/i.test(bare(s.title))) && sections.some(s => /^fix\b/i.test(bare(s.title)));
   return structured ? { sections, structured } : { sections: [{ title: "", body: md.trim() }], structured: false };
 }
 

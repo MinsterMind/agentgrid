@@ -252,4 +252,17 @@ describe("final-review fixes", () => {
     expect(n.detail).toBe("Editing src/__tests__/foo_bar.ts — see docs and this");
   });
 });
+describe("deferred minors", () => {
+  it("numbered headings still count as the usual sections", () => {
+    const r = planSections("## 1. Root cause\nA\n## 2) Fix\nB");
+    expect(r.structured).toBe(true);
+    expect(r.sections.map(s => s.title)).toEqual(["1. Root cause", "2) Fix"]);
+  });
+  it("says how to read the time beside the Now line", () => {
+    const pr = { number: 1, url: "u", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: null, headSha: null, lastSeenEventAt: "" };
+    expect(nowFor({ task: task("implementing"), pending: null, activity: null }).sinceKind).toBe("running");
+    expect(nowFor({ task: task("plan-review"), pending: null, activity: null }).sinceKind).toBe("waiting");
+    expect(nowFor({ task: task("monitoring", { pr, prCheckedAt: "2026-10-05T10:00:00Z" }), pending: null, activity: null }).sinceKind).toBe("checked");
+  });
+});
 });

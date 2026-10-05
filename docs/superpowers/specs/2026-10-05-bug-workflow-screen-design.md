@@ -96,7 +96,7 @@ export interface Assumption {
 }
 // on BugTask:
 assumptions: Assumption[];
-assumptionsProblem: string | null;    // last read problem, cleared by the next clean read
+assumptionsProblem: string | null;    // last read problem, cleared by the next run (clean read or no file)
 assumptionsToken: string | null;      // the dispatch read last, even if it reported nothing — "new" means from this run
 ```
 

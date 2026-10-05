@@ -723,7 +723,9 @@ export class BugFixEngine {
     try {
       const raw = await this.deps.bugs.readArtifact(taskId, `assumptions-${meta.token}.json`);
       const r = parseAssumptions(raw, { ...meta, at: new Date().toISOString() });
-      await this.deps.bugs.addAssumptions(taskId, r.items, r.read ? r.problem : undefined, meta.token);
+      // A later run supersedes an earlier run's warning even when it wrote no file: the warning
+      // was about a file that is now history.
+      await this.deps.bugs.addAssumptions(taskId, r.items, r.read ? r.problem : null, meta.token);
     } catch { /* a store write failing here must not take the stage down with it */ }
   }
 

@@ -52,4 +52,12 @@ describe("Markdown", () => {
     expect(onOpen).toHaveBeenCalledWith("src/a.ts");
     expect(screen.queryByRole("button", { name: "other" })).toBeNull();
   });
+describe("inline Markdown", () => {
+  it("keeps block markup out of an inline run", () => {
+    const { container } = render(<Markdown inline text={"# Head\n\n- a\n- b\n\n**bold**"} />);
+    for (const tag of ["h1", "ul", "li", "p", "pre"]) expect(container.querySelector(tag)).toBeNull();
+    expect(container.querySelector("strong")!.textContent).toBe("bold");
+    expect(container.textContent).toContain("Head");
+  });
+});
 });

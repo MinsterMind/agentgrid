@@ -33,4 +33,13 @@ describe("ErrorCard", () => {
     await userEvent.click(screen.getByRole("button", { name: /copy/i }));
     expect(writeText).toHaveBeenCalledWith(expect.stringMatching(/^git -C \/r worktree remove/));
   });
+describe("splitError command finding", () => {
+  it("does not offer prose as a command", () => {
+    expect(splitError("fatal: not a git repository (or any of the parent directories)").commands).toEqual([]);
+    expect(splitError("claude exited with code 1").commands).toEqual([]);
+  });
+  it("still finds a command at the start of a line", () => {
+    expect(splitError("cleanup incomplete\n  git -C /r branch -D bugfix/X").commands).toEqual(["git -C /r branch -D bugfix/X"]);
+  });
+});
 });

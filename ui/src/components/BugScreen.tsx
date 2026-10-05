@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { blockersFor, isNew, listStatus, nowFor, orderAssumptions, pipelineFor, stageLabel, type Blocker, type ListStatus, type StepState } from "../bugView";
-import { relativeTime, usd } from "../format";
+import { elapsed, relativeTime, usd } from "../format";
 import { activityFor, assignmentFor, type UiState } from "../state/reducer";
 import type { BugTask, SetupReport } from "../types";
 import { BugGates } from "./BugGates";
@@ -157,7 +157,7 @@ function BugDetail({ task, state, now, onBugChanged, onTranscript, onOpenSetting
 
       <section className="now" aria-label="Now">
         <h3>Now</h3>
-        <div className="now-line"><b>{nowLine.headline}</b>{nowLine.since && <> · <When iso={nowLine.since} now={now} /></>}</div>
+        <div className="now-line"><b>{nowLine.headline}</b>{nowLine.since && <> · <Since iso={nowLine.since} kind={nowLine.sinceKind} now={now} /></>}</div>
         {nowLine.detail && <div className="now-detail">{nowLine.detail}</div>}
       </section>
 
@@ -222,8 +222,21 @@ function BugDetail({ task, state, now, onBugChanged, onTranscript, onOpenSetting
   );
 }
 
+/** "for 6m" while running, "waiting 6m" at a gate, "last checked 2 min ago" for the PR watcher. */
+function Since({ iso, kind, now }: { iso: string; kind?: "running" | "waiting" | "checked"; now: number }) {
+  const title = new Date(iso).toLocaleString();
+  if (kind === "checked") return <time dateTime={iso} title={title}>last checked {relativeTime(iso, now)}</time>;
+  return <time dateTime={iso} title={title}>{kind === "waiting" ? "waiting" : "for"} {elapsed(iso, now)}</time>;
+}
+
 function BlockerRow({ b, onOpenSettings }: { b: Blocker; onOpenSettings: () => void }) {
-  if (b.kind === "failed") return <li><ErrorCard title={b.title} text={b.detail ?? "No error was recorded."} /></li>;
+  // The error itself is shown once, on the failed-stage card with Retry; Blocking points at it.
+  if (b.kind === "failed") return (
+    <li className="blocker failed">
+      <span>{b.title}</span>
+      <button className="btn sm" onClick={() => document.querySelector(".bugdetail .gates")?.scrollIntoView({ behavior: "smooth" })}>See why</button>
+    </li>
+  );
   return (
     <li className={`blocker ${b.kind}`}>
       <span>{b.title}</span>

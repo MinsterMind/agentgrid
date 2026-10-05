@@ -7,6 +7,8 @@ import remarkGfm from "remark-gfm";
  * would otherwise phone home from the operator's machine), and react-markdown's default URL
  * transform already neutralises `javascript:` links.
  */
+const INLINE_ELEMENTS = ["strong", "em", "code", "a", "del", "br"];
+
 export function Markdown({ text, inline, fileLinks }: {
   text: string; inline?: boolean; fileLinks?: { files: string[]; onOpen: (path: string) => void };
 }) {
@@ -23,5 +25,8 @@ export function Markdown({ text, inline, fileLinks }: {
     ...(inline ? { p: ({ children }) => <>{children}</> } : {}),
   };
   const Tag = inline ? "span" : "div";
-  return <Tag className={inline ? "md md-inline" : "md"}><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={components}>{text}</ReactMarkdown></Tag>;
+  // Inline runs sit inside a sentence or a list item: block markup there (headings, lists,
+  // fences) would nest invalidly, so it is unwrapped to its text.
+  const inlineOnly = inline ? { allowedElements: INLINE_ELEMENTS, unwrapDisallowed: true } : {};
+  return <Tag className={inline ? "md md-inline" : "md"}><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={components} {...inlineOnly}>{text}</ReactMarkdown></Tag>;
 }

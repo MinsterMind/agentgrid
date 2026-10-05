@@ -20,14 +20,6 @@ function describeError(e: unknown): string {
   return (e as Error).message;
 }
 
-/** Renders a possibly-multi-line message as one <div> per line — the same convention
- *  BugLauncher's intake error already uses, reused here for the cleanup message a `done`
- *  task with leftovers carries (it names paths and the exact commands to clear them, so the
- *  lines have to stay lines). */
-function Lines({ text, className, ...rest }: { text: string; className?: string } & Record<`data-${string}`, string | undefined>) {
-  return <div className={className} {...rest}>{text.split("\n").map((line, i) => <div key={i}>{line}</div>)}</div>;
-}
-
 const REVIEW_LABEL: Record<string, string> = { CHANGES_REQUESTED: "Changes requested", APPROVED: "Approved", REVIEW_REQUIRED: "Review required" };
 const CHECKS_LABEL: Record<string, string> = { SUCCESS: "Checks passing", FAILURE: "Checks failing", ERROR: "Checks failing", PENDING: "Checks pending" };
 const MERGEABLE_LABEL: Record<string, string> = { MERGEABLE: "Mergeable", CONFLICTING: "Conflicting", UNKNOWN: "Mergeable state unknown" };
@@ -213,7 +205,7 @@ export function BugGates({ task, onChanged, onTranscript }: { task: BugTask; onC
           {/* Any error resting on a monitoring task is something the user needs: either the
               forge could not be read, or the feedback-round cap has stopped the watcher from
               dispatching — and the cap changes no stage, so this card is its only signal. */}
-          {task.error && <Lines className="err" data-testid="monitoring-error" text={task.error} />}
+          {task.error && <ErrorCard testId="monitoring-error" text={task.error} />}
           <div className="row">
             <button className="btn p" disabled={busy} onClick={() => act(() => api.addressComments(task.id))}>Ask the agent to address these</button>
             <button className="btn d" disabled={busy} onClick={() => act(() => api.cancelBug(task.id))}>Cancel task</button>
@@ -261,7 +253,7 @@ export function BugGates({ task, onChanged, onTranscript }: { task: BugTask; onC
                 <ErrorCard title="Merged, but cleanup left something behind" text={task.error} />
               </>
             )}
-            {task.error && !merged && <div className="err">{task.error}</div>}
+            {task.error && !merged && <ErrorCard text={task.error} />}
             {onTranscript && task.agentId && <div className="row"><button className="btn" onClick={() => onTranscript(task.agentId)}>Transcript</button></div>}
             <p className="hint">Dismissing removes this task and frees its agent — this cannot be undone.</p>
             <div className="row">

@@ -1810,4 +1810,14 @@ describe("assumptions", () => {
     expect(bugs.get(t.id).assumptionsToken).toBe(third);
     expect(bugs.get(t.id).assumptions.map(a => a.text)).toEqual(["Up or down?"]);
   });
+  it("a later run that wrote no file clears an earlier run's malformed-file warning", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "# Plan");
+    await writeFile(assumptionsPathIn(fake.calls.at(-1)!.prompt), "not json");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    expect(bugs.get(t.id).assumptionsProblem).toMatch(/not valid JSON/);
+    await engine.requestChanges(t.id, "again");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    expect(bugs.get(t.id).assumptionsProblem).toBeNull();
+  });
 });
