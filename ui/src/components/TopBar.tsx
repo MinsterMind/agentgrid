@@ -19,13 +19,13 @@ export function TopBar({ counts, spend, connected, waitingCount, bugsWaiting, vi
       <nav className="views" aria-label="Views">
         <button className={`btn ${view === "grid" ? "on" : ""}`} aria-pressed={view === "grid"} onClick={() => onView("grid")}><LayoutGrid /> Agents</button>
         <button className={`btn ${view === "bugs" ? "on" : ""}`} aria-pressed={view === "bugs"} onClick={() => onView("bugs")}>
-          <GitPullRequestArrow /> Bugs{bugsWaiting > 0 && <span className="chip amber badge-n" aria-label={`${bugsWaiting} waiting`}>{bugsWaiting}</span>}
+          <GitPullRequestArrow /> Bugs{bugsWaiting > 0 && <span className="chip amber badge-n">{bugsWaiting}<span className="sr-only"> waiting</span></span>}
         </button>
       </nav>
       <div className="counters">
         <Counter n={counts.working} label="Working" cls="c-working" />
         <button className={`counter c-needs-you ${waitingCount ? "hot" : "zero"}`} disabled={!waitingCount} onClick={onCycleWaiting}
-          aria-label={`${waitingCount} need you`} title={waitingCount ? "Jump to the next agent that needs you" : "Nothing needs you"}>
+          aria-label={`${waitingCount} Needs you`} title={waitingCount ? "Jump to the next agent that needs you" : "Nothing needs you"}>
           <span className="num">{waitingCount}</span><span className="lbl">Needs you</span>
         </button>
         <Counter n={counts.done} label="Done" cls="c-done" />

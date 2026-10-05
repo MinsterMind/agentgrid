@@ -99,7 +99,10 @@ export function App() {
   const recentFor = useCallback((id: string) => [...new Set(Object.values(s.assignments).filter(a => a.agentId === id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(a => a.prompt))].slice(0, 8), [s.assignments]);
 
   const cycleWaiting = useCallback(() => { const ids = waitingIds(s); if (!ids.length) return; const i = ids.indexOf(s.selectedId ?? ""); dispatch({ type: "select", id: ids[(i + 1) % ids.length] }); }, [s]);
-  const decide = useCallback((agentId: string, toolUseId: string, d: Decision) => api.answer(agentId, toolUseId, d).catch(showErr), []);
+  // The same request can be answered from the tile, the side panel or the A/D keys; a second
+  // answer finds nothing pending (409). The first one won — that isn't an error to show.
+  const decide = useCallback((agentId: string, toolUseId: string, d: Decision) =>
+    api.answer(agentId, toolUseId, d).catch(e => { if ((e as { status?: number }).status !== 409) showErr(e); }), []);
   const openTerminal = useCallback((id: string) => api.openTerminal(id).then(r => { if (!r.opened) { navigator.clipboard?.writeText(r.command); setToast(`Copied: ${r.command}`); setTimeout(() => setToast(null), 6000); } }).catch(showErr), []);
 
   useKeyboard(useMemo(() => ({

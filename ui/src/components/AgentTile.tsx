@@ -27,7 +27,8 @@ function TileRequest({ agent, a, onDecide, onSelect }: { agent: Agent; a: Assign
   const p = a?.pending;
   const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
   if (!p || !onDecide) {
-    return <div className="tile-req" data-testid="tile-request" onClick={stop}>Waiting for you — open it to see what it needs.</div>;
+    // No stopPropagation here: the card asks to be opened, so a click on it must reach the tile.
+    return <div className="tile-req open" data-testid="tile-request">Waiting for you — open it to see what it needs.</div>;
   }
   if (p.kind === "permission") {
     const say = describeRequest(p.toolName);
@@ -62,7 +63,10 @@ function TileRequest({ agent, a, onDecide, onSelect }: { agent: Agent; a: Assign
 
 export function AgentTile({ agent, role, assignment, selected, index, recent, onSelect, onAssign, onDecide, live, activity, bugStage }: AgentTileProps) {
   const a = assignment;
-  const { Icon, word } = STATE[agent.state];
+  // An idle agent whose terminal session is waiting on you is not "Idle" — say so, loudly.
+  const terminalWaiting = agent.state === "free" && activity?.phase === "waiting";
+  const shown = terminalWaiting ? "waiting" : agent.state;
+  const { Icon, word } = STATE[shown];
   const line = agent.state === "free" || agent.state === "waiting" ? null
     : agent.state === "done" ? a?.outcome?.split("\n").filter(Boolean).at(-1) ?? "Finished"
     : agent.state === "failed" ? a?.error ?? "The run failed"
@@ -75,7 +79,7 @@ export function AgentTile({ agent, role, assignment, selected, index, recent, on
         <div><div className="name">{agent.displayName} <span className="role">— {agent.role}</span>{agent.resumeSessionId && <span title="Continues an adopted Claude Code session"> 🔗</span>}</div><div className="repo">{basename(agent.repo)}</div></div>
         {bugStage && <span className="chip" data-testid="tile-bug-stage">{bugStage}</span>}
       </div>
-      <div className={`tile-state ${agent.state}`} data-testid="tile-state"><Icon /> {word}</div>
+      <div className={`tile-state ${shown}`} data-testid="tile-state"><Icon /> {word}{terminalWaiting ? " (terminal)" : ""}</div>
       {a && <div className="tasktitle" title={a.prompt}>{a.prompt.split("\n")[0].slice(0, 90)}</div>}
       {!a && activity?.lastPrompt && <div className="tasktitle" title={activity.lastPrompt}>{activity.lastPrompt.split("\n")[0].slice(0, 90)}</div>}
       {agent.state === "waiting" && <TileRequest agent={agent} a={a} onDecide={onDecide} onSelect={onSelect} />}

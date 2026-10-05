@@ -117,4 +117,22 @@ describe("AgentTile task line", () => {
     expect(screen.getByTestId("tile-devops@hrns").querySelector(".tasktitle")).toHaveTextContent("deploy staging");
     expect(screen.getByTestId("tile-phase")).toHaveTextContent("Needs approval in the terminal: Bash");
   });
+
+  // I3
+  it("the 'open it' card opens the agent when clicked", async () => {
+    const onSelect = vi.fn();
+    render(<AgentTile {...base} onSelect={onSelect} onDecide={vi.fn()} agent={agent("waiting")} assignment={asg({ state: "waiting", pending: null })} />);
+    await userEvent.click(screen.getByTestId("tile-request"));
+    expect(onSelect).toHaveBeenCalledWith("devops@hrns");
+  });
+
+  // I4
+  it("an idle agent waiting on you in its terminal says Needs you, not Idle", () => {
+    render(<AgentTile {...base} agent={{ ...agent("free", null), resumeSessionId: "s" }} assignment={null}
+      activity={{ sessionId: "s", phase: "waiting", lastMessage: "", lastPrompt: "", updatedAt: "", pendingTool: { name: "Bash", summary: "x" } }} />);
+    const st = screen.getByTestId("tile-state");
+    expect(st).toHaveTextContent("Needs you");
+    expect(st).toHaveClass("waiting");
+  });
+
 });

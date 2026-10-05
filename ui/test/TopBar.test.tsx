@@ -18,7 +18,7 @@ describe("TopBar", () => {
   it("NEEDS YOU is a glowing button that cycles to the next agent", async () => {
     const p = props();
     render(<TopBar {...p} />);
-    const needs = screen.getByRole("button", { name: /1 need you/i });
+    const needs = screen.getByRole("button", { name: "1 Needs you" });
     expect(needs).toHaveClass("hot");
     await userEvent.click(needs);
     expect(p.onCycleWaiting).toHaveBeenCalled();
@@ -27,7 +27,7 @@ describe("TopBar", () => {
   // Review Focus 4
   it("NEEDS YOU at zero neither glows nor clicks", () => {
     render(<TopBar {...props({ waitingCount: 0 })} />);
-    const needs = screen.getByRole("button", { name: /0 need you/i });
+    const needs = screen.getByRole("button", { name: "0 Needs you" });
     expect(needs).not.toHaveClass("hot");
     expect(needs).toBeDisabled();
   });
@@ -42,9 +42,9 @@ describe("TopBar", () => {
 
   it("badges Bugs with how many wait on you, and hides the badge at zero", () => {
     const { rerender } = render(<TopBar {...props()} />);
-    expect(screen.getByLabelText("1 waiting")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Bugs 1 waiting" })).toBeInTheDocument();
     rerender(<TopBar {...props({ bugsWaiting: 0 })} />);
-    expect(screen.queryByLabelText(/waiting/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Bugs" })).toBeInTheDocument();
   });
 
   it("names every action in words", () => {

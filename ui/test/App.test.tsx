@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "../src/App";
 import { api } from "../src/api";
@@ -165,4 +165,19 @@ describe("App Escape handling", () => {
     await userEvent.click(screen.getByRole("button", { name: "Agents" }));
     expect(screen.getByText(/select an agent/i)).toBeInTheDocument();
   });
+
+  // M1: the tile, the side panel and the A/D keys can all answer the same request; the second
+  // answer finds nothing pending (409). That is not an error the user caused.
+  it("answering a request that was already answered shows no error", async () => {
+    render(<App />);
+    const a = { ...agent("A", "waiting"), currentAssignmentId: "a1" };
+    const asg = { id: "a1", agentId: "A", prompt: "p", createdAt: "", startedAt: null, endedAt: null, sessionId: null, state: "waiting" as const,
+      activity: "", pending: { kind: "permission" as const, toolUseId: "tu1", toolName: "Bash", input: { command: "ls" }, suggestions: [] }, outcome: null, error: null, turns: 0, costUsd: 0 };
+    act(() => onSnapshot({ ...snapshot([a]), assignments: [asg] }));
+    (api.answer as ReturnType<typeof vi.fn>).mockRejectedValueOnce(Object.assign(new Error("no pending prompt for tu1"), { status: 409 }));
+    await userEvent.click(within(screen.getByTestId("tile-request")).getByRole("button", { name: "Allow" }));
+    await new Promise(r => setTimeout(r, 0));
+    expect(screen.queryByText(/no pending prompt/)).toBeNull();
+  });
+
 });

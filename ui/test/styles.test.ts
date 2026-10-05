@@ -38,4 +38,31 @@ describe("Mission Control tokens", () => {
     const block = css.slice(css.indexOf("prefers-reduced-motion"));
     expect(block).toMatch(/animation:\s*none/);
   });
+
+  // I1: selection must survive a state's animated glow — its own channel (outline), declared after the state rules.
+  it("marks the selected tile with an outline that state glows can't override", () => {
+    const sel = css.lastIndexOf(".tile.selected");
+    expect(css.slice(sel, css.indexOf("}", sel))).toMatch(/outline:\s*2px solid var\(--accent\)/);
+    expect(sel).toBeGreaterThan(css.indexOf('.tile[data-state="waiting"]'));
+  });
+
+  // I2: --text-faint (#56616D) fails AA for text; essential copy must not use it.
+  it.each([".sect-desc", ".hint", ".dim", ".empty", ".tile-state.free", ".side h4"])("%s is readable, not faint", sel => {
+    const rules = css.split("}").filter(r => r.split("{")[0].split(",").some(s => s.trim() === sel || s.trim().endsWith(" " + sel)));
+    expect(rules.length).toBeGreaterThan(0);
+    for (const r of rules) { expect(r).not.toContain("--text-faint"); expect(r).not.toContain("--st-idle"); }
+  });
+
+  it("does not fade whole idle tiles (which fades their text too)", () => {
+    expect(css).not.toMatch(/\.tile\[data-state="free"\]\s*\{[^}]*opacity/);
+  });
+
+  // M3: buttons grow for long labels instead of overflowing a fixed height.
+  it("sizes buttons with min-height", () => {
+    const at = css.search(/^\.btn \{/m);
+    const btn = css.slice(at, css.indexOf("}", at));
+    expect(btn).toMatch(/min-height:\s*28px/);
+    expect(btn).not.toMatch(/(^|[ ;{])height:/);
+  });
+
 });
