@@ -82,6 +82,15 @@ export function createApp(deps: AppDeps) {
   const { store, manager } = deps;
   const app = express();
   app.use(express.json({ limit: "1mb" }));
+  // Any web page can make a browser send a "simple" request to 127.0.0.1, and a GET still runs
+  // the route even though the page cannot read the answer. The browser says where a request came
+  // from; refuse anything that is not the app's own pages before a route can act on it. Clients
+  // that send no header (the desktop shell, curl, tests) are unaffected.
+  app.use("/api", (req, res, next) => {
+    const site = req.get("sec-fetch-site");
+    if (site === "cross-site" || site === "same-site") { res.status(403).json({ error: "cross-site request refused" }); return; }
+    next();
+  });
   const wrap = (fn: (req: Request, res: Response) => Promise<unknown> | unknown) =>
     (req: Request, res: Response, next: NextFunction) => Promise.resolve(fn(req, res)).catch(next);
 

@@ -102,4 +102,15 @@ describe("Mission Control tokens", () => {
     expect(css).toMatch(/\.checkrow > \.row, \.checkrow > \.hint\s*\{[^}]*flex-basis:\s*100%/);
     expect(css).toMatch(/\.seg\s*\{[^}]*align-self:\s*flex-start/);
   });
+
+  // phase 3 I-1: the New agent card class must not restyle the "— coder" label on every agent tile.
+  it("scopes the role card styles away from the tile's .role label", () => {
+    expect(css).not.toMatch(/(^|\})\s*\.role\s*\{/);
+    expect(css).toMatch(/\.role-card\s*\{/);
+  });
+  // phase 3 M-7: the disabled option's explanation stays readable; only the radio and title dim.
+  it("does not fade a disabled option's explanation", () => {
+    expect(css).not.toMatch(/\.opt\.disabled\s*\{[^}]*opacity/);
+  });
+
 });

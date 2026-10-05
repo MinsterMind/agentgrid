@@ -48,7 +48,7 @@ export class Store extends EventEmitter {
     await mkdir(this.p.archived, { recursive: true });
     await mkdir(this.p.assignments, { recursive: true });
     await ensureDefaultRoles(this.p.roles, this.defaultsDir);
-    this.roles = await loadRoles(this.p.roles);
+    this.roles = await loadRoles(this.p.roles, this.defaultsDir);
     for (const f of (await readdir(this.p.agents)).filter(f => f.endsWith(".json"))) {
       const a = JSON.parse(await readFile(path.join(this.p.agents, f), "utf8")) as Agent;
       this.agents.set(a.id, a);
@@ -62,7 +62,7 @@ export class Store extends EventEmitter {
   }
 
   async reloadRoles(): Promise<void> {
-    this.roles = await loadRoles(this.p.roles);
+    this.roles = await loadRoles(this.p.roles, this.defaultsDir);
     this.emit("event", { type: "roles", roles: this.roles } satisfies GridEvent);
   }
   get rolesDir() { return this.p.roles; }

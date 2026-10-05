@@ -120,3 +120,31 @@ describe("role description", () => {
     for (const r of await loadRoles(path.resolve("roles"))) expect(r.description.length).toBeGreaterThan(10);
   });
 });
+
+describe("description fallback from the prompt", () => {
+  it.each([
+    ["# Coder\n\nYou write code. Always test.", "You write code."],
+    ["No punctuation at all", "No punctuation at all"],
+    ["1. Plan first. Then build.", "Plan first."],
+    ["You are a coder, e.g. for TS. More.", "You are a coder, e.g. for TS."],
+    ["You write v2.0 code. More.", "You write v2.0 code."],
+    ["- Reviews diffs!\n- Never edits.", "Reviews diffs!"],
+  ])("%j → %j", (body, want) => {
+    expect(parseRole(`---\nmodel: m\n---\n${body}`, "x").description).toBe(want);
+  });
+  it("caps a long first line", () => {
+    expect(parseRole(`---\nmodel: m\n---\n${"word ".repeat(60)}`, "x").description.length).toBeLessThanOrEqual(120);
+  });
+
+  // I-4: an install's role files were copied before descriptions existed and are never overwritten;
+  // a role with a shipped namesake and no description of its own gets the shipped one.
+  it("uses the shipped description for an older copy of a shipped role", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "roles-"));
+    await writeFile(path.join(dir, "coder.md"), "---\nmodel: m\n---\nYou are a senior engineer.");
+    await writeFile(path.join(dir, "mine.md"), "---\nmodel: m\n---\nCustom helper.");
+    const roles = await loadRoles(dir, path.resolve("roles"));
+    expect(roles.find(r => r.name === "coder")!.description).toBe("Writes and changes code, runs the tests, commits small.");
+    expect(roles.find(r => r.name === "mine")!.description).toBe("Custom helper.");
+  });
+});
+

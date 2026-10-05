@@ -3,6 +3,20 @@ import { readdir, readFile, writeFile, copyFile, mkdir } from "node:fs/promises"
 import path from "node:path";
 import type { RoleDef } from "../types.js";
 
+/**
+ * A role without a `description` (one written before they existed, or by hand) still gets a
+ * readable line: the prompt's first sentence, skipping headings and list markers, where a sentence
+ * ends at . ! ? followed by whitespace or the end — so "e.g." and "v2.0" do not cut it short —
+ * and capped so a run-on first line stays a line.
+ */
+function firstSentence(content: string): string {
+  const line = content.split("\n").map(l => l.trim()).find(l => l && !/^#{1,6}\s/.test(l)) ?? "";
+  const text = line.replace(/^([-*+]|\d+[.)])\s+/, "");
+  const m = /^.*?[.!?](?=\s+[A-Z]|$)/.exec(text);
+  const out = (m ? m[0] : text).trim();
+  return out.length > 120 ? out.slice(0, 119).trimEnd() + "…" : out;
+}
+
 export function parseRole(markdown: string, fallbackName: string): RoleDef {
   const { data, content } = matter(markdown);
   if (typeof data.model !== "string" || !data.model) {
@@ -19,17 +33,28 @@ export function parseRole(markdown: string, fallbackName: string): RoleDef {
     maxTurns: Number(data.maxTurns ?? 100),
     ...(data.maxBudgetUsd !== undefined ? { maxBudgetUsd: Number(data.maxBudgetUsd) } : {}),
     prompt: content.trim(),
-    description: typeof data.description === "string" && data.description.trim()
-      ? data.description.trim()
-      : (content.trim().match(/^[^.!?\n]*[.!?]/)?.[0] ?? "").trim(),
+    description: typeof data.description === "string" && data.description.trim() ? data.description.trim() : firstSentence(content),
   };
 }
 
-export async function loadRoles(rolesDir: string): Promise<RoleDef[]> {
+export async function loadRoles(rolesDir: string, defaultsDir?: string): Promise<RoleDef[]> {
   const files = (await readdir(rolesDir)).filter(f => f.endsWith(".md")).sort();
+  // A role copied from a shipped default before descriptions existed is never overwritten
+  // (`ensureDefaultRoles`), so it would only ever show the prompt fallback. Give it the shipped line.
+  const shipped = new Map<string, string>();
+  if (defaultsDir) {
+    for (const f of (await readdir(defaultsDir).catch(() => [] as string[])).filter(f => f.endsWith(".md"))) {
+      const d = matter(await readFile(path.join(defaultsDir, f), "utf8")).data.description;
+      if (typeof d === "string" && d.trim()) shipped.set(f.replace(/\.md$/, ""), d.trim());
+    }
+  }
   const roles: RoleDef[] = [];
   for (const f of files) {
-    roles.push(parseRole(await readFile(path.join(rolesDir, f), "utf8"), f.replace(/\.md$/, "")));
+    const md = await readFile(path.join(rolesDir, f), "utf8");
+    const role = parseRole(md, f.replace(/\.md$/, ""));
+    const own = matter(md).data.description;
+    if (!(typeof own === "string" && own.trim()) && shipped.has(role.name)) role.description = shipped.get(role.name)!;
+    roles.push(role);
   }
   return roles;
 }

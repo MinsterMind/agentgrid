@@ -275,8 +275,12 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             <div className="sec-body">
             {check("forge") && <CheckRow check={check("forge")!} />}
             <div className="seg" role="group" aria-label="Forge">
-              {!SELECTABLE.includes(preset) && <button className="on" aria-pressed="true">{preset} (current)</button>}
-              {SELECTABLE.map(p => <button key={p} className={preset === p ? "on" : ""} aria-pressed={preset === p} onClick={() => setPresetOverride(p)}>{p === "github" ? "GitHub" : "Bitbucket"}</button>)}
+              {savedForge && !SELECTABLE.includes(savedForge.preset) && (
+                <button className={preset === savedForge.preset ? "on" : ""} aria-pressed={preset === savedForge.preset} onClick={() => setPresetOverride(undefined)}>{savedForge.preset} (current)</button>
+              )}
+              {/* Choosing the forge that is already saved is no change: clear the override rather
+                  than set one, or Save would rewrite the forge for nothing. */}
+              {SELECTABLE.map(p => <button key={p} className={preset === p ? "on" : ""} aria-pressed={preset === p} onClick={() => setPresetOverride(p === savedForge?.preset ? undefined : p)}>{p === "github" ? "GitHub" : "Bitbucket"}</button>)}
             </div>
             {preset === "bitbucket" && <input className="input" value={username} onChange={e => setUsername(e.target.value)} placeholder="Atlassian account email" aria-label="Atlassian account email" />}
             {check("forge-username") && <CheckRow check={check("forge-username")!} />}

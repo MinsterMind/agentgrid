@@ -171,5 +171,14 @@ describe("Fix a bug — layout and guidance", () => {
     expect(await screen.findByLabelText("What happens next")).toHaveTextContent(/you approve.*you review the diff/i);
     expect(screen.getByRole("button", { name: "Start fixing" })).toHaveAttribute("title", expect.stringMatching(/ticket/i));
   });
+
+describe("Fix a bug — key check leniency (phase 3 M-3)", () => {
+  it.each(["pay-42", "acme.atlassian.net/browse/PAY-42", "PAY-42"])("accepts %s", async v => {
+    render(<BugLauncher onClose={vi.fn()} onOpenSettings={vi.fn()} />);
+    await userEvent.type(await screen.findByLabelText("Issue URL or key"), v);
+    expect(screen.queryByTestId("key-error")).toBeNull();
+  });
+});
+
 });
 

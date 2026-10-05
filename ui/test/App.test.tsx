@@ -212,4 +212,37 @@ describe("App Escape handling", () => {
     await userEvent.type(screen.getByLabelText(/first task/i), "s");                  // typing "s" doesn't open Sessions
     expect(screen.queryByText(/Sessions/i, { selector: ".dialog h2, .dialog h3" })).toBeNull();
   });
+
+  // phase 3 I-2: the agent exists once created; a failed first-task assign must not leave the dialog
+  // open inviting a second Create.
+  it("closes the dialog and says so when the agent was created but its first task could not be assigned", async () => {
+    render(<App />);
+    act(() => onSnapshot(snapshot([agent("X", "free")])));
+    await userEvent.click(screen.getByRole("button", { name: "New agent" }));
+    (api.createAgent as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ id: "coder@x" });
+    (api.assign as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("agent is busy"));
+    await userEvent.type(screen.getByPlaceholderText("/Users/you/project"), "/r/x");
+    await userEvent.type(screen.getByLabelText(/first task/i), "go");
+    await userEvent.click(screen.getByRole("button", { name: "Create agent" }));
+    expect(await screen.findByText(/created, but its first task couldn't be assigned: agent is busy/)).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "New agent" })).toBeNull();
+  });
+
+  // phase 3 I-3: with a dialog open, only Escape does anything.
+  it("ignores single-key shortcuts while a dialog is open", async () => {
+    render(<App />);
+    act(() => onSnapshot(snapshot([agent("X", "free")])));
+    await userEvent.keyboard("n");
+    expect(screen.getByRole("dialog", { name: "New agent" })).toBeInTheDocument();
+    await userEvent.click(screen.getAllByRole("radio")[0]);           // focus a role card (a button)
+    await userEvent.keyboard("b");
+    expect(screen.queryByRole("dialog", { name: "Fix a bug" })).toBeNull();
+  });
+
+  // phase 3 M-5: nothing is known before the first snapshot; first run must not flash.
+  it("does not show first run before the first snapshot arrives", () => {
+    render(<App />);
+    expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
+  });
+
 });

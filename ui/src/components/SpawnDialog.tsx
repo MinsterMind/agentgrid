@@ -3,7 +3,7 @@ import { ArrowUp, ChevronDown, ChevronUp, CircleAlert, Folder, FolderGit2, Folde
 import type { DirListing, RoleDef } from "../types";
 import { api } from "../api";
 
-type RepoStatus = { exists: boolean; isRepo: boolean; branch: string | null; clean: boolean | null };
+type RepoStatus = { exists: boolean; isRepo: boolean; branch: string | null };
 
 /** New agent: a role (as cards that say what each does), a folder (with a live check of what it
  *  is), and an optional first task — so the agent starts working the moment it exists. */
@@ -53,7 +53,7 @@ export function SpawnDialog({ roles, recentRepos, onSpawn, onClose }: {
   const statusLine = !status ? null
     : !status.exists ? <span className="errtext" data-testid="repo-status"><FolderX /> Folder not found</span>
     : !status.isRepo ? <span className="warntext" data-testid="repo-status"><Folder /> Not a git repo — the agent can still work here</span>
-    : <span className="oktext" data-testid="repo-status"><GitBranch /> Git repo on {status.branch} · {status.clean ? "clean" : "uncommitted changes"}</span>;
+    : <span className="oktext" data-testid="repo-status"><GitBranch /> {status.branch ? <>Git repo on {status.branch}</> : "Git repo (detached HEAD)"}</span>;
 
   return (
     <div className="modal" onClick={onClose}>
@@ -68,7 +68,7 @@ export function SpawnDialog({ roles, recentRepos, onSpawn, onClose }: {
             <span className="label"><span className="step-n done">1</span> Role — how it works and which model it uses</span>
             <div className="roles" role="radiogroup" aria-label="Role">
               {roles.map(r => (
-                <button key={r.name} type="button" role="radio" aria-checked={role === r.name} className={`role ${role === r.name ? "sel" : ""}`} onClick={() => setRole(r.name)}>
+                <button key={r.name} type="button" role="radio" aria-checked={role === r.name} className={`role-card ${role === r.name ? "sel" : ""}`} onClick={() => setRole(r.name)}>
                   <span className="rn">{r.avatar} {r.name}</span>
                   {r.description && <span className="rd">{r.description}</span>}
                   <span className="rm mono">{r.model} · {r.effort}</span>

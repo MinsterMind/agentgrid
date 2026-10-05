@@ -92,6 +92,21 @@ describe("API", () => {
   });
 });
 
+// C-1: any website can send a "simple" GET to 127.0.0.1. The browser labels it; refuse anything
+// not from the app's own pages before a route can act on it.
+describe("cross-site requests", () => {
+  it.each(["cross-site", "same-site"])("refuses Sec-Fetch-Site: %s", async site => {
+    await request(app).get("/api/state").set("Sec-Fetch-Site", site).expect(403);
+    await request(app).get("/api/repo-status").query({ path: browseRoot }).set("Sec-Fetch-Site", site).expect(403);
+  });
+  it.each(["same-origin", "none"])("allows Sec-Fetch-Site: %s", async site => {
+    await request(app).get("/api/state").set("Sec-Fetch-Site", site).expect(200);
+  });
+  it("allows a request without the header (non-browser clients, the desktop shell)", async () => {
+    await request(app).get("/api/state").expect(200);
+  });
+});
+
 describe("GET /api/fs", () => {
   it("lists the browse root by default and descends with ?path", async () => {
     const root = await request(app).get("/api/fs").expect(200);
@@ -109,7 +124,7 @@ describe("GET /api/repo-status", () => {
   it("reports a folder under the browse root and refuses one outside", async () => {
     await mkdir(path.join(browseRoot, "plain"));
     const ok = await request(app).get("/api/repo-status").query({ path: path.join(browseRoot, "plain") }).expect(200);
-    expect(ok.body).toEqual({ exists: true, isRepo: false, branch: null, clean: null });
+    expect(ok.body).toEqual({ exists: true, isRepo: false, branch: null });
     await request(app).get("/api/repo-status").query({ path: "/etc" }).expect(400);
   });
 });

@@ -102,22 +102,23 @@ describe("New agent dialog", () => {
   it("says what the chosen folder is, debounced, ignoring a late answer for an older path", async () => {
     let resolveOld!: (v: unknown) => void;
     repoStatus.mockImplementationOnce(() => new Promise(r => { resolveOld = r; }))
-      .mockResolvedValueOnce({ exists: true, isRepo: true, branch: "main", clean: true });
+      .mockResolvedValueOnce({ exists: true, isRepo: true, branch: "main" });
     render(<SpawnDialog roles={[role("coder")]} recentRepos={[]} onSpawn={vi.fn()} onClose={vi.fn()} />);
     const input = screen.getByPlaceholderText("/Users/you/project");
     await userEvent.type(input, "/r/old"); await sleep(350);
     await userEvent.clear(input); await userEvent.type(input, "/r/new"); await sleep(350);
-    resolveOld({ exists: false, isRepo: false, branch: null, clean: null });
-    expect(await screen.findByTestId("repo-status")).toHaveTextContent("Git repo on main · clean");
+    resolveOld({ exists: false, isRepo: false, branch: null });
+    expect(await screen.findByTestId("repo-status")).toHaveTextContent("Git repo on main");
     await sleep(50);
-    expect(screen.getByTestId("repo-status")).toHaveTextContent("Git repo on main · clean");
+    expect(screen.getByTestId("repo-status")).toHaveTextContent("Git repo on main");
     expect(repoStatus).toHaveBeenCalledTimes(2);
   });
 
   it.each([
-    [{ exists: true, isRepo: false, branch: null, clean: null }, "Not a git repo — the agent can still work here"],
-    [{ exists: false, isRepo: false, branch: null, clean: null }, "Folder not found"],
-    [{ exists: true, isRepo: true, branch: "dev", clean: false }, "Git repo on dev · uncommitted changes"],
+    [{ exists: true, isRepo: false, branch: null }, "Not a git repo — the agent can still work here"],
+    [{ exists: false, isRepo: false, branch: null }, "Folder not found"],
+    [{ exists: true, isRepo: true, branch: "dev" }, "Git repo on dev"],
+    [{ exists: true, isRepo: true, branch: null }, "Git repo (detached HEAD)"],
   ])("describes %o", async (st, text) => {
     repoStatus.mockResolvedValue(st);
     render(<SpawnDialog roles={[role("coder")]} recentRepos={["/r/x"]} onSpawn={vi.fn()} onClose={vi.fn()} />);

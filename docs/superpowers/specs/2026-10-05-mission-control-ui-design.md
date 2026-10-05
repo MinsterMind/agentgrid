@@ -167,8 +167,11 @@ Replaces SpawnDialog's layout; same submit behaviour.
   Descriptions come from a new optional `description` field in role frontmatter; the seven shipped
   roles get one; a role without it shows the first sentence of its prompt.
 - **Repo** field with Browse and recent-repo chips, plus a live status line from a new
-  `GET /api/repo-status?path=` → `{ exists, isRepo, branch, clean }`: "Git repo on main · clean",
-  "Not a git repo — the agent can still work here", or "Folder not found".
+  `GET /api/repo-status?path=` → `{ exists, isRepo, branch }`: "Git repo on main",
+  "Git repo (detached HEAD)", "Not a git repo — the agent can still work here", or "Folder not
+  found". It reads `.git/HEAD` and **never runs git**: a repo's own config can define commands
+  `git status` executes (fsmonitor, clean filters), so clean/dirty is not reported. Every `/api`
+  route refuses requests the browser marks `Sec-Fetch-Site: cross-site` or `same-site`.
 - **First task** (optional): when filled, the agent is created and assigned in one go.
 - Footer: "It starts as soon as you create it, and asks you before any risky command."; Create
   agent (⏎).

@@ -15,7 +15,7 @@ import { parseAssumptions } from "./assumptions.js";
 import { nextStage } from "./stages.js";
 import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask, type PrInfo } from "./types.js";
 import { describeComments, PR_STAGES, type PrFinding } from "./watcher.js";
-import { redactRemote } from "./forge/bitbucket.js";
+import { parseRemote } from "./forge/bitbucket.js";
 import type { MergeMethod } from "./forge/types.js";
 
 /** After this many rounds the watcher's findings stop dispatching and only report. A
@@ -142,7 +142,7 @@ export class BugFixEngine {
       if (!auth.ok) problems.push(`forge not authenticated: ${auth.message}`);
     }
     try { this.deps.store.getRole(this.role); } catch { problems.push(`the "${this.role}" role could not be resolved — it ships with AgentGrid, so this usually means a broken install`); }
-    return { ok: problems.length === 0, problems, remote: remote ? redactRemote(remote) : null };
+    return { ok: problems.length === 0, problems, remote: remote ? displayRemote(remote) : null };
   }
 
   async intake(input: { issueRef: string; repo: string; mergePolicy?: "ask" | "auto"; mergeMethod?: "squash" | "merge" | "rebase" }): Promise<BugTask> {
@@ -913,4 +913,12 @@ export class BugFixEngine {
 function sameCommit(a: string | null | undefined, b: string | null | undefined): boolean {
   if (!a || !b || a.length < 7 || b.length < 7) return false;
   return a.startsWith(b) || b.startsWith(a);
+}
+
+/** A remote as the human reads it: host and repository path only — never the URL's userinfo,
+ *  where a GitHub token commonly sits as the username. */
+function displayRemote(url: string): string {
+  const r = parseRemote(url);
+  if (r) return `${r.host}/${r.path.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "")}`;
+  return url.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/^[^@/]*@/, "");
 }

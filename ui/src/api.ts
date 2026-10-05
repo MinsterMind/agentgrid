@@ -64,7 +64,7 @@ export const api = {
   addressComments: (id: string, text?: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/address-comments`, text ? { text } : undefined),
   dismissBug: (id: string) => call<void>("DELETE", `/api/bugtasks/${encodeURIComponent(id)}`),
   myIssues: () => call<IssueSummary[]>("GET", "/api/bugfix/issues"),
-  repoStatus: (path: string) => call<{ exists: boolean; isRepo: boolean; branch: string | null; clean: boolean | null }>("GET", `/api/repo-status?path=${encodeURIComponent(path)}`),
+  repoStatus: (path: string) => call<{ exists: boolean; isRepo: boolean; branch: string | null }>("GET", `/api/repo-status?path=${encodeURIComponent(path)}`),
   bugPreflight: (repo: string) => call<{ ok: boolean; problems: string[]; remote?: string | null }>("GET", `/api/bugfix/preflight?repo=${encodeURIComponent(repo)}`),
   getIntegrations: () => call<Integrations>("GET", "/api/integrations"),
   putIntegrations: (patch: Partial<Integrations>) => call<Integrations>("PUT", "/api/integrations", patch),

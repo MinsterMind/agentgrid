@@ -1,18 +1,18 @@
 import type { Agent, AgentState, Assignment, BugTask, GridEvent, GridState, RoleDef, SessionInfo, SessionActivity } from "../types";
 
-export interface UiState { roles: RoleDef[]; agents: Agent[]; assignments: Record<string, Assignment>; liveSessions: SessionInfo[]; activity: Record<string, SessionActivity>; bugTasks: Record<string, BugTask>; selectedId: string | null; connected: boolean }
+export interface UiState { roles: RoleDef[]; agents: Agent[]; assignments: Record<string, Assignment>; liveSessions: SessionInfo[]; activity: Record<string, SessionActivity>; bugTasks: Record<string, BugTask>; selectedId: string | null; connected: boolean; /** A snapshot has arrived: until then, "no agents" means "not known yet". */ loaded: boolean }
 export type Action =
   | { type: "snapshot"; state: GridState }
   | { type: "change"; event: GridEvent }
   | { type: "select"; id: string | null }
   | { type: "connected"; value: boolean };
 
-export const initial: UiState = { roles: [], agents: [], assignments: {}, liveSessions: [], activity: {}, bugTasks: {}, selectedId: null, connected: false };
+export const initial: UiState = { roles: [], agents: [], assignments: {}, liveSessions: [], activity: {}, bugTasks: {}, selectedId: null, connected: false, loaded: false };
 
 export function reducer(s: UiState, a: Action): UiState {
   switch (a.type) {
     case "snapshot":
-      return { ...s, roles: a.state.roles, agents: a.state.agents,
+      return { ...s, loaded: true, roles: a.state.roles, agents: a.state.agents,
         assignments: Object.fromEntries(a.state.assignments.map(x => [x.id, x])),
         liveSessions: a.state.liveSessions ?? [],
         activity: Object.fromEntries((a.state.sessionStatuses ?? []).map(x => [x.sessionId, x])),

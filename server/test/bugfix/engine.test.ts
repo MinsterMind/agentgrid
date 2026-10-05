@@ -1920,9 +1920,19 @@ describe("preflight", () => {
     const e = new BugFixEngine({ store, bugs, manager: new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, a, x) => ({ cwd: a.repo, abortController: x.abortController, canUseTool: x.canUseTool } as Options) }),
       git: g, integrations: new IntegrationsStore(home), tracker: { listMyIssues: async () => [], fetchIssue: async () => ISSUE, comment: async () => {} }, forge, presetsDir: path.resolve("presets") });
     const p = await e.preflight(repo);
-    expect(p.remote).toBe("https://me@bitbucket.org/acme/pay.git");
+    expect(p.remote).toBe("bitbucket.org/acme/pay");
     expect(JSON.stringify(p)).not.toContain("s3cret");
   });
+  // I-5: a GitHub token is commonly the URL's *username*; show host and path only.
+  it("never shows a token carried as the URL's username", async () => {
+    const g = fakeGit(gitState).git; g.hasRemote = async () => "https://ghp_SECRET123@github.com/acme/pay.git";
+    const e = new BugFixEngine({ store, bugs, manager: new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, a, x) => ({ cwd: a.repo, abortController: x.abortController, canUseTool: x.canUseTool } as Options) }),
+      git: g, integrations: new IntegrationsStore(home), tracker: { listMyIssues: async () => [], fetchIssue: async () => ISSUE, comment: async () => {} }, forge, presetsDir: path.resolve("presets") });
+    const p = await e.preflight(repo);
+    expect(p.remote).toBe("github.com/acme/pay");
+    expect(JSON.stringify(p)).not.toContain("ghp_");
+  });
+
   it("remote is null when there is none", async () => {
     const g = fakeGit(gitState).git; g.hasRemote = async () => null;
     const e = new BugFixEngine({ store, bugs, manager: new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, a, x) => ({ cwd: a.repo, abortController: x.abortController, canUseTool: x.canUseTool } as Options) }),

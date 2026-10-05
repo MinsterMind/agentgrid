@@ -72,9 +72,10 @@ export function BugLauncher({ onCreated, onClose, onOpenSettings }: { onCreated?
   const blocking = setup?.checks.filter(c => c.blocks && c.state !== "ok") ?? [];
   const notReady = setup !== null && !setup.ready;
 
-  const KEY = /^[A-Z][A-Z0-9_]*-\d+$/;
+  const KEY = /^[A-Z][A-Z0-9_]*-\d+$/i;
   const ref = issueRef.trim();
-  const keyBad = ref !== "" && !/^https?:\/\//i.test(ref) && !KEY.test(ref);
+  // Anything with a "/" is a URL, scheme or not; keys are matched case-insensitively, as before.
+  const keyBad = ref !== "" && !ref.includes("/") && !KEY.test(ref);
   const startTitle = !ref ? "Pick or paste a ticket first" : keyBad ? "Fix the ticket key first"
     : !repoValid ? "Enter the repo's absolute path" : checking ? "Checking the repo…"
     : preflight && !preflight.ok ? "Fix the repo problems above" : "";

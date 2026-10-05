@@ -131,7 +131,7 @@ export function App() {
         <BugScreen state={s} selectedId={route.bugId} onSelect={(id, opts) => route.go({ view: "bugs", bugId: id }, opts)}
           onBugChanged={t => dispatch({ type: "change", event: { type: "bugtask", task: t } })} onTranscript={id => setTranscriptFor(id)}
           onOpenSettings={() => setSettingsOpen(true)} onFixBug={() => setBugOpen(true)} />
-      ) : s.agents.length === 0 && Object.keys(s.bugTasks).length === 0 ? (
+      ) : s.loaded && s.agents.length === 0 && Object.keys(s.bugTasks).length === 0 ? (
         <FirstRun liveSessions={unclaimedLiveSessions(s).length} setup={setup} onNewAgent={() => setSpawnOpen(true)}
           onSessions={() => setSessionsOpen(true)} onFixBug={() => setBugOpen(true)} onOpenSettings={() => setSettingsOpen(true)} />
       ) : (
@@ -161,7 +161,12 @@ export function App() {
           ? <><kbd>↑</kbd><kbd>↓</kbd> move <kbd>⏎</kbd> open <kbd>Esc</kbd> back to agents</>
           : <><kbd>1</kbd>–<kbd>9</kbd> select <kbd>A</kbd> allow <kbd>D</kbd> deny <kbd>O</kbd> terminal <kbd>N</kbd> new <kbd>B</kbd> bug <kbd>S</kbd> sessions <kbd>Esc</kbd> clear</>}</span>
       </footer>
-      {spawnOpen && <SpawnDialog roles={s.roles} recentRepos={recentRepos} onSpawn={async ({ task, ...input }) => { const a = await api.createAgent(input); dispatch({ type: "select", id: a.id }); if (task) await api.assign(a.id, task); }} onClose={() => setSpawnOpen(false)} />}
+      {spawnOpen && <SpawnDialog roles={s.roles} recentRepos={recentRepos} onSpawn={async ({ task, ...input }) => {
+        const a = await api.createAgent(input); dispatch({ type: "select", id: a.id });
+        // The agent exists now: a failed first assign is news, not a reason to keep the dialog open
+        // inviting a second Create (which would make a second agent).
+        if (task) await api.assign(a.id, task).catch(e => { setToast(`Agent created, but its first task couldn't be assigned: ${(e as Error).message}`); setTimeout(() => setToast(null), 6000); });
+      }} onClose={() => setSpawnOpen(false)} />}
       {bugOpen && <BugLauncher onCreated={t => { setBugOpen(false); dispatch({ type: "select", id: t.agentId }); route.go({ view: "bugs", bugId: t.id }); }} onClose={() => setBugOpen(false)} onOpenSettings={() => { setBugOpen(false); setSettingsOpen(true); }} />}
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
       {sessionsOpen && <SessionsPanel roles={s.roles} agentNames={Object.fromEntries(s.agents.map(a => [a.id, a.displayName]))}

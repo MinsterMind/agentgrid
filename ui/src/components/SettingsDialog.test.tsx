@@ -341,4 +341,28 @@ describe("Settings — readiness checklist", () => {
     expect(screen.getByRole("button", { name: /bitbucket/i })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByPlaceholderText("Atlassian account email")).toBeInTheDocument();
   });
+
+describe("Settings — forge toggle (phase 3 M-4)", () => {
+  it("clicking the forge already selected changes nothing", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report({ checks: [{ id: "forge", state: "ok", detail: "Forge: github.", blocks: true }] }));
+    vi.spyOn(api, "getIntegrations").mockResolvedValue({ projectRepos: {}, forge: { preset: "github" } } as never);
+    const put = vi.spyOn(api, "putIntegrations").mockResolvedValue({ projectRepos: {} });
+    render(<SettingsDialog onClose={() => {}} />);
+    await userEvent.click(await screen.findByRole("button", { name: "GitHub" }));
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    expect((put.mock.calls[0][0] as { forge?: unknown }).forge).toBeUndefined();
+  });
+
+  it("lets you switch back to a saved forge the toggle cannot offer", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report({ checks: [{ id: "forge", state: "ok", detail: "Forge: gitlab.", blocks: true }] }));
+    vi.spyOn(api, "getIntegrations").mockResolvedValue({ projectRepos: {}, forge: { preset: "gitlab", username: "u" } } as never);
+    render(<SettingsDialog onClose={() => {}} />);
+    await userEvent.click(await screen.findByRole("button", { name: "GitHub" }));
+    expect(screen.getByRole("button", { name: /gitlab \(current\)/ })).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(screen.getByRole("button", { name: /gitlab \(current\)/ }));
+    expect(screen.getByRole("button", { name: /gitlab \(current\)/ })).toHaveAttribute("aria-pressed", "true");
+  });
+});
+
 });

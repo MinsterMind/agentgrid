@@ -133,7 +133,7 @@ textarea.input { resize:none; }
 .step-n.on { border-color:var(--accent); color:var(--accent); box-shadow:0 0 10px #22D3EE44; }
 .opt { display:flex; gap:10px; padding:10px; border-radius:6px; border:1px solid var(--grid-line); background:var(--bg); cursor:pointer; text-align:left; color:inherit; font:inherit; }
 .opt.sel { border-color:var(--accent); background:rgba(34,211,238,.04); }
-.opt.disabled { cursor:not-allowed; opacity:.6; }
+.opt.disabled { cursor:not-allowed; } .opt.disabled .radio, .opt.disabled b { opacity:.55; }
 .radio { width:14px; height:14px; border-radius:50%; border:1px solid var(--text-muted); margin-top:2px; flex:none; }
 .opt.sel .radio { border:4px solid var(--accent); box-shadow:0 0 8px #22D3EE66; }
 .next { display:flex; align-items:center; gap:6px; padding:10px 12px; border-radius:6px; background:var(--bg); border:1px dashed var(--grid-line); font-size:11.5px; color:var(--text-muted); flex-wrap:wrap; }
@@ -331,9 +331,9 @@ textarea.input { resize:none; }
 /* Dialogs not yet built from the primitives (Sessions, transcript) keep their own padding and scroll. */
 .dialog:not(:has(> .dlg-hd)) { padding:18px; gap:10px; overflow:auto; }
 .roles { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; }
-.role { display:flex; flex-direction:column; gap:4px; padding:10px; border-radius:6px; border:1px solid var(--grid-line); background:var(--bg); cursor:pointer; text-align:left; color:inherit; font:inherit; }
-.role:hover { border-color:#22D3EE55; } .role.sel { border-color:var(--accent); box-shadow:0 0 0 1px #22D3EE55, 0 0 14px #22D3EE22; background:rgba(34,211,238,.04); }
-.role .rn { font-size:12.5px; font-weight:600; } .role .rd { font-size:11px; color:var(--text-muted); line-height:1.4; } .role .rm { font-size:10px; color:var(--text-muted); }
+.role-card { display:flex; flex-direction:column; gap:4px; padding:10px; border-radius:6px; border:1px solid var(--grid-line); background:var(--bg); cursor:pointer; text-align:left; color:inherit; font:inherit; }
+.role-card:hover { border-color:#22D3EE55; } .role-card.sel { border-color:var(--accent); box-shadow:0 0 0 1px #22D3EE55, 0 0 14px #22D3EE22; background:rgba(34,211,238,.04); }
+.role-card .rn { font-size:12.5px; font-weight:600; } .role-card .rd { font-size:11px; color:var(--text-muted); line-height:1.4; } .role-card .rm { font-size:10px; color:var(--text-muted); }
 .recent-chips { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
 .chipbtn { font-family:var(--mono); font-size:11px; min-height:22px; padding:0 8px; border-radius:4px; border:1px solid var(--grid-line); background:transparent; color:var(--text-muted); cursor:pointer; }
 .chipbtn:hover, .chipbtn.on { color:var(--accent); border-color:#22D3EE55; }
