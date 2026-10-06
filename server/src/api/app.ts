@@ -1,7 +1,7 @@
 import express, { type Request, type Response, type NextFunction } from "express";
 import { rereviewPrompt } from "../agentpr.js";
 import path from "node:path";
-import { Store, NotFound, Conflict } from "../store/store.js";
+import { Store, NotFound, Conflict, BadRequest } from "../store/store.js";
 import { Manager } from "../runner/manager.js";
 import { sseHandler } from "./sse.js";
 import { shellQuote } from "../shell.js";
@@ -68,7 +68,6 @@ export interface AppDeps {
   submitToTerminal?: (sessionId: string, text: string) => boolean;
 }
 
-class BadRequest extends Error { status = 400; }
 
 function isDecision(d: unknown): d is Decision {
   if (!d || typeof d !== "object") return false;
