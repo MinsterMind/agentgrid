@@ -27,6 +27,10 @@ export function nextStage(task: BugTask, event: BugEvent): Transition {
     case "cancel":
       return go("cancelled", null);
 
+    case "no-change":
+      if (task.stage !== "plan-review" && task.stage !== "implementing") throw new Conflict(`a task closes as "no change needed" only from the plan gate or the change step (is ${task.stage})`);
+      return { stage: "done", run: null, gate: null, note: "No change needed", error: null, outcome: "no-change", report: event.report };
+
     case "review-changes-requested": return go("review-feedback", "review-feedback", event.comments);
     case "checks-failed":            return go("review-feedback", "review-feedback", event.checks);
     case "review-approved":          return wait("approved", "merge");

@@ -397,3 +397,11 @@ textarea.input { resize:none; }
 
 .c-accent { color:var(--accent); } .ready-lbl { font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--text-muted); }
 .how h4 { margin:0 0 12px; }
+
+/* Bug fix: the branch a fix is cut from, and the "no change needed" path */
+.base-row { align-items:center; gap:8px; flex-wrap:wrap; }
+.base-row label { display:inline-flex; align-items:center; gap:4px; } .base-row label svg { width:14px; height:14px; }
+.base-row select { width:auto; min-width:160px; }
+.gate .verdict { margin:8px 0; padding:8px 10px; border:1px solid #34D39955; background:rgba(52,211,153,.06); border-radius:6px; font-size:13px; }
+.gate .verdict b { color:var(--st-done); }
+.gate .report p { margin:0 0 6px; font-size:13px; white-space:pre-wrap; }

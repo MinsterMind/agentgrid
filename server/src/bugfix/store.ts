@@ -33,7 +33,7 @@ async function writeAtomic(file: string, data: unknown): Promise<void> {
 
 export interface CreateBugTask {
   issue: TrackerIssue; trackerProject: string; sourceRepo: string; worktree: string;
-  branch: string; baseBranch: string; agentId: string;
+  branch: string; baseBranch: string; baseRef: string; ticketCommits: string[]; agentId: string;
   mergePolicy: "ask" | "auto"; mergeMethod: "squash" | "merge" | "rebase";
 }
 
@@ -57,6 +57,10 @@ export class BugTaskStore extends EventEmitter {
       t.assumptions ??= [];
       t.assumptionsProblem ??= null;
       t.assumptionsToken ??= null;
+      t.baseRef ??= t.baseBranch;
+      t.ticketCommits ??= [];
+      t.verdict ??= null;
+      t.report ??= null;
       this.tasks.set(t.id, t);
       const n = Number(t.id.slice(2));
       if (n >= this.next) this.next = n + 1;
@@ -106,7 +110,7 @@ export class BugTaskStore extends EventEmitter {
       id: `bt${this.next++}`, ...input, stage: "intake", gate: null, approvedHead: null, outcome: null, checksRoundHead: null, pr: null, prCheckedAt: null,
       costUsd: 0, history: [{ stage: "intake", at: now, note: "" }], error: null,
       createdAt: now, updatedAt: now, feedbackRounds: 0,
-      assumptions: [], assumptionsProblem: null, assumptionsToken: null,
+      assumptions: [], assumptionsProblem: null, assumptionsToken: null, verdict: null, report: null,
     };
     await mkdir(this.dir(task.id), { recursive: true });
     return withWriteChain(this.file(task.id), () => this.save(task));
@@ -121,6 +125,7 @@ export class BugTaskStore extends EventEmitter {
       return this.save({ ...cur, stage: t.stage, gate: t.gate, error: t.error, updatedAt: now,
         // Only the ending transitions carry an outcome; every other one leaves it alone.
         ...(t.outcome !== undefined ? { outcome: t.outcome } : {}),
+        ...(t.report !== undefined ? { report: t.report } : {}),
         history: [...cur.history, { stage: t.stage, at: now, note: t.note }] });
     });
   }

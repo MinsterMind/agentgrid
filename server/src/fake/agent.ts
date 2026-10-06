@@ -37,7 +37,9 @@ export function detectStage(prompt: string): { stage: FakeStage; planPath?: stri
   return { stage: "other" };
 }
 
-const PLAN = `## Root cause
+const PLAN = `Verdict: change needed
+
+## Root cause
 
 The fake tracker's ticket describes a fault this fixture reproduces on demand.
 

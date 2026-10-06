@@ -117,10 +117,18 @@ export function BugGates({ task, onChanged, onTranscript }: { task: BugTask; onC
           {planErr
             ? <div className="err">{planErr}</div>
             : (plan === null ? <div className="skeleton" aria-label="Loading the plan"><div /><div /><div /></div> : <PlanView markdown={plan} />)}
+          {task.verdict && (
+            <div className="verdict" data-testid="gate-verdict">
+              <b>The plan found nothing to change.</b> <span>{task.verdict}</span>
+            </div>
+          )}
           <div className="row">
-            <button className="btn p" disabled={busy || !planReady} onClick={() => act(() => api.approveBug(task.id))}>Approve &amp; implement</button>
+            {task.verdict ? <>
+              <button className="btn p" disabled={busy || !planReady} onClick={() => act(() => api.closeBugNoChange(task.id))}>Close — no change needed</button>
+              <button className="btn" disabled={busy || !planReady} onClick={() => act(() => api.approveBug(task.id))}>Make a change anyway</button>
+            </> : <button className="btn p" disabled={busy || !planReady} onClick={() => act(() => api.approveBug(task.id))}>Approve &amp; implement</button>}
             <button className="btn" disabled={busy} onClick={() => setAsking(true)}>Request changes…</button>
-            <span className="hint gate-explain">Approving lets the agent write the fix. You review the diff before anything is pushed.</span>
+            <span className="hint gate-explain">{task.verdict ? "Closing pushes nothing and opens no pull request." : "Approving lets the agent write the fix. You review the diff before anything is pushed."}</span>
             <button className="btn d" disabled={busy} onClick={() => act(() => api.cancelBug(task.id))}>Cancel task</button>
           </div>
         </div>
@@ -252,6 +260,17 @@ export function BugGates({ task, onChanged, onTranscript }: { task: BugTask; onC
         // leftovers", not as a failed outcome. The classification is the server's own durable
         // `outcome` (see `bugMerged`), not the error's wording and not `pr.state`.
         const merged = bugMerged(task);
+        if (task.outcome === "no-change") return (
+          <div className="gate" data-testid="gate-done">
+            <h4>No change needed</h4>
+            {task.report && <div className="report">{task.report.split("\n").map((l, i) => l.trim() ? <p key={i}>{l}</p> : null)}</div>}
+            {onTranscript && task.agentId && <div className="row"><button className="btn" onClick={() => onTranscript(task.agentId)}>Transcript</button></div>}
+            <p className="hint">Dismissing removes this task and frees its agent — this cannot be undone.</p>
+            <div className="row">
+              <button className="btn d" disabled={busy} onClick={() => act(async () => { await api.dismissBug(task.id); return task; })}>Dismiss</button>
+            </div>
+          </div>
+        );
         return (
           <div className="gate" data-testid="gate-done">
             <h4>{merged ? "Merged" : "Closed without merging"}</h4>

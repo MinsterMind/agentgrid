@@ -2,7 +2,9 @@ The fix for {{issueKey}} has been approved and is ready to go up as a pull reque
 
 Your job in this step:
 
-1. Read the plan at {{planPath}} and the approved diff (`git diff {{baseBranch}}...HEAD` in {{worktree}}).
+1. Read the plan at {{planPath}}, the commits going up (`git log --oneline {{baseRef}}..HEAD` in {{worktree}})
+   and the approved diff (`git diff {{baseRef}}...HEAD`). Compare against {{baseRef}} only — a local branch
+   can be stale and make the diff look like the whole repository.
 2. Write the pull request description to {{prBodyPath}}: what the bug was, the root cause, the
    fix, how it was tested, and the line `Fixes {{issueUrl}}`.
 3. Summarise what you wrote.

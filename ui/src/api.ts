@@ -10,7 +10,7 @@ export interface TranscriptEntry { ts: string; role: "user" | "assistant"; kind:
  * browser (offline, DNS, CORS — there is no real HTTP status to report). Task 13's panel
  * should say something different for each.
  */
-export class ApiError extends Error { constructor(message: string, public status: number, options?: ErrorOptions) { super(message, options); } }
+export class ApiError extends Error { constructor(message: string, public status: number, options?: ErrorOptions, public code?: string) { super(message, options); } }
 
 async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
   let res: Response;
@@ -19,7 +19,7 @@ async function call<T>(method: string, url: string, body?: unknown): Promise<T> 
   } catch (cause) {
     throw new ApiError("request never reached the server", 0, { cause });
   }
-  if (!res.ok) throw new ApiError((await res.json().catch(() => ({}))).error ?? `${res.status} ${res.statusText}`, res.status);
+  if (!res.ok) { const b = await res.json().catch(() => ({})); throw new ApiError(b.error ?? `${res.status} ${res.statusText}`, res.status, undefined, typeof b.code === "string" ? b.code : undefined); }
   return res.status === 204 ? (undefined as T) : res.json();
 }
 
@@ -55,7 +55,8 @@ export const api = {
   agentTranscript: (agentId: string) => call<{ sessionId: string | null; entries: TranscriptEntry[] }>("GET", `/api/agents/${encodeURIComponent(agentId)}/transcript`),
   transcript: (assignmentId: string) => call<Array<{ ts: string; role: string; kind: string; text: string }>>("GET", `/api/assignments/${assignmentId}/transcript`),
   listBugTasks: () => call<BugTask[]>("GET", "/api/bugtasks"),
-  createBugTask: (input: { issueRef: string; repo: string; mergePolicy?: "ask" | "auto"; mergeMethod?: string }) => call<BugTask>("POST", "/api/bugtasks", input),
+  createBugTask: (input: { issueRef: string; repo: string; mergePolicy?: "ask" | "auto"; mergeMethod?: string; baseBranch?: string; startAnyway?: boolean }) => call<BugTask>("POST", "/api/bugtasks", input),
+  closeBugNoChange: (id: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/close-no-change`),
   bugPlan: (id: string) => call<{ markdown: string }>("GET", `/api/bugtasks/${encodeURIComponent(id)}/plan`),
   bugDiff: (id: string) => call<{ patch: string; files: Array<{ path: string; additions: number; deletions: number }>; additions: number; deletions: number }>("GET", `/api/bugtasks/${encodeURIComponent(id)}/diff`),
   approveBug: (id: string, mergeMethod?: MergeMethod) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/approve`, mergeMethod ? { mergeMethod } : undefined),
@@ -66,7 +67,7 @@ export const api = {
   dismissBug: (id: string) => call<void>("DELETE", `/api/bugtasks/${encodeURIComponent(id)}`),
   myIssues: () => call<IssueSummary[]>("GET", "/api/bugfix/issues"),
   repoStatus: (path: string) => call<{ exists: boolean; isRepo: boolean; branch: string | null }>("GET", `/api/repo-status?path=${encodeURIComponent(path)}`),
-  bugPreflight: (repo: string) => call<{ ok: boolean; problems: string[]; remote?: string | null }>("GET", `/api/bugfix/preflight?repo=${encodeURIComponent(repo)}`),
+  bugPreflight: (repo: string) => call<{ ok: boolean; problems: string[]; remote?: string | null; baseBranch?: string | null; branches?: string[] }>("GET", `/api/bugfix/preflight?repo=${encodeURIComponent(repo)}`),
   getIntegrations: () => call<Integrations>("GET", "/api/integrations"),
   putIntegrations: (patch: Partial<Integrations>) => call<Integrations>("PUT", "/api/integrations", patch),
   getSetup: () => call<SetupReport>("GET", "/api/setup"),

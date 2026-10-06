@@ -22,14 +22,19 @@ const ISSUE: TrackerIssue = { key: "PAY-42", title: "Boom", url: "https://x/PAY-
  *  overrides `commits` — the feedback-round harness (`onMonitoringTask`, below) sets it after
  *  reaching monitoring, and it has to actually drive this mock's `commitsAhead()` rather than
  *  just look like it does. */
-function fakeGit(state: { commits: number; head?: string; commitsAhead?: number; rebaseState?: { inProgress: boolean; conflicted: string[] }; removed?: Array<{ repo: string; worktree: string; branch: string }>; removeError?: string; remoteDeleted?: Array<{ dir: string; branch: string }>; deleteRemoteError?: string }) {
+function fakeGit(state: { commits: number; ticketCommits?: string[]; uncommitted?: string[]; head?: string; commitsAhead?: number; rebaseState?: { inProgress: boolean; conflicted: string[] }; removed?: Array<{ repo: string; worktree: string; branch: string }>; removeError?: string; remoteDeleted?: Array<{ dir: string; branch: string }>; deleteRemoteError?: string }) {
   const calls: string[] = [];
   state.removed ??= [];
   state.remoteDeleted ??= [];
   const g = new GitOps(async () => "");
   g.defaultBranch = async () => "main";
+  g.fetch = async () => { calls.push("fetch"); };
+  g.integrationBranch = async () => "develop";
+  g.remoteBranches = async () => ["develop", "main", "release/2.0"];
+  g.ticketCommits = async (_repo, ref, key) => { calls.push(`grep ${key} ${ref}`); return state.ticketCommits ?? []; };
+  g.uncommitted = async () => state.uncommitted ?? [];
   g.hasRemote = async () => "git@github.com:acme/pay.git";
-  g.createWorktree = async (repo, branch) => { calls.push(`create ${branch}`); const d = path.join(repo, ".worktrees", branch.replace("/", "-")); await mkdir(d, { recursive: true }); return d; };
+  g.createWorktree = async (repo, branch, startPoint) => { calls.push(`create ${branch} from ${startPoint}`); const d = path.join(repo, ".worktrees", branch.replace("/", "-")); await mkdir(d, { recursive: true }); return d; };
   g.removeWorktree = async (repo, worktree, branch) => {
     calls.push("remove");
     if (state.removeError) throw new Error(state.removeError);
@@ -47,7 +52,7 @@ function fakeGit(state: { commits: number; head?: string; commitsAhead?: number;
   };
   g.currentBranch = async () => "bugfix/PAY-42";
   g.revParse = async () => state.head ?? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-  g.commitsAhead = async () => state.commitsAhead ?? state.commits;
+  g.commitsAhead = async (_dir, base) => { calls.push(`ahead of ${base}`); return state.commitsAhead ?? state.commits; };
   g.diff = async () => ({ patch: "diff --git a/a b/a\n+x\n", files: [{ path: "a", additions: 1, deletions: 0 }], additions: 1, deletions: 0 });
   g.worktreeRegistered = async () => false;
   g.branchExists = async () => false;
@@ -77,8 +82,8 @@ const forge = {
 };
 
 let home: string; let repo: string; let store: Store; let bugs: BugTaskStore; let fake: ReturnType<typeof makeFakeQuery>;
-let engine: BugFixEngine; let comments: Array<[string, string]>;
-let gitState: { commits: number; head?: string; commitsAhead?: number; rebaseState?: { inProgress: boolean; conflicted: string[] }; removed?: Array<{ repo: string; worktree: string; branch: string }>; removeError?: string; remoteDeleted?: Array<{ dir: string; branch: string }>; deleteRemoteError?: string };
+let engine: BugFixEngine; let comments: Array<[string, string]>; let gitFake: ReturnType<typeof fakeGit>;
+let gitState: { commits: number; ticketCommits?: string[]; uncommitted?: string[]; head?: string; commitsAhead?: number; rebaseState?: { inProgress: boolean; conflicted: string[] }; removed?: Array<{ repo: string; worktree: string; branch: string }>; removeError?: string; remoteDeleted?: Array<{ dir: string; branch: string }>; deleteRemoteError?: string };
 
 beforeEach(async () => {
   home = await mkdtemp(path.join(tmpdir(), "eng-home-"));
@@ -97,7 +102,7 @@ beforeEach(async () => {
   forge.stateAfterMerge = "MERGED";
   engine = new BugFixEngine({
     store, bugs, manager: new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, a, e) => ({ cwd: a.repo, abortController: e.abortController, canUseTool: e.canUseTool } as Options) }),
-    git: fakeGit(gitState).git, integrations: new IntegrationsStore(home),
+    git: (gitFake = fakeGit(gitState)).git, integrations: new IntegrationsStore(home),
     tracker: { listMyIssues: async () => [], fetchIssue: async () => ISSUE, comment: async (k, t) => { comments.push([k, t]); } },
     forge, presetsDir: path.resolve("presets"),
   });
@@ -180,6 +185,73 @@ describe("intake", () => {
   });
 });
 
+describe("the base a fix is cut from (PULSEAI-414)", () => {
+  it("fetches, then cuts the branch from origin's integration branch, and records the ref every comparison uses", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    expect(gitFake.calls.slice(0, 3)).toEqual(["fetch", "grep PAY-42 origin/develop", "create bugfix/PAY-42 from origin/develop"]);
+    expect(t).toMatchObject({ baseBranch: "develop", baseRef: "origin/develop" });
+    expect(fake.calls[0].prompt).toContain("origin/develop");
+  });
+  it("takes the branch the human picked, and refuses one origin doesn't have", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo, baseBranch: "release/2.0" });
+    expect(t).toMatchObject({ baseBranch: "release/2.0", baseRef: "origin/release/2.0" });
+    await expect(engine.intake({ issueRef: "PAY-43", repo, baseBranch: "nope" })).rejects.toThrow(/origin has no branch "nope"/);
+  });
+  it("stops before spawning anything when the ticket's fix is already on the base — unless told to start anyway", async () => {
+    gitState.ticketCommits = ["8561f07d PAY-42: guard the null customer (#213)"];
+    const err = await engine.intake({ issueRef: "PAY-42", repo }).catch(e => e);
+    expect(err).toMatchObject({ status: 409, code: "already-on-base" });
+    expect(err.message).toContain("8561f07d PAY-42: guard the null customer (#213)");
+    expect(store.listAgents()).toHaveLength(0);
+    expect(bugs.list()).toHaveLength(0);
+    const t = await engine.intake({ issueRef: "PAY-42", repo, startAnyway: true });
+    expect(t.stage).toBe("analyzing");
+    expect(fake.calls[0].prompt).toContain("8561f07d PAY-42: guard the null customer (#213)");   // the agent checks them first
+  });
+  it("every commit count and diff compares against the recorded ref, not a local branch", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "Verdict: change needed\n# Plan");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    await engine.approve(t.id);
+    gitState.commits = 1;
+    await finishStage(); await until(() => bugs.get(t.id).stage === "diff-review");
+    const counts = gitFake.calls.filter(c => c.startsWith("ahead of"));
+    expect(counts.length).toBeGreaterThan(0);
+    expect(new Set(counts)).toEqual(new Set(["ahead of origin/develop"]));
+  });
+});
+
+describe("no change needed", () => {
+  it("the plan's verdict is read, and the human can close the task at the plan gate", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "Verdict: no change needed — already fixed on origin/develop by 8561f07d (PR #213)\n\n# Root cause\n...");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    expect(bugs.get(t.id).verdict).toBe("already fixed on origin/develop by 8561f07d (PR #213)");
+    const done = await engine.closeNoChange(t.id);
+    expect(done).toMatchObject({ stage: "done", outcome: "no-change" });
+    expect(done.report).toContain("already fixed on origin/develop by 8561f07d (PR #213)");
+    expect(done.report).toMatch(/nothing was pushed/i);
+    expect(fake.calls).toHaveLength(1);                    // no implementing run, no PR run
+  });
+  it("closing as no change is only for the plan gate", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await expect(engine.closeNoChange(t.id)).rejects.toThrow(/plan/);
+  });
+  it("a change step that ends with nothing committed and nothing changed closes as no change — no PR step", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "Verdict: change needed\n# Plan");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    await engine.approve(t.id);
+    fake.emit(success("Verified: 8561f07d already fixes it and its tests pass. Nothing to change.")); fake.end();
+    await until(() => bugs.get(t.id).stage === "done");
+    const done = bugs.get(t.id);
+    expect(done.outcome).toBe("no-change");
+    expect(done.report).toContain("Verified: 8561f07d already fixes it");
+    expect(done.report).toMatch(/no commits on bugfix\/PAY-42 beyond origin\/develop/i);
+    expect(fake.calls).toHaveLength(2);                    // analyze + implement; never open-pr
+  });
+});
+
 describe("stage progression", () => {
   it("analyzing → plan gate once plan.md exists", async () => {
     const t = await engine.intake({ issueRef: "PAY-42", repo });
@@ -220,8 +292,10 @@ describe("stage progression", () => {
     await bugs.writeArtifact(t.id, "plan.md", "# Plan");
     await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
     await engine.approve(t.id);
-    await finishStage(); await until(() => bugs.get(t.id).stage === "failed");   // 0 commits
-    expect(bugs.get(t.id).error).toMatch(/no commits/i);
+    gitState.uncommitted = ["src/a.ts"];             // changed things, committed nothing: not "no change"
+    await finishStage(); await until(() => bugs.get(t.id).stage === "failed");
+    expect(bugs.get(t.id).error).toMatch(/not committed.*src\/a\.ts/i);
+    gitState.uncommitted = [];
 
     gitState.commits = 1;
     await engine.retry(t.id);

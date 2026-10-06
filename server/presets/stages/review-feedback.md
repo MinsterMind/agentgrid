@@ -6,7 +6,7 @@ Reviewers have asked for changes on the pull request for {{issueKey}}.
 
 Your job in this step:
 
-1. Read the feedback and the current diff (`git diff {{baseBranch}}...HEAD`).
+1. Read the feedback and the current diff (`git diff {{baseRef}}...HEAD`, after `git fetch origin {{baseBranch}}`).
 2. Make the changes it asks for, in {{worktree}}, on the branch {{branch}}.
 3. Run whatever tests cover what you changed.
 4. Commit, with a message saying what the feedback was and what you did about it.

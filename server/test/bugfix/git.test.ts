@@ -344,3 +344,53 @@ describe("wouldConflict", () => {
     expect(await conflicting.wouldConflict("/r", "main")).toBe(true);
   });
 });
+
+/** origin's default branch is `main`, frozen at the first commit; `develop` is where the work is —
+ *  the shape of the repo that cut a bug branch from "Initial commit" (PULSEAI-414). */
+async function gitflowClone(opts: { developStale?: boolean } = {}): Promise<{ origin: string; clone: string; seed: string }> {
+  const seed = await makeRepo();
+  await sh(seed, ["checkout", "-q", "-b", "develop"]);
+  await writeFile(path.join(seed, "src.txt"), "app\n"); await sh(seed, ["add", "."]); await sh(seed, ["commit", "-qm", "PULSEAI-414: fix the null check"]);
+  await writeFile(path.join(seed, "src.txt"), "app v2\n"); await sh(seed, ["add", "."]); await sh(seed, ["commit", "-qm", "PULSEAI-4140: unrelated"]);
+  if (opts.developStale) { await sh(seed, ["checkout", "-q", "main"]); await new Promise(r => setTimeout(r, 1100)); await writeFile(path.join(seed, "m.txt"), "m\n"); await sh(seed, ["add", "."]); await sh(seed, ["commit", "-qm", "main moves on"]); }
+  const origin = await mkdtemp(path.join(tmpdir(), "origin-"));
+  await sh(origin, ["clone", "-q", "--bare", seed, "."]);
+  await sh(origin, ["symbolic-ref", "HEAD", "refs/heads/main"]);
+  const parent = await mkdtemp(path.join(tmpdir(), "clone-"));
+  await sh(parent, ["clone", "-q", origin, "c"]);
+  const clone = path.join(parent, "c");
+  await sh(clone, ["config", "user.email", "t@t"]); await sh(clone, ["config", "user.name", "T"]);
+  return { origin, clone, seed };
+}
+
+describe("GitOps — the branch a fix is cut from", () => {
+  it("picks the integration branch: the newest of origin's default and the usual names", async () => {
+    const { clone } = await gitflowClone();
+    expect(await git.defaultBranch(clone)).toBe("main");                 // what the old code used
+    expect(await git.integrationBranch(clone)).toBe("develop");
+    const stale = await gitflowClone({ developStale: true });
+    expect(await git.integrationBranch(stale.clone)).toBe("main");
+    expect(await git.remoteBranches(clone)).toEqual(expect.arrayContaining(["develop", "main"]));
+  });
+
+  it("fetches, then cuts the branch from origin's tip — not a stale local branch — without tracking it", async () => {
+    const { clone, seed, origin } = await gitflowClone();
+    await writeFile(path.join(seed, "late.txt"), "x\n"); await sh(seed, ["add", "."]); await sh(seed, ["commit", "-qm", "landed after the clone"]);
+    await sh(seed, ["push", "-q", origin, "develop"]);
+    await git.fetch(clone);
+    const wt = await git.createWorktree(clone, "bugfix/PULSEAI-414", "origin/develop");
+    expect(await git.revParse(wt)).toBe(await git.revParse(clone, "origin/develop"));
+    expect((await sh(seed, ["log", "-1", "--format=%s", "develop"])).trim()).toBe("landed after the clone");
+    expect(await git.revParse(wt)).toBe((await sh(seed, ["rev-parse", "develop"])).trim());
+    await expect(sh(wt, ["rev-parse", "--abbrev-ref", "@{upstream}"])).rejects.toThrow();   // no upstream: a pull can't drag develop in
+    expect(await git.commitsAhead(wt, "origin/develop")).toBe(0);
+  });
+
+  it("finds commits on the base that name the ticket — the exact key, not a longer one", async () => {
+    const { clone } = await gitflowClone();
+    const hits = await git.ticketCommits(clone, "origin/develop", "PULSEAI-414");
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatch(/^[0-9a-f]{7,} PULSEAI-414: fix the null check$/);
+    expect(await git.ticketCommits(clone, "origin/develop", "PULSEAI-999")).toEqual([]);
+  });
+});
