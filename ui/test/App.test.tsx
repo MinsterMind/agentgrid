@@ -8,6 +8,7 @@ import type { Agent, BugTask, GridEvent, GridState, RoleDef } from "../src/types
 
 vi.mock("../src/api", () => ({
   api: {
+    myIssues: vi.fn(async () => []), issue: vi.fn(async () => null),
     subscribe: vi.fn(),
     say: vi.fn(() => Promise.resolve({ via: "terminal" })),
     resetSession: vi.fn(() => Promise.resolve({})),

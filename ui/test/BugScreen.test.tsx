@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { BugScreen } from "../src/components/BugScreen";
+import { BugScreen, mergeRows } from "../src/components/BugScreen";
 import type { BugTask } from "../src/types";
 
 const { ApiError } = vi.hoisted(() => {
@@ -17,6 +17,7 @@ const getSetup = vi.fn(async (): Promise<unknown> => SETUP);
 const bugPlan = vi.fn(async () => ({ markdown: "## Root cause\nA\n\n## Fix\nB" }));
 const bugDiff = vi.fn(async () => ({ patch: "", files: [], additions: 0, deletions: 0 }));
 const approveBug = vi.fn(async (_id: string, _m?: string) => task("implementing"));
+const myIssues = vi.fn(async (): Promise<Array<{ key: string; title: string; url: string; status: string; priority: string }>> => []);
 vi.mock("../src/api", () => ({
   ApiError,
   api: {
@@ -24,6 +25,8 @@ vi.mock("../src/api", () => ({
     approveBug: (id: string, m?: string) => (m ? approveBug(id, m) : approveBug(id)),
     requestBugChanges: vi.fn(), cancelBug: vi.fn(), retryBug: vi.fn(), listBugTasks: vi.fn(async () => []),
     addressComments: vi.fn(), dismissBug: vi.fn(),
+    myIssues: () => myIssues(), issue: vi.fn(async () => ({ key: "PAY-1", title: "Not started", url: "u", status: "Open", priority: "High", description: "", acceptanceCriteria: [] })),
+    getIntegrations: vi.fn(async () => ({ projectRepos: {} })), bugPreflight: vi.fn(async () => ({ ok: true, problems: [] })), createBugTask: vi.fn(), pickFolder: vi.fn(),
   },
 }));
 
@@ -36,7 +39,7 @@ function task(stage: BugTask["stage"], extra: Partial<BugTask> = {}): BugTask {
     createdAt: "", updatedAt: "2026-10-05T10:05:00Z", feedbackRounds: 0, assumptions: [], assumptionsProblem: null, assumptionsToken: null, ...extra };
 }
 
-beforeEach(() => { vi.clearAllMocks(); getSetup.mockImplementation(async () => SETUP); });
+beforeEach(() => { vi.clearAllMocks(); getSetup.mockImplementation(async () => SETUP); myIssues.mockImplementation(async () => []); });
 
 import { initial } from "../src/state/reducer";
 
@@ -176,7 +179,7 @@ describe("BugScreen — the list", () => {
 
   it("heads the list with its count", () => {
     renderScreen([task("implementing"), task("done", { id: "bt2" })], "bt1");
-    expect(screen.getByRole("listbox").closest(".buglist")!.querySelector(".lh")).toHaveTextContent(/Bug fixes\s*2/);
+    expect(screen.getByRole("listbox").closest(".buglist")!.querySelector(".lh")).toHaveTextContent(/My bugs\s*2/);
   });
 });
 
@@ -275,5 +278,65 @@ describe("BugScreen — answering the agent", () => {
     render(<BugScreen state={state as never} selectedId="bt1" onSelect={vi.fn()} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={vi.fn()} onDecide={onDecide} />);
     await userEvent.click(within(screen.getByRole("region", { name: "Now" })).getByRole("button", { name: "Always allow Bash(npm test:*)" }));
     expect(onDecide).toHaveBeenCalledWith("bugfix@r", "tu1", { kind: "always" });
+  });
+});
+
+describe("BugScreen — every bug assigned to me", () => {
+  const MINE = [{ key: "PAY-1", title: "Not started", url: "u", status: "Open", priority: "High" }, { key: "PAY-42", title: "Refresh token rotates twice", url: "u", status: "Open", priority: "Low" }];
+  const keys = () => screen.getAllByRole("option").map(r => r.querySelector(".k")!.textContent);
+  it("lists every open bug assigned to me, started or not — active work first", async () => {
+    myIssues.mockResolvedValue(MINE);
+    renderScreen([task("implementing")]);
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+    expect(keys()).toEqual(["PAY-42", "PAY-1"]);
+    const unstarted = screen.getAllByRole("option")[1];
+    expect(unstarted).toHaveTextContent("Not started"); expect(unstarted).toHaveTextContent("High");
+  });
+  it("a started task whose ticket left my list sits in its own group, last", async () => {
+    myIssues.mockResolvedValue([MINE[0]]);
+    renderScreen([task("monitoring", { id: "bt9", issue: { ...ISSUE, key: "PAY-9", title: "Old one" } })], "bt9");
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+    expect(keys()).toEqual(["PAY-1", "PAY-9"]);
+    expect(screen.getByText("Not assigned to you or closed")).toBeInTheDocument();
+  });
+  // Review Focus 5
+  it("with the tracker down, started tasks still show, with the error and a Refresh", async () => {
+    myIssues.mockRejectedValue(new Error("tracker unavailable"));
+    renderScreen([task("monitoring")]);
+    expect(await screen.findByText(/tracker unavailable/)).toBeInTheDocument();
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+    myIssues.mockResolvedValue(MINE);
+    await userEvent.click(screen.getByRole("button", { name: /refresh/i }));
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+    expect(screen.queryByText(/tracker unavailable/)).toBeNull();
+  });
+  it("clicking an unstarted bug routes to its ticket", async () => {
+    myIssues.mockResolvedValue(MINE);
+    const onSelectTicket = vi.fn();
+    renderScreen([task("implementing")], "bt1", { onSelectTicket });
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+    await userEvent.click(screen.getAllByRole("option")[1]);
+    expect(onSelectTicket).toHaveBeenCalledWith("PAY-1");
+  });
+  it("a selected ticket shows its details instead of a task", async () => {
+    myIssues.mockResolvedValue(MINE);
+    renderScreen([task("implementing")], null, { selectedTicket: "PAY-1", onSelectTicket: vi.fn() });
+    expect(await screen.findByTestId("ticket-detail")).toBeInTheDocument();
+    expect(screen.getAllByRole("option")[1]).toHaveAttribute("aria-selected", "true");
+  });
+  it("the empty state shows only when there are no tasks and no assigned bugs", async () => {
+    myIssues.mockResolvedValue([MINE[0]]);
+    renderScreen([]);
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+    expect(screen.queryByText("No bug fixes yet")).toBeNull();
+  });
+});
+
+describe("mergeRows", () => {
+  it("keeps every task: a second task for the same ticket gets its own row", () => {
+    const active = task("implementing", { id: "bt3" }); const old = task("cancelled", { id: "bt1" });
+    const rows = mergeRows([{ key: "PAY-42", title: "x", url: "u", status: "Open", priority: "High" }], [{ t: active, status: "running" }, { t: old, status: "cancelled" }]);
+    expect(rows.map(r => r.task?.id)).toEqual(["bt3", "bt1"]);
+    expect(rows.every(r => r.assigned)).toBe(true);
   });
 });

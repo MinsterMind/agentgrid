@@ -141,6 +141,8 @@ export function App() {
         onFixBug={() => setBugOpen(true)} onOpenSettings={() => setSettingsOpen(true)} />
       {route.view === "bugs" ? (
         <BugScreen state={s} onDecide={decide} selectedId={route.bugId} onSelect={(id, opts) => route.go({ view: "bugs", bugId: id }, opts)}
+          selectedTicket={route.ticket} onSelectTicket={(key, opts) => route.go({ view: "bugs", ticket: key }, opts)}
+          onStarted={t => { dispatch({ type: "select", id: t.agentId }); route.go({ view: "bugs", bugId: t.id }); }}
           onBugChanged={t => dispatch({ type: "change", event: { type: "bugtask", task: t } })} onTranscript={id => setTranscriptFor(id)}
           onOpenSettings={() => setSettingsOpen(true)} onFixBug={() => setBugOpen(true)} />
       ) : s.loaded && s.agents.length === 0 && Object.keys(s.bugTasks).length === 0 ? (

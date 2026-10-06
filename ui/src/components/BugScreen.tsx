@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
-import { Bug, Check, CheckCircle2, CircleDashed, CircleDot, History, Lightbulb, MessageCircleQuestion, OctagonAlert, Radio, TriangleAlert, ClipboardList, Code2, Copy, ExternalLink, FileDiff, GitMerge, GitPullRequest, Hand, Inbox, Loader, Minus, MinusCircle, Radar, ScrollText, Search, X, XCircle } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Bug, Check, CheckCircle2, CircleDashed, CircleDot, History, Lightbulb, MessageCircleQuestion, OctagonAlert, Radio, TriangleAlert, ClipboardList, Code2, Copy, ExternalLink, FileDiff, GitMerge, GitPullRequest, Hand, Inbox, Loader, Minus, MinusCircle, Radar, ScrollText, Search, RefreshCw, X, XCircle } from "lucide-react";
 import { api } from "../api";
 import { blockersFor, isNew, listStatus, nowFor, orderAssumptions, pipelineFor, stageLabel, type Blocker, type ListStatus, type StepState } from "../bugView";
 import { elapsed, relativeTime, usd } from "../format";
 import { activityFor, assignmentFor, permissionFor, type UiState } from "../state/reducer";
-import type { BugTask, Decision, SetupReport } from "../types";
+import type { BugTask, Decision, IssueSummary, SetupReport } from "../types";
+import { TicketDetail } from "./TicketDetail";
 import { PendingPrompt, asPending } from "./PendingPrompt";
 import { BugGates } from "./BugGates";
 import { DiffView, hunksFor } from "./DiffView";
@@ -43,67 +44,136 @@ function When({ iso, now }: { iso?: string | null; now: number }) {
   return <time dateTime={iso} title={new Date(iso).toLocaleString()}>{relativeTime(iso, now)}</time>;
 }
 
-export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscript, onOpenSettings, onFixBug, onDecide }: {
+/** One row of the bugs list: a ticket assigned to me, a task, or both. */
+export type Row = { key: string; title: string; priority: string | null; task: BugTask | null; status: ListStatus | null; assigned: boolean };
+
+/**
+ * Every open bug assigned to me, merged with AgentGrid's tasks by ticket key. Order: tasks still in
+ * play (waiting on you, running, failed), then bugs not started (tracker order), then finished ones;
+ * tasks whose ticket is no longer assigned to me (reassigned, closed) come last, in their own group.
+ */
+export function mergeRows(issues: IssueSummary[] | null, tasks: Array<{ t: BugTask; status: ListStatus }>): Row[] {
+  const mine = new Set((issues ?? []).map(i => i.key));
+  const rank = (r: Row) => !r.assigned ? 4 : !r.status ? 2 : ["waiting", "running", "failed"].includes(r.status) ? 1 : 3;
+  // Each ticket takes its most active task (tasks arrive active-first); any other task for it still gets a row.
+  const used = new Set<string>();
+  const rows: Row[] = (issues ?? []).map(i => {
+    const x = tasks.find(y => y.t.issue.key === i.key);
+    if (x) used.add(x.t.id);
+    return { key: i.key, title: i.title, priority: i.priority, task: x?.t ?? null, status: x?.status ?? null, assigned: true };
+  });
+  for (const x of tasks) if (!used.has(x.t.id)) rows.push({ key: x.t.issue.key, title: x.t.issue.title, priority: x.t.issue.priority || null, task: x.t, status: x.status, assigned: issues === null || mine.has(x.t.issue.key) });
+  // A stable sort keeps tracker order inside "not started", and the task order (active first) inside the rest.
+  const taskOrder = new Map(tasks.map((x, i) => [x.t.id, i]));
+  return rows.map((r, i) => ({ r, i })).sort((a, b) => rank(a.r) - rank(b.r)
+    || (a.r.task && b.r.task ? taskOrder.get(a.r.task.id)! - taskOrder.get(b.r.task.id)! : a.i - b.i)).map(x => x.r);
+}
+
+/** My open bugs from the tracker: loaded on open, every 5 minutes and on Refresh; the last good list survives an error. */
+function useMyIssues() {
+  const [issues, setIssues] = useState<IssueSummary[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const load = useCallback(() => {
+    setLoading(true);
+    api.myIssues().then(v => { setIssues(v); setErr(null); }).catch(e => setErr((e as Error).message)).finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { load(); const t = setInterval(load, 5 * 60_000); return () => clearInterval(t); }, [load]);
+  return { issues, err, loading, refresh: load };
+}
+
+export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscript, onOpenSettings, onFixBug, onDecide, selectedTicket = null, onSelectTicket, onStarted }: {
   state: UiState; selectedId: string | null; onSelect: (id: string, opts?: { replace?: boolean }) => void; onBugChanged: (t: BugTask) => void;
   onTranscript: (agentId: string) => void; onOpenSettings: () => void; onFixBug: () => void;
   /** Answer the bug agent's permission request or question from here. */ onDecide?: (agentId: string, toolUseId: string, d: Decision) => void;
+  /** A bug assigned to me, not started yet, shown on the right. */ selectedTicket?: string | null;
+  onSelectTicket?: (key: string, opts?: { replace?: boolean }) => void;
+  /** A ticket was just started from its view. */ onStarted?: (t: BugTask) => void;
 }) {
   const now = useNow();
+  const mine = useMyIssues();
   const agentWaiting = (t: BugTask) => {
     const ag = state.agents.find(a => a.id === t.agentId);
-    return !!ag && !!assignmentFor(state, ag)?.pending;
+    return !!ag && (!!assignmentFor(state, ag)?.pending || !!permissionFor(state, ag));
   };
   const tasks = useMemo(() => Object.values(state.bugTasks)
     .map(t => ({ t, status: listStatus(t, agentWaiting(t)) }))
     .sort((a, b) => ACTIVE_FIRST.indexOf(a.status) - ACTIVE_FIRST.indexOf(b.status) || b.t.updatedAt.localeCompare(a.t.updatedAt)),
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [state.bugTasks, state.assignments, state.agents]);
+  [state.bugTasks, state.assignments, state.agents, state.permissions]);
+  const rows = useMemo(() => mergeRows(mine.issues, tasks), [mine.issues, tasks]);
 
   const task = tasks.find(x => x.t.id === selectedId)?.t ?? null;
-  // Review Focus 4: a stale or missing selection falls back to the first bug, and the URL follows.
-  useEffect(() => { if (!task && tasks.length) onSelect(tasks[0].t.id, { replace: true }); }, [task, tasks, onSelect]);
-  const shown = task ?? tasks[0]?.t ?? null;
+  const ticket = !task && selectedTicket && rows.some(r => r.key === selectedTicket && !r.task) ? selectedTicket : null;
+  // Review Focus 4: a stale or missing selection falls back to the first row, and the URL follows.
+  useEffect(() => {
+    if (task || ticket || (selectedTicket && !mine.issues) || !rows.length) return;
+    const first = rows[0];
+    if (first.task) onSelect(first.task.id, { replace: true }); else onSelectTicket?.(first.key, { replace: true });
+  }, [task, ticket, selectedTicket, rows, mine.issues, onSelect, onSelectTicket]);
+  const shown = task ?? (ticket ? null : tasks[0]?.t ?? null);
+  // What is on the right: a task (by id — one ticket can have several), or a not-started ticket (by key).
+  const shownTicket = !task ? ticket ?? (selectedTicket && !mine.issues ? selectedTicket : null) : null;
+  const shownTaskId = shownTicket ? null : (task ?? shown)?.id ?? null;
+  const isShown = (r: Row) => r.task ? r.task.id === shownTaskId : r.key === shownTicket;
 
-  if (!tasks.length) {
+  if (!rows.length && !selectedTicket) {
     return (
       <div className="bugscreen empty-screen" data-testid="bug-screen">
         <span className="dlg-ic"><Bug /></span>
         <h2>No bug fixes yet</h2>
         <p>Turn a ticket into a merged pull request. You approve the plan, the diff and the merge — each fix appears here, step by step.</p>
+        {mine.err && <div className="warnline"><TriangleAlert /> Couldn't load your bugs from the tracker: {mine.err}</div>}
         <button className="btn p" onClick={onFixBug}><Bug /> Fix a bug</button>
       </div>
     );
   }
 
+  const open = (r: Row) => { if (r.task) onSelect(r.task.id); else onSelectTicket?.(r.key); };
   const move = (delta: number) => {
-    const i = tasks.findIndex(x => x.t.id === shown?.id);
-    const next = tasks[Math.min(tasks.length - 1, Math.max(0, i + delta))];
-    if (next) onSelect(next.t.id);
+    const i = rows.findIndex(isShown);
+    const next = rows[Math.min(rows.length - 1, Math.max(0, i + delta))];
+    if (next) open(next);
   };
+  const firstUnassigned = rows.findIndex(r => !r.assigned && mine.issues !== null);
 
   return (
     <div className="bugscreen" data-testid="bug-screen">
       <aside className="buglist">
-        <div className="lh"><span>Bug fixes</span><span className="mono">{tasks.length}</span></div>
+        <div className="lh"><span>My bugs</span><span className="mono">{rows.length}</span>
+          <button className="btn sm" aria-label="Refresh from the tracker" title="Refresh from the tracker" disabled={mine.loading} onClick={mine.refresh}><RefreshCw /></button></div>
+        {mine.err && <div className="warnline"><TriangleAlert /> Couldn't refresh from the tracker: {mine.err}{mine.issues ? " — showing the last list." : ""}</div>}
         <ul role="listbox" aria-label="Bug fixes" onKeyDown={e => {
           if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
           if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }
         }}>
-          {tasks.map(({ t, status }) => {
-            const { Icon, word } = STATUS[status];
-            return (
-              <li key={t.id} role="option" aria-selected={t.id === shown?.id} tabIndex={t.id === shown?.id ? 0 : -1}
-                className="bugrow" data-status={status} onClick={() => onSelect(t.id)} onKeyDown={e => { if (e.key === "Enter") onSelect(t.id); }}>
+          {rows.map((r, i) => {
+            const sel = isShown(r);
+            const head = i === firstUnassigned ? <li role="presentation" className="group">Not assigned to you or closed</li> : null;
+            if (!r.task) return [head, (
+              <li key={r.key} role="option" aria-selected={sel} tabIndex={sel ? 0 : -1} className="bugrow" data-status="todo"
+                onClick={() => open(r)} onKeyDown={e => { if (e.key === "Enter") open(r); }}>
+                <span className="k">{r.key}</span>
+                <span className="t" title={r.title}>{r.title}</span>
+                <span className="s todo">{r.priority && <span className={`chip ${/highest|critical|blocker/i.test(r.priority) ? "red" : /high/i.test(r.priority) ? "amber" : ""}`}>{r.priority}</span>} Not started</span>
+              </li>
+            )];
+            const t = r.task; const { Icon, word } = STATUS[r.status!];
+            return [head, (
+              <li key={t.id} role="option" aria-selected={sel} tabIndex={sel ? 0 : -1}
+                className="bugrow" data-status={r.status} onClick={() => open(r)} onKeyDown={e => { if (e.key === "Enter") open(r); }}>
                 <span className="k">{t.issue.key}</span>
                 <span className="t" title={t.issue.title}>{t.issue.title}</span>
-                <span className={`s ${status}`}><Icon /> {word} · {stageLabel(t.stage === "failed" || t.stage === "cancelled" ? lastRealStage(t) : t.stage)}</span>
+                <span className={`s ${r.status}`}><Icon /> {word} · {stageLabel(t.stage === "failed" || t.stage === "cancelled" ? lastRealStage(t) : t.stage)}</span>
               </li>
-            );
+            )];
           })}
         </ul>
         <div className="lfoot"><kbd>↑</kbd> <kbd>↓</kbd> move · <kbd>⏎</kbd> open</div>
       </aside>
-      {shown && <BugDetail key={shown.id} task={shown} state={state} now={now} onBugChanged={onBugChanged} onTranscript={onTranscript} onOpenSettings={onOpenSettings} onDecide={onDecide} />}
+      {task || (shown && !ticket && !selectedTicket)
+        ? <BugDetail key={(task ?? shown)!.id} task={(task ?? shown)!} state={state} now={now} onBugChanged={onBugChanged} onTranscript={onTranscript} onOpenSettings={onOpenSettings} onDecide={onDecide} />
+        : (ticket ?? selectedTicket) ? <TicketDetail key={ticket ?? selectedTicket!} ticketKey={(ticket ?? selectedTicket)!} onStarted={onStarted} /> : null}
     </div>
   );
 }

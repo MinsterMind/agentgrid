@@ -405,3 +405,14 @@ textarea.input { resize:none; }
 .gate .verdict { margin:8px 0; padding:8px 10px; border:1px solid #34D39955; background:rgba(52,211,153,.06); border-radius:6px; font-size:13px; }
 .gate .verdict b { color:var(--st-done); }
 .gate .report p { margin:0 0 6px; font-size:13px; white-space:pre-wrap; }
+
+/* Bugs view: every bug assigned to me, and a not-started ticket on the right */
+.buglist .lh { display:flex; align-items:center; gap:8px; } .buglist .lh .btn { margin-left:auto; }
+.buglist .lh .btn svg { width:14px; height:14px; }
+.buglist .group { list-style:none; padding:10px 12px 4px; font-size:11px; letter-spacing:.5px; text-transform:uppercase; color:var(--text-muted); border-top:1px solid var(--grid-line); }
+.buglist .warnline { margin:6px 10px; font-size:12px; }
+.bugrow .s.todo { color:var(--text-muted); display:inline-flex; align-items:center; gap:6px; }
+.bugdetail.ticket .panel { margin-top:12px; }
+.bugdetail.ticket .ac { margin:6px 0 0 18px; } .bugdetail.ticket .ac li { margin:3px 0; }
+.bugdetail.ticket .start .field { margin-bottom:10px; }
+.bugdetail.ticket .start > .row:last-child { align-items:center; gap:10px; } .bugdetail.ticket .start > .row:last-child .btn { margin-left:auto; }

@@ -1,3 +1,4 @@
+import type { TrackerIssue } from "./types";
 import type { Agent, Assignment, BugTask, Decision, DirListing, GridEvent, GridState, Integrations, IssueSummary, MemoryFile, SessionInfo, SetupReport } from "./types";
 
 export interface TranscriptEntry { ts: string; role: "user" | "assistant"; kind: "text" | "tool_use" | "tool_result"; text: string; tool?: string; input?: unknown }
@@ -42,6 +43,7 @@ export const api = {
   ack: (id: string) => call<void>("POST", `/api/agents/${encodeURIComponent(id)}/ack`),
   openTerminal: (id: string) => call<{ command: string; opened: boolean }>("POST", `/api/agents/${encodeURIComponent(id)}/open-terminal`),
   say: (id: string, text: string) => call<{ via: "terminal" | "assignment" }>("POST", `/api/agents/${encodeURIComponent(id)}/say`, { text }),
+  issue: (key: string) => call<TrackerIssue>("GET", `/api/bugfix/issues/${encodeURIComponent(key)}`),
   listRules: () => call<{ rules: Array<{ rule: string; addedAt: string }>; problem: string | null }>("GET", "/api/permissions/rules"),
   removeRule: (rule: string) => call<{ rules: Array<{ rule: string; addedAt: string }>; problem: string | null }>("DELETE", "/api/permissions/rules", { rule }),
   rereview: (id: string) => call<Assignment>("POST", `/api/agents/${encodeURIComponent(id)}/rereview`),
