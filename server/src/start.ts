@@ -161,9 +161,15 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
 
   // Fake mode: a canned tracker and forge so the whole flow can be exercised without Jira or gh.
   const fakeTracker: TrackerProvider = {
-    listMyIssues: async () => [{ key: "FAKE-1", title: "Fake bug for demos", url: "https://example.invalid/FAKE-1", status: "Open", priority: "High" }],
-    fetchIssue: async (ref: string) => ({ key: ref.split("/").pop() || "FAKE-1", title: "Fake bug for demos", url: "https://example.invalid/FAKE-1",
-      status: "Open", priority: "High", description: "A fake ticket used in fake mode.", acceptanceCriteria: ["it stops happening"] }),
+    listMyIssues: async () => [
+      { key: "FAKE-1", title: "Fake bug for demos", url: "https://example.invalid/FAKE-1", status: "Open", priority: "High" },
+      { key: "FAKE-2", title: "A second fake bug", url: "https://example.invalid/FAKE-2", status: "To Do", priority: "Medium" },
+    ],
+    fetchIssue: async (ref: string) => {
+      const key = ref.split("/").pop() || "FAKE-1";
+      return { key, title: key === "FAKE-2" ? "A second fake bug" : "Fake bug for demos", url: `https://example.invalid/${key}`,
+        status: "Open", priority: "High", description: "A fake ticket used in fake mode.", acceptanceCriteria: ["it stops happening"] };
+    },
     comment: async () => {},
   };
   // Only read the script in fake mode: it is used nowhere else, and a stale malformed value left
@@ -204,7 +210,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const agentPrs = new AgentPrWatcher({ store, forge: () => fakeForgeHandle ?? makeForge(lastCfg.forge) });
   agentPrs.start();
 
-  const app = createApp({ store, manager, permissions: { broker: permissionBroker, rules }, hookToken: () => hookToken, agentForSession, submitToTerminal: (sid, text) => ptys.submit(sid, text), transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }),
+  const app = createApp({ store, manager, permissions: { broker: permissionBroker, rules }, ...(fake ? { fakePermissions: true } : {}), hookToken: () => hookToken, agentForSession, submitToTerminal: (sid, text) => ptys.submit(sid, text), transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }),
     openTerminal, runInTerminal, staticDir, browseRoot: opts.browseRoot ?? process.env.AGENTGRID_BROWSE_ROOT, ...(fakeSessions ? { sessions: fakeSessions } : {}),
     integrations,
     roleResolves: () => { try { store.getRole("bugfix"); return true; } catch { return false; } },

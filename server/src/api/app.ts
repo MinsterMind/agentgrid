@@ -73,6 +73,8 @@ export interface AppDeps {
   permissions?: { broker: PermissionBroker; rules: RulesStore };
   /** The per-start secret the PermissionRequest hook must present; null until the server is listening. */
   hookToken?: () => string | null;
+  /** Fake mode only: POST /api/fake/permission raises a terminal permission request (the real one comes from the hook). */
+  fakePermissions?: boolean;
   /** The agent that owns a Claude Code session (adopted, or ran it), or null. */
   agentForSession?: (sessionId: string) => string | null;
 }
@@ -208,6 +210,15 @@ export function createApp(deps: AppDeps) {
     const d = await decision;
     if (!res.writableEnded && !res.destroyed) res.json({ decision: d });
   }));
+  if (deps.fakePermissions && deps.permissions) {
+    const broker = deps.permissions.broker;
+    app.post("/api/fake/permission", wrap(async (req, res) => {
+      const agent = store.getAgent(String(req.body?.agentId ?? ""));
+      const command = typeof req.body?.command === "string" ? req.body.command : "echo fake";
+      const { id } = broker.ask({ agentId: agent.id, source: "terminal", sessionId: `fake-${agent.id}`, toolName: "Bash", input: { command }, suggestions: [] });
+      res.status(201).json({ id });
+    }));
+  }
   /** The shared always-allow rules, for Settings: list them (with any problem reading the file) and remove one. */
   const rulesOrThrow = () => { if (!deps.permissions) throw Object.assign(new Error("permissions are not wired"), { status: 501 }); return deps.permissions.rules; };
   app.get("/api/permissions/rules", wrap(async (_req, res) => { const r = rulesOrThrow(); res.json({ rules: r.list(), problem: r.problem }); }));

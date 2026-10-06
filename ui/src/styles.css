@@ -416,3 +416,5 @@ textarea.input { resize:none; }
 .bugdetail.ticket .ac { margin:6px 0 0 18px; } .bugdetail.ticket .ac li { margin:3px 0; }
 .bugdetail.ticket .start .field { margin-bottom:10px; }
 .bugdetail.ticket .start > .row:last-child { align-items:center; gap:10px; } .bugdetail.ticket .start > .row:last-child .btn { margin-left:auto; }
+/* On a card the rule can be long: Always allow takes its own row under Allow / Deny. */
+.tile-req .acts .btn.always { flex-basis:100%; order:3; white-space:normal; }

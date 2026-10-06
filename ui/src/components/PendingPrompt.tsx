@@ -28,7 +28,7 @@ export const asPending = (r: PermissionRequest): Pending =>
 export function AlwaysAllow({ pending, onDecide, armed, setArmed, small }: { pending: Pending; onDecide: (d: Decision) => void; armed: boolean; setArmed: (v: boolean) => void; small?: boolean }) {
   const what = pending.toolName === "Bash" ? "shell command" : "file change";
   return (
-    <button className={`btn ${small ? "sm" : ""} ${armed ? "d" : ""}`} title={`Saved for every agent — remove it in Settings → Always allowed`}
+    <button className={`btn always ${small ? "sm" : ""} ${armed ? "d" : ""}`} title={`Saved for every agent — remove it in Settings → Always allowed`}
       onClick={e => { e.stopPropagation(); if (pending.ruleIsBroad && !armed) { setArmed(true); return; } setArmed(false); onDecide({ kind: "always" }); }}>
       {armed ? `Confirm: always allow every ${what}` : `Always allow ${pending.suggestedRule}`}
     </button>
