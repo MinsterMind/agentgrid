@@ -371,13 +371,15 @@ export function createApp(deps: AppDeps) {
     res.json(await b.engine.diffFor(req.params.id as string));
   }));
   app.post("/api/bugtasks", wrap(async (req, res) => {
-    const { issueRef, repo, mergePolicy, mergeMethod } = req.body ?? {};
+    const { issueRef, repo, mergePolicy, mergeMethod, baseBranch, startAnyway } = req.body ?? {};
+    if (baseBranch !== undefined && (typeof baseBranch !== "string" || !/^[A-Za-z0-9._/-]{1,200}$/.test(baseBranch))) throw new BadRequest("baseBranch must be a branch name");
     if (typeof issueRef !== "string" || !issueRef.trim()) throw new BadRequest("issueRef is required");
     if (typeof repo !== "string" || !path.isAbsolute(repo)) throw new BadRequest("an absolute repo path is required");
     if (mergePolicy !== undefined && !MERGE_POLICIES.includes(mergePolicy)) throw new BadRequest(`mergePolicy must be one of ${MERGE_POLICIES.join(", ")}`);
     if (mergeMethod !== undefined && !MERGE_METHODS.includes(mergeMethod)) throw new BadRequest(`mergeMethod must be one of ${MERGE_METHODS.join(", ")}`);
-    res.status(201).json(await bugs().engine.intake({ issueRef: issueRef.trim(), repo, mergePolicy, mergeMethod }));
+    res.status(201).json(await bugs().engine.intake({ issueRef: issueRef.trim(), repo, mergePolicy, mergeMethod, ...(baseBranch ? { baseBranch } : {}), ...(startAnyway === true ? { startAnyway: true } : {}) }));
   }));
+  app.post("/api/bugtasks/:id/close-no-change", wrap(async (req, res) => res.json(await bugs().engine.closeNoChange(req.params.id as string))));
   // `mergeMethod` is honoured only at the merge gate (`engine.mergeTask` checks the task is
   // actually "approved" before persisting it) — passing it anywhere else is simply ignored by
   // `mergeTask`, same as it always was. Validated here, before the engine is ever touched, so
@@ -476,7 +478,8 @@ export function createApp(deps: AppDeps) {
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = typeof err?.status === "number" ? err.status : 500;
     if (status === 500) console.error(err);
-    res.status(status).json({ error: err?.message ?? "internal error" });
+    // `code` lets a client act on a refusal (e.g. "already-on-base" → offer Start anyway) without parsing prose.
+    res.status(status).json({ error: err?.message ?? "internal error", ...(status < 500 && typeof err?.code === "string" && /^[a-z-]+$/.test(err.code) ? { code: err.code } : {}) });
   });
   return app;
 }

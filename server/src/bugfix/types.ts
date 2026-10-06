@@ -47,7 +47,17 @@ export interface BugTask {
   sourceRepo: string;             // the repo the user picked
   worktree: string;               // <repo>/.worktrees/bugfix-<KEY>
   branch: string;                 // bugfix/<KEY>
-  baseBranch: string;
+  baseBranch: string;             // the branch the PR targets, e.g. "develop"
+  /** The ref the branch was cut from and every diff/commit count compares against — `origin/<baseBranch>`
+   *  after a fetch. Never a local branch: those go stale, or (PULSEAI-414) sit at a repo's first commit.
+   *  Records written before 0.10.1 normalise to `baseBranch`. */
+  baseRef: string;
+  /** Commits already on `baseRef` that name the ticket, found at intake — the agent checks them first. */
+  ticketCommits: string[];
+  /** The plan's own "Verdict: no change needed — <why>", when it says so; null when it says a change is needed. */
+  verdict: string | null;
+  /** Why a task closed without a change: the evidence and what to do with the ticket. Null otherwise. */
+  report: string | null;
   agentId: string;
   stage: BugStage;
   gate: { kind: GateKind; openedAt: string; reason?: "feedback" | "rebase" | "external" } | null;
@@ -68,7 +78,7 @@ export interface BugTask {
    * without reading prose or inferring from a PR view. Records written before this field existed
    * normalise to null in `BugTaskStore.init`.
    */
-  outcome: "merged" | "closed" | null;
+  outcome: "merged" | "closed" | "no-change" | null;
   /**
    * The PR head a `checks-failed` round was last dispatched at. A failing build, like a
    * CHANGES_REQUESTED decision, STANDS until CI runs again — so the failure alone does not say
@@ -119,6 +129,8 @@ export type BugEvent =
   | { type: "request-changes"; text: string }
   | { type: "cancel" }
   | { type: "retry" }
+  /** Nothing to change: the human closes at the plan gate, or the change step ended with no commits and a clean tree. */
+  | { type: "no-change"; report: string }
   /** `source` says whose words `comments` are, and therefore whether the agent may obey them:
    *  "forge" is reviewer/CI text pulled off the pull request (data, fenced in the prompt);
    *  "operator" is the human at the console typing into this app. The watcher only ever
@@ -142,7 +154,9 @@ export interface Transition {
   stage: BugStage;
   /** Set only on the transitions that END a task, and then it is the durable answer to "did
    *  this merge?" — see `BugTask.outcome`. Absent leaves whatever the task already had. */
-  outcome?: "merged" | "closed";
+  outcome?: "merged" | "closed" | "no-change";
+  /** Set with the "no-change" outcome — see `BugTask.report`. */
+  report?: string;
   gate: { kind: GateKind; openedAt: string; reason?: "feedback" | "rebase" | "external" } | null;
   error: string | null;
   note: string;

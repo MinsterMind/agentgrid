@@ -132,7 +132,7 @@ export class BugFixEngine {
     });
   }
 
-  async preflight(repo: string): Promise<{ ok: boolean; problems: string[]; remote: string | null }> {
+  async preflight(repo: string): Promise<{ ok: boolean; problems: string[]; remote: string | null; baseBranch: string | null; branches: string[] }> {
     const problems: string[] = [];
     const remote = await this.deps.git.hasRemote(repo);
     if (!remote) problems.push("this repo has no `origin` remote");
@@ -142,10 +142,16 @@ export class BugFixEngine {
       if (!auth.ok) problems.push(`forge not authenticated: ${auth.message}`);
     }
     try { this.deps.store.getRole(this.role); } catch { problems.push(`the "${this.role}" role could not be resolved — it ships with AgentGrid, so this usually means a broken install`); }
-    return { ok: problems.length === 0, problems, remote: remote ? displayRemote(remote) : null };
+    // Where the fix will be cut from, so the launcher can show it and let the human change it.
+    // From the refs as they are: fetching here would make every keystroke in the repo field a network call.
+    const branches = remote ? await this.deps.git.remoteBranches(repo).catch(() => []) : [];
+    const baseBranch = branches.length ? await this.deps.git.integrationBranch(repo).catch(() => null) : null;
+    return { ok: problems.length === 0, problems, remote: remote ? displayRemote(remote) : null, baseBranch, branches };
   }
 
-  async intake(input: { issueRef: string; repo: string; mergePolicy?: "ask" | "auto"; mergeMethod?: "squash" | "merge" | "rebase" }): Promise<BugTask> {
+  /** `baseBranch`: the branch to cut from and target (default: origin's integration branch).
+   *  `startAnyway`: start even though commits on the base already name the ticket. */
+  async intake(input: { issueRef: string; repo: string; mergePolicy?: "ask" | "auto"; mergeMethod?: "squash" | "merge" | "rebase"; baseBranch?: string; startAnyway?: boolean }): Promise<BugTask> {
     const { git, bugs, store, tracker, integrations, forge } = this.deps;
     // Without a pollable forge, `opening-pr` can never be verified (see `verify`), so a
     // gitlab/custom repo would otherwise burn two agent stages and a human gate before
@@ -156,8 +162,24 @@ export class BugFixEngine {
 
     const issue = await tracker.fetchIssue(input.issueRef);
     const branch = branchName(issue.key);
-    const baseBranch = await git.defaultBranch(input.repo);
+    // Cut from origin's tip after a fetch — never a local branch, which goes stale or, in a gitflow
+    // repo, can sit at the first commit with no code in it (PULSEAI-414).
+    await git.fetch(input.repo).catch((err: Error) => { throw new Conflict(`could not fetch from origin: ${err.message}`); });
+    const picked = input.baseBranch?.trim();
+    if (picked && !(await git.remoteBranches(input.repo)).includes(picked)) throw new Conflict(`origin has no branch "${picked}"`);
+    const baseBranch = picked || await git.integrationBranch(input.repo);
+    const baseRef = `origin/${baseBranch}`;
     if (branch === baseBranch) throw new Conflict(`refusing to work on the default branch (${baseBranch})`);
+
+    // Fix commits carry the ticket key: if some already landed on the base, the ticket may be done.
+    // Say so before an agent spends a run rediscovering it — the human can still start anyway.
+    const ticketCommits = await git.ticketCommits(input.repo, baseRef, issue.key);
+    if (ticketCommits.length && !input.startAnyway) {
+      throw Object.assign(new Conflict(
+        `${issue.key} may already be fixed: ${baseRef} has ${ticketCommits.length === 1 ? "a commit" : `${ticketCommits.length} commits`} naming it —\n` +
+        ticketCommits.map(c => `  ${c}`).join("\n") + `\nCheck ${ticketCommits.length === 1 ? "it" : "them"}, or start anyway and the agent will verify first.`),
+        { code: "already-on-base" });
+    }
 
     // A cancelled task deliberately leaves its worktree and branch in place (spec §8) — a
     // leftover worktree may hold unpushed work, so nothing here is ever auto-deleted. But
@@ -192,20 +214,26 @@ export class BugFixEngine {
       );
     }
 
-    const worktree = await git.createWorktree(input.repo, branch, baseBranch);
+    const worktree = await git.createWorktree(input.repo, branch, baseRef);
     const agent = await store.createAgent({ role: this.role, repo: worktree, displayName: issue.key });
     const project = issue.key.split("-")[0] ?? issue.key;
     await integrations.rememberRepo(project, input.repo);
 
     const task = await bugs.create({
       issue, trackerProject: project, sourceRepo: input.repo, worktree,
-      branch, baseBranch, agentId: agent.id,
+      branch, baseBranch, baseRef, ticketCommits, agentId: agent.id,
       mergePolicy: input.mergePolicy ?? "ask", mergeMethod: input.mergeMethod ?? "squash",
     });
     return this.advance(task.id, { type: "stage-done" });
   }
 
   approve(taskId: string): Promise<BugTask> { return this.advance(taskId, { type: "approve" }); }
+  /** At the plan gate: the plan found nothing to change (e.g. already fixed) and the human agrees. */
+  async closeNoChange(taskId: string): Promise<BugTask> {
+    const task = this.deps.bugs.get(taskId);
+    if (task.stage !== "plan-review") throw new Conflict(`a task closes as "no change needed" at the plan gate (is ${task.stage})`);
+    return this.advance(taskId, { type: "no-change", report: noChangeReport(task, task.verdict ?? "The approved plan found nothing to change.") });
+  }
   cancel(taskId: string): Promise<BugTask> { return this.advance(taskId, { type: "cancel" }); }
   /** Retry a failed task. One that failed on the way to a pull request first asks the forge
    *  whether a PR for its branch now exists — someone may have opened it by hand — and adopts it
@@ -346,7 +374,7 @@ export class BugFixEngine {
 
   async diffFor(taskId: string): Promise<DiffResult> {
     const t = this.deps.bugs.get(taskId);
-    return this.deps.git.diff(t.worktree, t.baseBranch);
+    return this.deps.git.diff(t.worktree, t.baseRef);
   }
 
   /** Queue a transition for this task behind whatever is already running for it. */
@@ -399,7 +427,7 @@ export class BugFixEngine {
     }
     // Pin what the human is about to review, exactly as `verify()` does when an agent stage
     // opens the diff gate.
-    const diff = await git.diff(task.worktree, task.baseBranch);
+    const diff = await git.diff(task.worktree, task.baseRef);
     await bugs.patch(taskId, { approvedHead: head });
     await bugs.writeArtifact(taskId, "diff.patch", diff.patch);
     await bugs.writeArtifact(taskId, "diffstat.json", JSON.stringify({ files: diff.files, additions: diff.additions, deletions: diff.deletions }, null, 2));
@@ -472,7 +500,7 @@ export class BugFixEngine {
       // Guard the only stage that touches the outside world.
       if (!forge) throw new Error("no forge configured — cannot open a pull request");
       if (task.branch === task.baseBranch) throw new Error(`refusing to push the default branch (${task.baseBranch})`);
-      if ((await this.deps.git.commitsAhead(task.worktree, task.baseBranch)) === 0) throw new Error("no commits to open a pull request with");
+      if ((await this.deps.git.commitsAhead(task.worktree, task.baseRef)) === 0) throw new Error("no commits to open a pull request with");
       // The human approved a specific commit at the diff gate. If the agent amended or added
       // one since, the PR would contain code nobody reviewed — and the old branch/commits-ahead
       // checks would have waved it through. Fail loudly, naming both commits.
@@ -776,6 +804,16 @@ export class BugFixEngine {
       await this.advance(task.id, { type: "stage-failed", reason: a.error ?? "the agent's run failed" });
       return;
     }
+    // Nothing committed and nothing changed: the change step found there was nothing to do (the fix
+    // is already on the base). End here, honestly, rather than walk on to a PR step with no commit.
+    if (task.stage === "implementing") {
+      const empty = await this.emptyChange(bugs.get(task.id)).catch(() => false);
+      if (empty) {
+        const t = bugs.get(task.id);
+        await this.advance(task.id, { type: "no-change", report: noChangeReport(t, `${a.outcome?.trim() || "The agent made no change."}\n\nThere are no commits on ${t.branch} beyond ${t.baseRef}, and nothing uncommitted.`) });
+        return;
+      }
+    }
     try {
       await this.verify(bugs.get(task.id));
     } catch (err) {
@@ -800,12 +838,20 @@ export class BugFixEngine {
     } catch { /* a store write failing here must not take the stage down with it */ }
   }
 
+  /** The change step left nothing behind: on the task branch, no commits beyond the base, a clean tree. */
+  private async emptyChange(task: BugTask): Promise<boolean> {
+    const { git } = this.deps;
+    if ((await git.currentBranch(task.worktree)) !== task.branch) return false;   // verify() reports that
+    return (await git.commitsAhead(task.worktree, task.baseRef)) === 0 && (await git.uncommitted(task.worktree)).length === 0;
+  }
+
   /** The server's own evidence that a stage really happened. */
   private async verify(task: BugTask): Promise<void> {
     const { bugs, git } = this.deps;
     if (task.stage === "analyzing") {
       const plan = await bugs.readArtifact(task.id, "plan.md");
       if (!plan?.trim()) throw new Error("the agent did not write plan.md");
+      await bugs.patch(task.id, { verdict: planVerdict(plan) });
       return;
     }
     if (task.stage === "implementing") {
@@ -813,8 +859,11 @@ export class BugFixEngine {
       // `commitsAhead`/`diff` would then silently count and diff the wrong thing.
       const branch = await git.currentBranch(task.worktree);
       if (branch !== task.branch) throw new Error(`worktree is on ${branch}, not the task branch ${task.branch}`);
-      if ((await git.commitsAhead(task.worktree, task.baseBranch)) === 0) throw new Error("no commits on the task branch");
-      const diff = await git.diff(task.worktree, task.baseBranch);
+      if ((await git.commitsAhead(task.worktree, task.baseRef)) === 0) {
+        const dirty = await git.uncommitted(task.worktree).catch(() => []);
+        throw new Error(dirty.length ? `changes are not committed: ${dirty.slice(0, 8).join(", ")}${dirty.length > 8 ? ", …" : ""}` : "no commits on the task branch");
+      }
+      const diff = await git.diff(task.worktree, task.baseRef);
       // Pin what the human is about to approve. The diff card renders a LIVE `git diff`, so
       // without this there is nothing tying the reviewed change to the commit that gets pushed.
       await bugs.patch(task.id, { approvedHead: await git.revParse(task.worktree) });
@@ -833,7 +882,7 @@ export class BugFixEngine {
       // end of an earlier feedback round.
       const head = await git.revParse(task.worktree);
       if (head === task.approvedHead) throw new Error("no new commits addressing the review feedback");
-      const diff = await git.diff(task.worktree, task.baseBranch);
+      const diff = await git.diff(task.worktree, task.baseRef);
       await bugs.patch(task.id, { approvedHead: head });
       await bugs.writeArtifact(task.id, "diff.patch", diff.patch);
       await bugs.writeArtifact(task.id, "diffstat.json", JSON.stringify({ files: diff.files, additions: diff.additions, deletions: diff.deletions }, null, 2));
@@ -851,8 +900,8 @@ export class BugFixEngine {
       const state = await git.rebaseState(task.worktree);
       if (state.inProgress) throw new Error(`the rebase is not finished — still conflicted: ${state.conflicted.join(", ") || "unknown files"}`);
       if (state.conflicted.length) throw new Error(`conflicts are unresolved in: ${state.conflicted.join(", ")}`);
-      if ((await git.commitsAhead(task.worktree, task.baseBranch)) === 0) throw new Error("nothing left on the branch after the rebase");
-      const diff = await git.diff(task.worktree, task.baseBranch);
+      if ((await git.commitsAhead(task.worktree, task.baseRef)) === 0) throw new Error("nothing left on the branch after the rebase");
+      const diff = await git.diff(task.worktree, task.baseRef);
       // A rebase legitimately moves HEAD — re-pin `approvedHead` to the post-rebase head, or
       // the eventual push's own pin check would fail every real rebase (Task 6's dependency).
       await bugs.patch(task.id, { approvedHead: await git.revParse(task.worktree) });
@@ -921,4 +970,18 @@ function displayRemote(url: string): string {
   const r = parseRemote(url);
   if (r) return `${r.host}/${r.path.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "")}`;
   return url.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/^[^@/]*@/, "");
+}
+
+/** The plan's verdict line: "Verdict: no change needed — <why>" gives the why; anything else (or none) is null. */
+export function planVerdict(plan: string): string | null {
+  const line = plan.split("\n").map(l => l.replace(/^[\s#>*_`-]+/, "").replace(/\*\*|__|`/g, "").trim()).find(l => /^verdict\s*:/i.test(l));
+  const m = line?.match(/^verdict\s*:\s*no change(?: needed| required)?\b\s*[—–:,.-]*\s*(.*)$/i);
+  return m ? (m[1].trim() || "No change needed.") : null;
+}
+
+/** What a human needs when a task ends without a change: the evidence, that nothing went out, and what to do with the ticket. */
+function noChangeReport(task: BugTask, evidence: string): string {
+  const prior = task.ticketCommits.length ? `\n\nCommits on ${task.baseRef} that name ${task.issue.key}:\n${task.ticketCommits.map(c => `  ${c}`).join("\n")}` : "";
+  return `${evidence.trim()}${prior}\n\nNothing was pushed and no pull request was opened.\n` +
+    `Suggested for ${task.issue.key}: move it to Done (or "Won't fix" if it never reproduced), with a comment pointing at the evidence above.`;
 }

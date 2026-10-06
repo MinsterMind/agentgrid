@@ -4,15 +4,20 @@ import userEvent from "@testing-library/user-event";
 import { BugLauncher } from "../src/components/BugLauncher";
 
 const myIssues = vi.fn(async () => [{ key: "PAY-42", title: "Refresh token rotates twice", url: "u", status: "Open", priority: "High" }]);
-const bugPreflight = vi.fn(async (_repo: string): Promise<{ ok: boolean; problems: string[]; remote?: string | null }> => ({ ok: true, problems: [] as string[] }));
-const createBugTask = vi.fn(async (i: { issueRef: string; repo: string }) => ({ id: "bt1", ...i }));
+type Pre = { ok: boolean; problems: string[]; remote?: string | null; baseBranch?: string | null; branches?: string[] };
+const bugPreflight = vi.fn(async (_repo: string): Promise<Pre> => ({ ok: true, problems: [] as string[] }));
+const createBugTask = vi.fn(async (i: { issueRef: string; repo: string; baseBranch?: string; startAnyway?: boolean }): Promise<object> => ({ id: "bt1", ...i }));
+const { ApiError } = vi.hoisted(() => {
+  class ApiError extends Error { constructor(message: string, public status: number, public code?: string) { super(message); } }
+  return { ApiError };
+});
 const getIntegrations = vi.fn(async () => ({ projectRepos: { PAY: "/r/payments" } }));
 const getSetup = vi.fn(async () => ({
   ready: true, wired: true, addCommand: "",
   checks: [] as { id: string; state: "ok" | "missing" | "broken"; detail: string; blocks: boolean }[],
   discovery: { servers: [], problems: [] as string[] },
 }));
-vi.mock("../src/api", () => ({ api: {
+vi.mock("../src/api", () => ({ ApiError, api: {
   myIssues: () => myIssues(), bugPreflight: (r: string) => bugPreflight(r),
   createBugTask: (i: never) => createBugTask(i), getIntegrations: () => getIntegrations(),
   getSetup: () => getSetup(),
@@ -180,5 +185,31 @@ describe("Fix a bug — key check leniency (phase 3 M-3)", () => {
   });
 });
 
-});
 
+  // PULSEAI-414: the branch was cut from origin's default (`main`, frozen at the first commit).
+  it("shows the branch the fix is cut from, lets you pick another, and sends it", async () => {
+    bugPreflight.mockImplementation(async () => ({ ok: true, problems: [], remote: "bitbucket.org/gruve-team/pluseai_platform", baseBranch: "develop", branches: ["develop", "main", "release/2.0"] }));
+    render(<BugLauncher onClose={vi.fn()} onOpenSettings={vi.fn()} />);
+    await userEvent.type(screen.getByLabelText("Issue URL or key"), "PAY-42");
+    await userEvent.type(screen.getByLabelText("Repo"), "/r/payments");
+    const base = await screen.findByLabelText("Branch from");
+    expect(base).toHaveValue("develop");
+    await userEvent.selectOptions(base, "release/2.0");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start fixing" })).not.toBeDisabled());
+    await userEvent.click(screen.getByRole("button", { name: "Start fixing" }));
+    expect(createBugTask).toHaveBeenCalledWith({ issueRef: "PAY-42", repo: "/r/payments", mergePolicy: "ask", baseBranch: "release/2.0" });
+  });
+
+  it("when the ticket's fix may already be in, shows the commits and offers Start anyway", async () => {
+    bugPreflight.mockImplementation(async () => ({ ok: true, problems: [], baseBranch: "develop", branches: ["develop", "main"] }));
+    createBugTask.mockImplementationOnce(async () => { throw new ApiError("PAY-42 may already be fixed: origin/develop has a commit naming it —\n  8561f07d PAY-42: guard (#213)", 409, "already-on-base"); });
+    render(<BugLauncher onClose={vi.fn()} onOpenSettings={vi.fn()} />);
+    await userEvent.type(screen.getByLabelText("Issue URL or key"), "PAY-42");
+    await userEvent.type(screen.getByLabelText("Repo"), "/r/payments");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start fixing" })).not.toBeDisabled());
+    await userEvent.click(screen.getByRole("button", { name: "Start fixing" }));
+    expect(await screen.findByText(/8561f07d PAY-42: guard \(#213\)/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Start anyway" }));
+    expect(createBugTask).toHaveBeenLastCalledWith({ issueRef: "PAY-42", repo: "/r/payments", mergePolicy: "ask", baseBranch: "develop", startAnyway: true });
+  });
+});

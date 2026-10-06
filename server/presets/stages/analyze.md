@@ -15,11 +15,24 @@ Acceptance criteria:
 {{acceptanceCriteria}}
 ```
 
+{{ticketCommits}}
+
+## Where you are
+
+Your branch {{branch}} was cut from {{baseRef}} (fetched just now) — the branch the pull request will target.
+Compare against {{baseRef}}, never a local branch: `git log --oneline {{baseRef}}..HEAD`, `git diff {{baseRef}}...HEAD`.
+
 ## Your job in this step: understand and plan. Do not change any code yet.
 
 1. Reproduce the problem if it is cheap to do so (a failing test, a script, a log trace).
 2. Read the relevant code and find the root cause — not just the symptom.
-3. Write your plan to {{planPath}} with these headings:
+3. Decide whether a change is needed at all. The bug may already be fixed on {{baseRef}}, or may not
+   reproduce. Only say no change is needed with evidence: the commit or pull request that fixed it,
+   and a test or run that shows it fixed.
+4. Write your plan to {{planPath}} with the verdict as its first line, exactly one of:
+   - `Verdict: change needed`
+   - `Verdict: no change needed — <why, naming the evidence>`
+   Then these headings:
    - Root cause
    - Fix (files and what changes in each)
    - Test strategy (how we will know it is fixed)

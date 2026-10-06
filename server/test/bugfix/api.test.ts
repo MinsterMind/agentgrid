@@ -19,8 +19,10 @@ let app: ReturnType<typeof createApp>; let bugs: BugTaskStore; let calls: string
 /** A stand-in engine: records what the routes asked for, mutates the store just enough. */
 const fakeEngine = (bugs: BugTaskStore, calls: string[]) => ({
   preflight: async (repo: string) => { calls.push(`preflight ${repo}`); return { ok: true, problems: [] }; },
-  intake: async (input: { issueRef: string; repo: string }) => { calls.push(`intake ${input.issueRef}`);
-    return bugs.create({ issue: ISSUE, trackerProject: "PAY", sourceRepo: input.repo, worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", agentId: "bugfix@w", mergePolicy: "ask", mergeMethod: "squash" }); },
+  closeNoChange: async (id: string) => { calls.push(`no-change ${id}`); return bugs.get(id); },
+  intake: async (input: { issueRef: string; repo: string; baseBranch?: string; startAnyway?: boolean }) => { calls.push(`intake ${input.issueRef}${input.baseBranch ? ` base=${input.baseBranch}` : ""}${input.startAnyway ? " anyway" : ""}`);
+    if (input.issueRef === "PAY-1") throw Object.assign(new Error("PAY-1 may already be fixed"), { status: 409, code: "already-on-base" });
+    return bugs.create({ issue: ISSUE, trackerProject: "PAY", sourceRepo: input.repo, worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", baseRef: "origin/main", ticketCommits: [], agentId: "bugfix@w", mergePolicy: "ask", mergeMethod: "squash" }); },
   approve: async (id: string) => { calls.push(`approve ${id}`); return bugs.get(id); },
   requestChanges: async (id: string, text: string) => { calls.push(`changes ${id} ${text}`); return bugs.get(id); },
   cancel: async (id: string) => { calls.push(`cancel ${id}`); return bugs.get(id); },
@@ -47,6 +49,16 @@ describe("bug task routes", () => {
     expect((await request(app).get("/api/bugtasks").expect(200)).body.map((t: BugTask) => t.id)).toEqual(["bt1"]);
     expect((await request(app).get("/api/state").expect(200)).body.bugTasks).toHaveLength(1);
     await request(app).get("/api/bugtasks/nope").expect(404);
+  });
+
+  it("passes the chosen base and 'start anyway' through, says why it refused, and closes a task as no change", async () => {
+    await request(app).post("/api/bugtasks").send({ issueRef: "PAY-42", repo: "/r", baseBranch: "develop", startAnyway: true }).expect(201);
+    expect(calls).toContain("intake PAY-42 base=develop anyway");
+    await request(app).post("/api/bugtasks").send({ issueRef: "PAY-42", repo: "/r", baseBranch: 7 }).expect(400);
+    const refused = await request(app).post("/api/bugtasks").send({ issueRef: "PAY-1", repo: "/r" }).expect(409);
+    expect(refused.body).toEqual({ error: "PAY-1 may already be fixed", code: "already-on-base" });
+    await request(app).post("/api/bugtasks/bt1/close-no-change").expect(200);
+    expect(calls).toContain("no-change bt1");
   });
 
   it("serves the plan markdown and the computed diff", async () => {

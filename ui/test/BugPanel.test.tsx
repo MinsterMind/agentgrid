@@ -25,6 +25,7 @@ const retryBug = vi.fn(async (_id: string) => task("implementing"));
 const listBugTasks = vi.fn(async (): Promise<BugTask[]> => []);
 const addressComments = vi.fn(async (_id: string, _text?: string) => task("review-feedback"));
 const dismissBug = vi.fn(async (_id: string) => undefined);
+const closeBugNoChange = vi.fn(async (_id: string) => task("done", { outcome: "no-change" }));
 vi.mock("../src/api", () => ({
   ApiError,
   api: {
@@ -34,6 +35,7 @@ vi.mock("../src/api", () => ({
     listBugTasks: () => listBugTasks(),
     addressComments: (id: string, text?: string) => addressComments(id, text),
     dismissBug: (id: string) => dismissBug(id),
+    closeBugNoChange: (id: string) => closeBugNoChange(id),
   },
 }));
 
@@ -100,6 +102,29 @@ describe("BugPanel", () => {
     expect(screen.getByText(/Refresh token rotates twice/)).toBeInTheDocument();
     expect(screen.getByTestId("bug-stage")).toHaveTextContent("Implementing");
     expect(screen.getByTestId("bug-stage")).toHaveAttribute("data-stage", "implementing");
+  });
+
+  // PULSEAI-414: the plan said "already fixed", and the only way forward was to approve a change.
+  it("a plan that found nothing to change offers to close the task, and still allows a change anyway", async () => {
+    const onChanged = vi.fn();
+    render(<BugPanel task={task("plan-review", { verdict: "already fixed on origin/develop by 8561f07d (PR #213)" })} onChanged={onChanged} />);
+    await waitFor(() => expect(screen.getByText(/rotated twice/)).toBeInTheDocument());
+    const note = screen.getByTestId("gate-verdict");
+    expect(note).toHaveTextContent("The plan found nothing to change"); expect(note).toHaveTextContent("8561f07d (PR #213)");
+    expect(screen.queryByRole("button", { name: "Approve & implement" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Make a change anyway" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Close — no change needed" }));
+    expect(closeBugNoChange).toHaveBeenCalledWith("bt1");
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+  });
+
+  it("a task closed without a change says so, with the report and what to do with the ticket", () => {
+    render(<BugPanel task={task("done", { outcome: "no-change", report: "Already fixed by 8561f07d.\n\nNothing was pushed and no pull request was opened.\nSuggested for PAY-42: move it to Done." })} onChanged={vi.fn()} />);
+    const card = screen.getByTestId("gate-done");
+    expect(card).toHaveTextContent("No change needed");
+    expect(card).not.toHaveTextContent("Closed without merging");
+    expect(card).toHaveTextContent("Already fixed by 8561f07d.");
+    expect(card).toHaveTextContent("Suggested for PAY-42: move it to Done.");
   });
 
   it("plan gate renders the plan and approves it", async () => {

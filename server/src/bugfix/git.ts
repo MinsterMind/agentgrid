@@ -38,9 +38,54 @@ export class GitOps {
     return (await this.run(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
   }
 
-  async createWorktree(repo: string, branch: string, baseBranch: string): Promise<string> {
+  /** Bring origin's branches up to date — a fix cut from a stale ref starts from code that has moved on. */
+  async fetch(repo: string): Promise<void> {
+    await this.run(repo, ["fetch", "--quiet", "--prune", "origin"]);
+  }
+
+  /** Branch names on origin (without the `origin/` prefix), newest commit first. */
+  async remoteBranches(repo: string): Promise<string[]> {
+    const out = await this.run(repo, ["for-each-ref", "--sort=-committerdate", "--format=%(refname:strip=3)", "refs/remotes/origin"]).catch(() => "");
+    return out.split("\n").map(l => l.trim()).filter(l => l && l !== "HEAD");
+  }
+
+  /**
+   * The branch work actually lands on. Origin's default branch is not always it: a gitflow repo
+   * can leave `main` frozen at its first commit while everything merges to `develop` — and a fix
+   * cut from there has no code to fix (PULSEAI-414). So: of origin's default and the usual
+   * integration names, the one with the newest commit; on a tie, the one that contains the other.
+   * Falls back to `defaultBranch` when origin has none of them.
+   */
+  async integrationBranch(repo: string): Promise<string> {
+    const fallback = await this.defaultBranch(repo);
+    const names = [...new Set([fallback, "develop", "development", "dev", "main", "master"])];
+    const out = await this.run(repo, ["for-each-ref", "--format=%(committerdate:unix) %(refname:strip=3)", ...names.map(n => `refs/remotes/origin/${n}`)]).catch(() => "");
+    const found = out.split("\n").map(l => l.trim().split(" ")).filter(p => p.length === 2).map(([ts, name]) => ({ ts: Number(ts), name }));
+    if (!found.length) return fallback;
+    let best = found[0];
+    for (const c of found.slice(1)) {
+      if (c.ts > best.ts || (c.ts === best.ts && await this.isAncestor(repo, `origin/${best.name}`, `origin/${c.name}`))) best = c;
+    }
+    return best.name;
+  }
+
+  private isAncestor(repo: string, a: string, b: string): Promise<boolean> {
+    return this.run(repo, ["merge-base", "--is-ancestor", a, b]).then(() => true, () => false);
+  }
+
+  /** Commits on `ref` whose message names `issueKey` — a fix that already landed. Exact key only:
+   *  PAY-42 must not match PAY-420. One `<short sha> <subject>` line each, newest first. */
+  async ticketCommits(repo: string, ref: string, issueKey: string, limit = 10): Promise<string[]> {
+    const key = assertIssueKey(issueKey).replace(/[.]/g, "\\.");
+    const out = await this.run(repo, ["log", "--oneline", "-E", "-i", `--max-count=${limit}`, `--grep=(^|[^A-Za-z0-9_-])${key}([^A-Za-z0-9_]|$)`, ref, "--"]).catch(() => "");
+    return out.split("\n").map(l => l.trim()).filter(Boolean);
+  }
+
+  /** `startPoint` is a ref such as `origin/develop`. `--no-track`: the task branch must not have
+   *  the base as its upstream, or a plain `git pull` inside the worktree merges the base in. */
+  async createWorktree(repo: string, branch: string, startPoint: string): Promise<string> {
     const dir = worktreePath(repo, branch.replace(/^bugfix\//, ""));
-    await this.run(repo, ["worktree", "add", "-b", branch, dir, baseBranch]);
+    await this.run(repo, ["worktree", "add", "--no-track", "-b", branch, dir, startPoint]);
     return dir;
   }
 
@@ -71,6 +116,13 @@ export class GitOps {
 
   async currentBranch(dir: string): Promise<string> {
     return (await this.run(dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+  }
+
+  /** Paths with changes not committed (staged, unstaged or untracked) — "nothing committed" only
+   *  means "nothing to change" when this is empty too. */
+  async uncommitted(dir: string): Promise<string[]> {
+    const out = await this.run(dir, ["status", "--porcelain"]);
+    return out.split("\n").filter(l => l.trim()).map(l => l.slice(3).trim());
   }
 
   async commitsAhead(dir: string, baseBranch: string): Promise<number> {

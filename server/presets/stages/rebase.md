@@ -4,8 +4,8 @@ The pull request for {{issueKey}} conflicts with {{baseBranch}} and cannot be me
 
 Your job in this step, in {{worktree}}:
 
-1. Fetch the latest {{baseBranch}}.
-2. Rebase {{branch}} onto it.
+1. Fetch the latest: `git fetch origin {{baseBranch}}`.
+2. Rebase {{branch}} onto {{baseRef}} (origin's copy — never a local {{baseBranch}}, which may be stale).
 3. Resolve every conflict. Keep the intent of both sides: the fix this branch makes, and
    whatever changed on {{baseBranch}} underneath it.
 4. Leave no conflict markers, and finish the rebase — `git status` must be clean.

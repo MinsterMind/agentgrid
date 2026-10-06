@@ -90,6 +90,7 @@ function gateHeadline(task: BugTask): string {
 export interface Now { headline: string; detail?: string; since?: string; sinceKind?: "running" | "waiting" | "checked" }
 export function nowFor({ task, pending, activity }: { task: BugTask; pending: Pending | null; activity: SessionActivity | null }): Now {
   const since = task.history.at(-1)?.at;
+  if (task.stage === "done" && task.outcome === "no-change") return { headline: "Closed — no change needed" };
   if (task.stage === "done") return { headline: task.outcome === "closed" || (!task.outcome && task.pr?.state === "CLOSED") ? "Closed without merging" : "Merged" };
   if (task.stage === "cancelled") return { headline: "Cancelled" };
   if (task.stage === "failed") return { headline: `Failed while ${stageLabel(positionStage(task)).toLowerCase()}` };

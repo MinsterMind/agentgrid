@@ -9,7 +9,7 @@ const task: BugTask = {
   issue: { key: "PAY-42", title: "Refresh token rotates twice", url: "https://x/PAY-42", status: "Open",
            priority: "High", description: "Steps: retry a request…", acceptanceCriteria: ["no double rotation"] },
   trackerProject: "PAY", sourceRepo: "/r/pay", worktree: "/r/pay/.worktrees/bugfix-PAY-42",
-  branch: "bugfix/PAY-42", baseBranch: "main", agentId: "bugfix@pay", stage: "analyzing", gate: null,
+  branch: "bugfix/PAY-42", baseBranch: "develop", baseRef: "origin/develop", ticketCommits: [], verdict: null, report: null, agentId: "bugfix@pay", stage: "analyzing", gate: null,
   mergePolicy: "ask", mergeMethod: "squash", pr: null, costUsd: 0, history: [], error: null, createdAt: "", updatedAt: "",
 };
 const ctx = { artifactsDir: "/home/.agentgrid/bugtasks/bt1", planPath: "/home/.agentgrid/bugtasks/bt1/plan.md", prBodyPath: "/home/.agentgrid/bugtasks/bt1/pr-body.md" };
@@ -31,6 +31,34 @@ const PROHIBITION = /\b(do not|don't|never)\b/i;
 function affirmativeLines(text: string, re: RegExp): string[] {
   return text.split("\n").filter(line => re.test(line) && !PROHIBITION.test(line));
 }
+
+describe("renderStagePrompt — the base and the no-change path (PULSEAI-414)", () => {
+  it.each(["implementing", "opening-pr", "review-feedback"] as const)("%s compares against origin's ref, never a local branch", async stage => {
+    const p = await renderStagePrompt(stage, { ...task, stage }, ctx, presets);
+    expect(p).toContain("git diff origin/develop...HEAD");
+    expect(p).not.toMatch(/git diff (main|develop)\.\.\./);
+  });
+  it("rebase fetches the base and rebases onto origin's ref", async () => {
+    const p = await renderStagePrompt("rebase", { ...task, stage: "rebase" }, ctx, presets);
+    expect(p).toContain("git fetch origin develop"); expect(p).toContain("onto origin/develop");
+  });
+  it("the plan starts with a verdict, and checks commits that already name the ticket — quoted as data", async () => {
+    const p = await renderStagePrompt("analyzing", { ...task, ticketCommits: ["8561f07d PAY-42: guard the null customer (#213)"] }, ctx, presets);
+    expect(p).toContain("Verdict: change needed"); expect(p).toContain("Verdict: no change needed");
+    expect(p).toContain("8561f07d PAY-42: guard the null customer (#213)");
+    expect(p).toMatch(/cut from origin\/develop/);
+    const none = await renderStagePrompt("analyzing", task, ctx, presets);
+    expect(none).not.toMatch(/already name this ticket/);
+  });
+  it("the change step is told not to invent a commit when there is nothing to change", async () => {
+    const p = await renderStagePrompt("implementing", { ...task, stage: "implementing" }, ctx, presets);
+    expect(p).toMatch(/nothing to change/i); expect(p).toMatch(/do not make an empty/i);
+  });
+  it("opening the PR lists the commits that go up", async () => {
+    const p = await renderStagePrompt("opening-pr", { ...task, stage: "opening-pr" }, ctx, presets);
+    expect(p).toContain("git log --oneline origin/develop..HEAD");
+  });
+});
 
 describe("renderStagePrompt", () => {
   it.each(["analyzing", "implementing", "review-feedback", "rebase"] as const)(
