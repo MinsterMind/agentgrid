@@ -174,7 +174,7 @@ describe("App Escape handling", () => {
     render(<App />);
     const a = { ...agent("A", "waiting"), currentAssignmentId: "a1" };
     const asg = { id: "a1", agentId: "A", prompt: "p", createdAt: "", startedAt: null, endedAt: null, sessionId: null, state: "waiting" as const,
-      activity: "", pending: { kind: "permission" as const, toolUseId: "tu1", toolName: "Bash", input: { command: "ls" }, suggestions: [] }, outcome: null, error: null, turns: 0, costUsd: 0 };
+      activity: "", pending: { kind: "permission" as const, toolUseId: "tu1", toolName: "Bash", input: { command: "ls" }, suggestions: [], suggestedRule: "Bash(ls:*)", ruleIsBroad: false }, outcome: null, error: null, turns: 0, costUsd: 0 };
     act(() => onSnapshot({ ...snapshot([a]), assignments: [asg] }));
     (api.answer as ReturnType<typeof vi.fn>).mockRejectedValueOnce(Object.assign(new Error("no pending prompt for tu1"), { status: 409 }));
     await userEvent.click(within(screen.getByTestId("tile-request")).getByRole("button", { name: "Allow" }));

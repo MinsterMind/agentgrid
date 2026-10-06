@@ -6,6 +6,7 @@ import { Store, Conflict } from "../src/store/store.js";
 import { Runner, type BuildOptions } from "../src/runner/runner.js";
 import { makeFakeQuery, init, text, toolUse, success, errorResult } from "./helpers/fakeQuery.js";
 import { until } from "./helpers/until.js";
+import { RulesStore } from "../src/permissions/rules.js";
 import type { Options, CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 
 const tick = () => new Promise(r => setTimeout(r, 5));
@@ -100,7 +101,7 @@ describe("Runner", () => {
     const p = captured.canUseTool!("Bash", { command: "rm x" }, { signal: new AbortController().signal, toolUseID: "tu-1", suggestions: [{ type: "addRules" }] } as any);
     await until(() => store.getAgent(agentId).state === "waiting");
     expect(store.getAgent(agentId).state).toBe("waiting");
-    expect(store.getAssignment(asg.id).pending).toEqual({ kind: "permission", toolUseId: "tu-1", toolName: "Bash", input: { command: "rm x" }, suggestions: [{ type: "addRules" }] });
+    expect(store.getAssignment(asg.id).pending).toEqual({ kind: "permission", toolUseId: "tu-1", toolName: "Bash", input: { command: "rm x" }, suggestions: [{ type: "addRules" }], suggestedRule: "Bash(rm:*)", ruleIsBroad: false });
     await runner.answer("tu-1", { kind: "allow" });
     expect(await p).toEqual({ behavior: "allow" });
     expect(store.getAgent(agentId).state).toBe("working");
@@ -249,5 +250,36 @@ describe("assign when Claude Code cannot start", () => {
     expect(asg.state).toBe("failed");
     expect(asg.error).toMatch(/could not start Claude Code: Native CLI binary/);
     expect(st.getAgent(a.id).state).toBe("failed");
+  });
+});
+
+describe("Runner and always-allow rules", () => {
+  const opts = (toolUseID: string) => ({ signal: new AbortController().signal, toolUseID, suggestions: [] }) as any;
+  it("a request a rule allows never waits on anyone", async () => {
+    const rules = new RulesStore(path.dirname(store.memoryDir(agentId))); await rules.load(); await rules.add("Bash(npm test:*)");
+    const r = new Runner(agentId, { store, queryFn: fake.queryFn, buildOptions, rules });
+    const asg = await r.assign("go");
+    expect(await captured.canUseTool!("Bash", { command: "npm test" }, opts("t1"))).toEqual({ behavior: "allow" });
+    expect(store.getAssignment(asg.id).pending).toBeNull();
+    expect(store.getAgent(agentId).state).toBe("working");
+  });
+  it("a parked request carries the rule Always allow would save; Always allow saves it instead of touching the project's settings", async () => {
+    const rules = new RulesStore(path.dirname(store.memoryDir(agentId))); await rules.load();
+    const r = new Runner(agentId, { store, queryFn: fake.queryFn, buildOptions, rules });
+    const asg = await r.assign("go");
+    const p = captured.canUseTool!("Bash", { command: "git status -s" }, opts("t2"));
+    await until(() => store.getAgent(agentId).state === "waiting");
+    expect(store.getAssignment(asg.id).pending).toMatchObject({ suggestedRule: "Bash(git status:*)", ruleIsBroad: false });
+    await r.answer("t2", { kind: "always" });
+    expect(await p).toEqual({ behavior: "allow" });
+    expect(rules.rules()).toEqual(["Bash(git status:*)"]);
+  });
+  it("questions are never auto-allowed and carry no rule", async () => {
+    const rules = new RulesStore(path.dirname(store.memoryDir(agentId))); await rules.load(); await rules.add("AskUserQuestion");
+    const r = new Runner(agentId, { store, queryFn: fake.queryFn, buildOptions, rules });
+    const asg = await r.assign("go");
+    void captured.canUseTool!("AskUserQuestion", { questions: [] }, opts("t3"));
+    await until(() => store.getAgent(agentId).state === "waiting");
+    expect(store.getAssignment(asg.id).pending).toMatchObject({ kind: "question", suggestedRule: "", ruleIsBroad: false });
   });
 });

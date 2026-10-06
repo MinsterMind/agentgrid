@@ -32,8 +32,8 @@ describe("AgentTile", () => {
     expect(tile).toHaveTextContent("Bash: kubectl get pods");
     expect(tile).toHaveTextContent("#a41"); expect(tile).toHaveTextContent("$0.31");
   });
-  const permission = { kind: "permission" as const, toolUseId: "tu1", toolName: "Bash", input: { command: "kubectl rollout restart deploy/api" }, suggestions: [{}] };
-  const oneQuestion = { kind: "question" as const, toolUseId: "tu2", toolName: "AskUserQuestion" as const, suggestions: [],
+  const permission = { kind: "permission" as const, toolUseId: "tu1", toolName: "Bash", input: { command: "kubectl rollout restart deploy/api" }, suggestions: [{}], suggestedRule: "Bash(kubectl rollout:*)", ruleIsBroad: false };
+  const oneQuestion = { kind: "question" as const, toolUseId: "tu2", toolName: "AskUserQuestion" as const, suggestions: [], suggestedRule: "", ruleIsBroad: false,
     input: { questions: [{ question: "Which env?", header: "Env", options: [{ label: "staging", description: "" }, { label: "prod", description: "" }] }] } };
 
   it("names every state in words", () => {

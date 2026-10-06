@@ -92,7 +92,7 @@ describe("nowFor", () => {
     expect(n.detail!.length).toBeLessThanOrEqual(141);
   });
   it("a pending permission says the agent is waiting on you", () => {
-    const n = nowFor({ task: task("implementing"), pending: { kind: "permission", toolUseId: "u", toolName: "Bash", input: {}, suggestions: [] }, activity: null });
+    const n = nowFor({ task: task("implementing"), pending: { kind: "permission", toolUseId: "u", toolName: "Bash", input: {}, suggestions: [], suggestedRule: "Bash", ruleIsBroad: true }, activity: null });
     expect(n.headline).toMatch(/waiting on you/i);
     expect(n.detail).toMatch(/Bash/);
   });
@@ -121,7 +121,7 @@ describe("blockersFor", () => {
   const base = { pending: null, setup: null, setupError: false };
   it("nothing blocking a running stage", () => expect(blockersFor({ ...base, task: task("implementing") })).toEqual([]));
   it("an open gate", () => expect(blockersFor({ ...base, task: task("plan-review") })).toEqual([{ kind: "gate", title: "Waiting on you: approve the plan" }]));
-  it("a pending agent request", () => expect(blockersFor({ ...base, task: task("implementing"), pending: { kind: "question", toolUseId: "u", toolName: "AskUserQuestion", input: {}, suggestions: [] } })[0].kind).toBe("agent"));
+  it("a pending agent request", () => expect(blockersFor({ ...base, task: task("implementing"), pending: { kind: "question", toolUseId: "u", toolName: "AskUserQuestion", input: {}, suggestedRule: "", ruleIsBroad: false, suggestions: [] } })[0].kind).toBe("agent"));
   it("a failed stage carries its error", () => {
     const t = task("failed", { error: "no commits on the task branch", history: [{ stage: "intake", at: "a", note: "" }, { stage: "implementing", at: "b", note: "" }, { stage: "failed", at: "c", note: "" }] });
     expect(blockersFor({ ...base, task: t })).toEqual([{ kind: "failed", title: "The Implementing stage failed", detail: "no commits on the task branch" }]);

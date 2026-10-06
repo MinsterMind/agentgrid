@@ -34,9 +34,10 @@ export interface Agent {
   resumeSessionId?: string;
 }
 
+/** `suggestedRule`: what "Always allow" saves (permissions/rules.ts); `ruleIsBroad`: it would allow every command or file change. Questions carry "" / false. */
 export type Pending =
-  | { kind: "permission"; toolUseId: string; toolName: string; input: Record<string, unknown>; suggestions: unknown[] }
-  | { kind: "question";   toolUseId: string; toolName: "AskUserQuestion"; input: Record<string, unknown>; suggestions: unknown[] };
+  | { kind: "permission"; toolUseId: string; toolName: string; input: Record<string, unknown>; suggestions: unknown[]; suggestedRule: string; ruleIsBroad: boolean }
+  | { kind: "question";   toolUseId: string; toolName: "AskUserQuestion"; input: Record<string, unknown>; suggestions: unknown[]; suggestedRule: string; ruleIsBroad: boolean };
 
 export interface Assignment {
   id: string;            // "a<n>"

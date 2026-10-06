@@ -4,8 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { PendingPrompt } from "../src/components/PendingPrompt";
 import type { Pending } from "../src/types";
 
-const perm = (suggestions: unknown[] = []): Pending => ({ kind: "permission", toolUseId: "t1", toolName: "Bash", input: { command: "kubectl rollout restart deploy/api" }, suggestions });
-const q = (multi = false, n = 1): Pending => ({ kind: "question", toolUseId: "t2", toolName: "AskUserQuestion", suggestions: [], input: { questions: Array.from({ length: n }, (_, i) => ({
+const perm = (suggestions: unknown[] = []): Pending => ({ kind: "permission", toolUseId: "t1", toolName: "Bash", input: { command: "kubectl rollout restart deploy/api" }, suggestions, suggestedRule: "Bash(kubectl rollout:*)", ruleIsBroad: false });
+const q = (multi = false, n = 1): Pending => ({ kind: "question", toolUseId: "t2", toolName: "AskUserQuestion", suggestions: [], suggestedRule: "", ruleIsBroad: false, input: { questions: Array.from({ length: n }, (_, i) => ({
   question: `Q${i + 1}?`, header: `H${i + 1}`, multiSelect: multi, options: [{ label: "main", description: "d1" }, { label: "develop", description: "d2" }] })) } });
 
 describe("PendingPrompt permission", () => {
@@ -58,7 +58,7 @@ describe("PendingPrompt question", () => {
     expect(onDecide).toHaveBeenCalledWith({ kind: "answers", answers: { "Q1?": "main", "Q2?": "develop" } });
   });
   it("describes a permission request in a sentence above the exact command", () => {
-    render(<PendingPrompt who="Cody" pending={{ kind: "permission", toolUseId: "t", toolName: "Bash", input: { command: "kubectl rollout restart deploy/api" }, suggestions: [] }} onDecide={vi.fn()} />);
+    render(<PendingPrompt who="Cody" pending={{ kind: "permission", toolUseId: "t", toolName: "Bash", input: { command: "kubectl rollout restart deploy/api" }, suggestions: [], suggestedRule: "Bash(kubectl rollout:*)", ruleIsBroad: false }} onDecide={vi.fn()} />);
     const box = screen.getByTestId("pending-permission");
     expect(box).toHaveTextContent("Cody wants to run a shell command");
     expect(box.querySelector(".cmd")).toHaveTextContent("kubectl rollout restart deploy/api");

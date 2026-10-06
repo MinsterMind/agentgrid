@@ -12,7 +12,7 @@ vi.mock("../src/api", () => ({ api: {
 const role: RoleDef = { name: "devops", avatar: "🛠️", model: "m", effort: "high", permissionMode: "default", settingSources: [], allowedTools: [], maxTurns: 1, prompt: "", description: "" };
 const agent: Agent = { id: "devops@hrns", role: "devops", repo: "/u/hrns", displayName: "Dev", createdAt: "", state: "waiting", currentAssignmentId: "a41" };
 const asg: Assignment = { id: "a41", agentId: "devops@hrns", prompt: "Restart staging", createdAt: "", startedAt: null, endedAt: null, sessionId: "s1", state: "waiting",
-  activity: "x", pending: { kind: "permission", toolUseId: "t1", toolName: "Bash", input: { command: "kubectl rollout restart" }, suggestions: [] }, outcome: null, error: null, turns: 2, costUsd: 0.3 };
+  activity: "x", pending: { kind: "permission", toolUseId: "t1", toolName: "Bash", input: { command: "kubectl rollout restart" }, suggestions: [], suggestedRule: "Bash(kubectl rollout:*)", ruleIsBroad: false }, outcome: null, error: null, turns: 2, costUsd: 0.3 };
 const fns = { onDecide: vi.fn(), onCancel: vi.fn(), onAck: vi.fn(), onOpenTerminal: vi.fn(), onDelete: vi.fn() };
 beforeEach(() => vi.clearAllMocks());
 

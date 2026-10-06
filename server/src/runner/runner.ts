@@ -2,6 +2,7 @@ import type { CanUseTool, Options, PermissionResult, SDKMessage } from "@anthrop
 import { Store, Conflict } from "../store/store.js";
 import { assemblePrompt } from "../prompt/assemble.js";
 import type { Agent, Assignment, Decision, Pending, RoleDef } from "../types.js";
+import { allowedByRules, isBroadRule, suggestRule, type RulesStore } from "../permissions/rules.js";
 
 export type QueryFn = (args: { prompt: string; options: Options }) => AsyncIterable<SDKMessage>;
 export type BuildOptions = (role: RoleDef, agent: Agent, extra: { canUseTool: CanUseTool; abortController: AbortController }) => Options;
@@ -30,7 +31,8 @@ export class Runner {
   // each other. See task-6 review round 1, findings 1 & 3.
   private chain: Promise<void> = Promise.resolve();
 
-  constructor(readonly agentId: string, private deps: { store: Store; queryFn: QueryFn; buildOptions: BuildOptions }) {}
+  /** `rules`: the shared always-allow rules — a request they allow never waits on anyone, and "always" saves one. */
+  constructor(readonly agentId: string, private deps: { store: Store; queryFn: QueryFn; buildOptions: BuildOptions; rules?: RulesStore }) {}
 
   get busy(): boolean { return this.assignmentId !== null; }
 
@@ -74,9 +76,11 @@ export class Runner {
   private canUseTool: CanUseTool = (toolName, input, opts) => {
     const toolUseId = opts.toolUseID;
     const assignmentId = this.assignmentId;
+    if (toolName !== "AskUserQuestion" && this.deps.rules && allowedByRules(this.deps.rules.rules(), toolName, input)) return Promise.resolve({ behavior: "allow" } as PermissionResult);
+    const suggestedRule = toolName === "AskUserQuestion" ? "" : suggestRule(toolName, input, opts.suggestions ?? []);
     const pending: Pending = toolName === "AskUserQuestion"
-      ? { kind: "question", toolUseId, toolName: "AskUserQuestion", input, suggestions: opts.suggestions ?? [] }
-      : { kind: "permission", toolUseId, toolName, input, suggestions: opts.suggestions ?? [] };
+      ? { kind: "question", toolUseId, toolName: "AskUserQuestion", input, suggestions: opts.suggestions ?? [], suggestedRule, ruleIsBroad: false }
+      : { kind: "permission", toolUseId, toolName, input, suggestions: opts.suggestions ?? [], suggestedRule, ruleIsBroad: isBroadRule(suggestedRule) };
     return new Promise<PermissionResult>(resolve => {
       this.parked.set(toolUseId, { pending, resolve });
       // The parking write is enqueued but not awaited here (canUseTool must return the
@@ -93,7 +97,8 @@ export class Runner {
     let result: PermissionResult;
     switch (decision.kind) {
       case "allow": result = { behavior: "allow" }; break;
-      case "always": result = { behavior: "allow", updatedPermissions: pending.suggestions as any }; break;
+      // With the shared rules wired, "always" is AgentGrid's rule (saved below), not a write to the project's own settings.
+      case "always": result = this.deps.rules ? { behavior: "allow" } : { behavior: "allow", updatedPermissions: pending.suggestions as any }; break;
       case "deny": result = { behavior: "deny", message: decision.message ?? "denied by user" }; break;
       case "answers": result = { behavior: "allow", updatedInput: { ...pending.input, answers: decision.answers, ...(decision.response ? { response: decision.response } : {}) } }; break;
     }
@@ -102,6 +107,7 @@ export class Runner {
     // was deleted and the resolve happened only after `patch` succeeded, so a failed
     // write left the SDK's canUseTool call hanging forever (review round 2, finding 5).
     try {
+      if (decision.kind === "always" && this.deps.rules && pending.suggestedRule) await this.deps.rules.add(pending.suggestedRule);
       await this.patch({ pending: null, state: "working" }, "working");
     } finally {
       this.parked.delete(toolUseId);
