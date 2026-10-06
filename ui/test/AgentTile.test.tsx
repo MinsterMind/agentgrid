@@ -118,11 +118,12 @@ describe("AgentTile asking you", () => {
     await userEvent.type(within(card).getByRole("textbox", { name: /reply/i }), "yes{Enter}");
     expect(onSay).toHaveBeenCalledWith("devops@hrns", "yes");
   });
-  it("a done agent whose terminal is waiting on approval says Needs you, not Done", () => {
+  it("a done agent whose terminal is asking for approval says Needs you, not Done", () => {
     render(<AgentTile {...base} agent={agent("done")} assignment={asg({ state: "done", outcome: "ok" })}
-      activity={{ sessionId: "s", phase: "waiting", lastMessage: "", lastPrompt: "", updatedAt: "", pendingTool: { name: "Bash", summary: "gh pr comment 7" } }} />);
+      activity={{ sessionId: "s", phase: "working", lastMessage: "", lastPrompt: "", updatedAt: "", runningTool: { name: "Bash", summary: "gh pr comment 7" } }}
+      permission={{ id: "pr1", agentId: "devops@hrns", source: "terminal", sessionId: "s", toolName: "Bash", input: { command: "gh pr comment 7" }, suggestedRule: "Bash(gh pr:*)", ruleIsBroad: false, createdAt: "" }} />);
     expect(screen.getByTestId("tile-state")).toHaveTextContent("Needs you");
-    expect(screen.getByTestId("tile-phase")).toHaveTextContent("Needs approval in the terminal: Bash");
+    expect(screen.getByTestId("tile-phase")).toHaveTextContent("Needs your approval: Bash");
   });
 });
 
@@ -160,9 +161,10 @@ describe("AgentTile task line", () => {
     const title = screen.getByTestId("tile-devops@hrns").querySelector(".tasktitle")!;
     expect(title).toHaveTextContent("Rotate the refresh token"); expect(title).not.toHaveTextContent("add tests");
     rerender(<AgentTile {...base} agent={{ ...agent("free", null), resumeSessionId: "s" }} assignment={null}
-      activity={{ sessionId: "s", phase: "waiting", lastMessage: "", lastPrompt: "deploy staging", updatedAt: "", pendingTool: { name: "Bash", summary: "kubectl apply" } }} />);
+      activity={{ sessionId: "s", phase: "working", lastMessage: "", lastPrompt: "deploy staging", updatedAt: "", runningTool: { name: "Bash", summary: "kubectl apply" } }} />);
     expect(screen.getByTestId("tile-devops@hrns").querySelector(".tasktitle")).toHaveTextContent("deploy staging");
-    expect(screen.getByTestId("tile-phase")).toHaveTextContent("Needs approval in the terminal: Bash");
+    expect(screen.getByTestId("tile-phase")).toHaveTextContent("Working in the terminal: Bash");
+    expect(screen.getByTestId("tile-state")).toHaveTextContent("Idle");   // a running tool is not a prompt
   });
 
   // I3
@@ -174,9 +176,10 @@ describe("AgentTile task line", () => {
   });
 
   // I4
-  it("an idle agent waiting on you in its terminal says Needs you, not Idle", () => {
+  it("an idle agent whose terminal is asking for permission says Needs you, not Idle", () => {
     render(<AgentTile {...base} agent={{ ...agent("free", null), resumeSessionId: "s" }} assignment={null}
-      activity={{ sessionId: "s", phase: "waiting", lastMessage: "", lastPrompt: "", updatedAt: "", pendingTool: { name: "Bash", summary: "x" } }} />);
+      activity={{ sessionId: "s", phase: "working", lastMessage: "", lastPrompt: "", updatedAt: "", runningTool: { name: "Bash", summary: "x" } }}
+      permission={{ id: "pr1", agentId: "devops@hrns", source: "terminal", sessionId: "s", toolName: "Bash", input: { command: "x" }, suggestedRule: "Bash(x:*)", ruleIsBroad: false, createdAt: "" }} />);
     const st = screen.getByTestId("tile-state");
     expect(st).toHaveTextContent("Needs you");
     expect(st).toHaveClass("waiting");

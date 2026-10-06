@@ -124,6 +124,7 @@ export interface SessionActivity {
   lastMessage: string;
   lastPrompt: string;
   question?: { text: string; options: string[]; multiSelect: boolean };
-  pendingTool?: { name: string; summary: string };
+  /** The tool the session is running right now. Not a prompt: whether Claude Code is asking comes from the PermissionRequest hook. */
+  runningTool?: { name: string; summary: string };
   updatedAt: string;
 }

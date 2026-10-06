@@ -80,8 +80,8 @@ describe("listStatus", () => {
 });
 
 describe("nowFor", () => {
-  it("agent stage: label, since the stage began, and the agent's pending tool", () => {
-    const n = nowFor({ task: task("implementing"), pending: null, activity: { sessionId: "s", phase: "working", lastMessage: "Editing", lastPrompt: "", pendingTool: { name: "Bash", summary: "npm test" }, updatedAt: "" } as never });
+  it("agent stage: label, since the stage began, and the tool it is running", () => {
+    const n = nowFor({ task: task("implementing"), pending: null, activity: { sessionId: "s", phase: "working", lastMessage: "Editing", lastPrompt: "", runningTool: { name: "Bash", summary: "npm test" }, updatedAt: "" } as never });
     expect(n).toMatchObject({ headline: "Implementing", detail: "npm test", since: "2026-10-05T10:05:00Z" });
   });
   // Review Focus 5.

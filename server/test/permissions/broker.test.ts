@@ -42,4 +42,19 @@ describe("PermissionBroker", () => {
     expect(await a.decision).toBeNull(); expect(broker.list().map(r => r.id)).toEqual([b.id]);
     broker.cancel(b.id); expect(await b.decision).toBeNull(); expect(broker.list()).toEqual([]);
   });
+
+  // Task 1's spike: answering in the terminal settles Claude Code's prompt but never tells the hook.
+  it("reconcile drops a request once the session's log shows its tool moved on", async () => {
+    const a = broker.ask(req("npm test"));
+    const created = broker.list()[0].createdAt;
+    const later = new Date(Date.parse(created) + 1000).toISOString();
+    const earlier = new Date(Date.parse(created) - 1000).toISOString();
+    const st = (x: object) => ({ sessionId: "s1", phase: "working" as const, lastMessage: "", lastPrompt: "", ...x });
+    broker.reconcile(st({ updatedAt: earlier }));                                                   // log older than the request
+    broker.reconcile(st({ updatedAt: later, runningTool: { name: "Bash", summary: "npm test" } }));   // still that tool
+    broker.reconcile({ ...st({ updatedAt: later }), sessionId: "other" });                            // another session
+    expect(broker.list()).toHaveLength(1);
+    broker.reconcile(st({ updatedAt: later }));                                                     // tool finished
+    expect(await a.decision).toBeNull(); expect(broker.list()).toEqual([]);
+  });
 });

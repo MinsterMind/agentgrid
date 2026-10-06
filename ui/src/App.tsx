@@ -45,12 +45,24 @@ export function App() {
       const act = s.activity[sid]; if (!act) continue;
       const prev = prevPhase.current[sid];
       if (prev && prev !== act.phase) {
-        if (act.phase === "waiting") notifyWaiting(a.displayName, act.question ? `asks: ${act.question.text.slice(0, 80)}` : `wants to run ${act.pendingTool?.name ?? "a tool"}`);
+        // Only a question waits on you in the log; a permission prompt arrives as a request (below), never as a running tool.
+        if (act.phase === "waiting") notifyWaiting(a.displayName, `asks: ${(act.question?.text ?? "a question").slice(0, 80)}`);
         if (act.phase === "idle" && prev === "working") notifyFinished(a.displayName, true);
       }
       prevPhase.current[sid] = act.phase;
     }
   }, [s.activity, s.agents]);
+
+  // A terminal permission request is Claude Code really asking: say so once per request.
+  const seenRequests = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const r of Object.values(s.permissions)) {
+      if (seenRequests.current.has(r.id)) continue;
+      seenRequests.current.add(r.id);
+      const who = s.agents.find(a => a.id === r.agentId)?.displayName ?? r.agentId;
+      notifyWaiting(who, `wants to run ${r.toolName}`);
+    }
+  }, [s.permissions, s.agents]);
 
   // transitions → notifications + title
   useEffect(() => {

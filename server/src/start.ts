@@ -121,7 +121,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   watcher.start();
 
   // Follow the transcript of every session a grid agent is bound to (adopted or running), so Details/notifications work even when the work happens in the embedded terminal.
-  const statuses = new SessionStatusWatcher(st => store.setSessionStatus(st), 1500);
+  const statuses = new SessionStatusWatcher(st => { store.setSessionStatus(st); permissionBroker.reconcile(st); }, 1500);
   const syncWatched = () => {
     const want = new Map<string, string>();
     for (const a of store.listAgents()) {

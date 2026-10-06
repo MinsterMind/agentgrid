@@ -1,7 +1,7 @@
 process.env.TZ = "Asia/Kolkata";
 
 import { describe, it, expect } from "vitest";
-import { reducer, initial, assignmentFor, counts, todaySpend, waitingIds, unclaimedLiveSessions, liveSessionFor, activityFor, sessionIdFor, bugTaskFor } from "../src/state/reducer";
+import { reducer, initial, assignmentFor, counts, todaySpend, waitingIds, unclaimedLiveSessions, liveSessionFor, activityFor, sessionIdFor, bugTaskFor, permissionFor } from "../src/state/reducer";
 import type { Agent, Assignment } from "../src/types";
 
 const agent = (id: string, state: Agent["state"] = "free", cur: string | null = null): Agent =>
@@ -40,6 +40,17 @@ describe("reducer", () => {
     // a finished run that ends on a question needs you too — counter, title and N cycling all follow
     const asked = reducer(s, { type: "change", event: { type: "assignment", assignment: asg("a2", "b", { state: "done", outcome: "Post the 2 comments?" }) } });
     expect(waitingIds(asked)).toEqual(["a", "b"]);
+  });
+  it("keeps open permission requests from the snapshot and the stream; an agent with one needs you", () => {
+    const a = agent("a"); const req = { id: "pr1", agentId: "a", source: "terminal" as const, sessionId: "s", toolName: "Bash", input: {}, suggestedRule: "Bash", ruleIsBroad: true, createdAt: "" };
+    let s = reducer(initial, { type: "snapshot", state: { roles: [], bugTasks: [], liveSessions: [], sessionStatuses: [], agents: [a], assignments: [], permissions: [req] } });
+    expect(Object.keys(s.permissions)).toEqual(["pr1"]);
+    expect(permissionFor(s, a)?.id).toBe("pr1");
+    expect(waitingIds(s)).toEqual(["a"]);
+    s = reducer(s, { type: "change", event: { type: "permission-settled", id: "pr1" } });
+    expect(permissionFor(s, a)).toBeNull(); expect(waitingIds(s)).toEqual([]);
+    s = reducer(s, { type: "change", event: { type: "permission", request: { ...req, id: "pr2" } } });
+    expect(permissionFor(s, a)?.id).toBe("pr2");
   });
   it("todaySpend uses local calendar day, not UTC day", () => {
     // now = 2026-09-12T01:00:00+05:30 == 2026-09-11T19:30:00Z

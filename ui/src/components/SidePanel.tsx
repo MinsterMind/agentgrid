@@ -89,9 +89,9 @@ export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, 
       {activity && (
         <div className={`status ${activity.phase}`} data-testid="session-status">
           <div className="st-head"><span className={`dot ${activity.phase}`} />
-            {activity.phase === "waiting" ? (activity.question ? "Asking you a question" : `Waiting for approval: ${activity.pendingTool?.name ?? "tool"}`) : activity.phase === "working" ? "Working…" : activity.phase === "idle" ? "Idle — your turn" : "No activity yet"}
+            {activity.phase === "waiting" ? "Asking you a question" : activity.phase === "working" ? (activity.runningTool ? `Running ${activity.runningTool.name}…` : "Working…") : activity.phase === "idle" ? "Idle — your turn" : "No activity yet"}
             <span className="dim" style={{ marginLeft: "auto" }}>{activity.updatedAt ? elapsed(activity.updatedAt) + " ago" : ""}</span></div>
-          {activity.pendingTool && !activity.question && <div className="st-tool">{activity.pendingTool.summary}</div>}
+          {activity.runningTool && !activity.question && <div className="st-tool">{activity.runningTool.summary}</div>}
           {activity.lastMessage && <div className="st-msg">{activity.lastMessage}</div>}
           {activity.question && (
             <div className="qbox">

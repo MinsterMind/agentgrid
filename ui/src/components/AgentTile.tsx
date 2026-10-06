@@ -1,5 +1,5 @@
 import { Activity, CheckCircle2, Hand, Moon, XCircle } from "lucide-react";
-import type { Agent, Assignment, Decision, RoleDef, SessionInfo, SessionActivity } from "../types";
+import type { Agent, Assignment, Decision, PermissionRequest, RoleDef, SessionInfo, SessionActivity } from "../types";
 import { AssignBox } from "./AssignBox";
 import { describeRequest, summarise } from "./PendingPrompt";
 import { basename, elapsed, usd } from "../format";
@@ -16,6 +16,7 @@ export interface AgentTileProps {
   /** Stage of this agent's in-flight bug-fix task, if any. */ bugStage?: string;
   /** Answer a finished run's question in its own conversation. */ onSay?: (id: string, text: string) => void;
   /** Ask the same agent for a second look at its task's PR. */ onReReview?: (id: string) => void;
+  /** An open permission request from this agent's embedded terminal (Claude Code is asking). */ permission?: PermissionRequest | null;
 }
 
 const STATE = {
@@ -65,10 +66,10 @@ function TileRequest({ agent, a, onDecide, onSelect }: { agent: Agent; a: Assign
   );
 }
 
-export function AgentTile({ agent, role, assignment, selected, index, recent, onSelect, onAssign, onDecide, live, activity, bugStage, onSay, onReReview }: AgentTileProps) {
+export function AgentTile({ agent, role, assignment, selected, index, recent, onSelect, onAssign, onDecide, live, activity, bugStage, onSay, onReReview, permission }: AgentTileProps) {
   const a = assignment;
   // An agent waiting on you is never "Idle" or "Done", wherever it waits — say so, loudly.
-  const need = attention(agent, a, activity);
+  const need = attention(agent, a, activity, permission);
   const shown = need ? "waiting" : agent.state;
   const { Icon, word } = STATE[shown];
   const line = agent.state === "free" || agent.state === "waiting" || need?.kind === "asked" ? null
@@ -97,9 +98,10 @@ export function AgentTile({ agent, role, assignment, selected, index, recent, on
       )}
       {agent.state !== "free" && need?.kind === "terminal" && <div className="act phase waiting" data-testid="tile-phase">{need.text}</div>}
       {line !== null && <div className="act">{line}</div>}
-      {agent.state === "free" && activity && activity.phase !== "unknown" && (
+      {agent.state !== "waiting" && permission && <div className="act phase waiting" data-testid="tile-phase">Needs your approval: {permission.toolName}</div>}
+      {agent.state === "free" && !permission && activity && activity.phase !== "unknown" && (
         <div className={`act phase ${activity.phase}`} data-testid="tile-phase">
-          {activity.phase === "waiting" ? (activity.question ? "Asking you a question in the terminal" : `Needs approval in the terminal: ${activity.pendingTool?.name ?? ""}`) : activity.phase === "working" ? "Working in the terminal" : "Idle — your turn"}
+          {activity.phase === "waiting" ? "Asking you a question in the terminal" : activity.phase === "working" ? `Working in the terminal${activity.runningTool ? `: ${activity.runningTool.name}` : ""}` : "Idle — your turn"}
         </div>
       )}
       {agent.state === "free" && live && <div className="act dim" data-testid="live-note">Live in {live.kind === "background" ? "the background" : "a terminal"} ({live.status}) — close it to assign, or use the Terminal tab</div>}

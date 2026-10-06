@@ -101,7 +101,7 @@ export function nowFor({ task, pending, activity }: { task: BugTask; pending: Pe
   if (task.stage === "merging") return { headline: "AgentGrid is merging", since, sinceKind: "running" };
   if (task.stage === "monitoring") return { headline: task.pr ? `Watching PR #${task.pr.number}` : "Watching the PR", ...(task.prCheckedAt ? { since: task.prCheckedAt, sinceKind: "checked" as const } : {}) };
   if (task.stage === "intake") return { headline: "Setting up the worktree", since, sinceKind: "running" };
-  const raw = activity?.pendingTool?.summary || activity?.lastMessage || "";
+  const raw = activity?.runningTool?.summary || activity?.lastMessage || "";
   return { headline: stageLabel(task.stage), since, sinceKind: "running", ...(raw ? { detail: oneLine(raw) } : {}) };
 }
 
