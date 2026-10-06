@@ -1,3 +1,4 @@
+import { attention } from "./attention";
 import type { Agent, AgentState, Assignment, BugTask, GridEvent, GridState, RoleDef, SessionInfo, SessionActivity } from "../types";
 
 export interface UiState { roles: RoleDef[]; agents: Agent[]; assignments: Record<string, Assignment>; liveSessions: SessionInfo[]; activity: Record<string, SessionActivity>; bugTasks: Record<string, BugTask>; selectedId: string | null; connected: boolean; /** A snapshot has arrived: until then, "no agents" means "not known yet". */ loaded: boolean }
@@ -50,7 +51,9 @@ export const todaySpend = (s: UiState, now = new Date()): number => {
   return Object.values(s.assignments).filter(a => new Date(a.createdAt).toDateString() === today).reduce((n, a) => n + a.costUsd, 0);
 };
 
-export const waitingIds = (s: UiState): string[] => s.agents.filter(a => a.state === "waiting").map(a => a.id);
+/** Agents that need you, for any reason (see attention.ts) — what NEEDS YOU counts and N cycles through. */
+export const needsYou = (s: UiState, agent: Agent): boolean => attention(agent, assignmentFor(s, agent), activityFor(s, agent)) !== null;
+export const waitingIds = (s: UiState): string[] => s.agents.filter(a => needsYou(s, a)).map(a => a.id);
 
 /** Live sessions not yet represented by a grid agent — shown as ghost tiles. */
 export const unclaimedLiveSessions = (s: UiState): SessionInfo[] => {

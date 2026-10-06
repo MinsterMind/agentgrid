@@ -17,6 +17,7 @@ import { BugTaskStore } from "./bugfix/store.js";
 import { IntegrationsStore, type Integrations } from "./bugfix/integrations.js";
 import { GitOps } from "./bugfix/git.js";
 import { makeForge } from "./bugfix/forge/index.js";
+import { AgentPrWatcher } from "./agentpr.js";
 import { mcpTracker, type TrackerProvider } from "./bugfix/tracker.js";
 import { BugFixEngine, recoverStuckBugTasks } from "./bugfix/engine.js";
 import { PrWatcher } from "./bugfix/watcher.js";
@@ -182,7 +183,11 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
 
   await wireBugFix(cfg);
 
-  const app = createApp({ store, manager, writeToTerminal: (sid, data) => ptys.write(sid, data), transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }),
+  // The PR an agent's task names, with its status, on the agent's card (any role: a reviewer, or a coder fixing review comments).
+  const agentPrs = new AgentPrWatcher({ store, forge: () => fakeForgeHandle ?? makeForge(lastCfg.forge) });
+  agentPrs.start();
+
+  const app = createApp({ store, manager, submitToTerminal: (sid, text) => ptys.submit(sid, text), transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }),
     openTerminal, runInTerminal, staticDir, browseRoot: opts.browseRoot ?? process.env.AGENTGRID_BROWSE_ROOT, ...(fakeSessions ? { sessions: fakeSessions } : {}),
     integrations,
     roleResolves: () => { try { store.getRole("bugfix"); return true; } catch { return false; } },
@@ -212,6 +217,6 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     port: bound, url, home,
     ...(fakeForgeHandle ? { fakeForge: fakeForgeHandle } : {}),
     bugEngineForTest: () => wiredBugFix?.engine,
-    close: () => new Promise<void>(resolve => { watcher.stop(); statuses.stop(); wiredWatcher?.stop(); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }),
+    close: () => new Promise<void>(resolve => { watcher.stop(); statuses.stop(); agentPrs.stop(); wiredWatcher?.stop(); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }),
   };
 }

@@ -34,6 +34,23 @@ describe("PtyManager", () => {
     expect(spawned[0].pty.sizes).toEqual([[80, 24]]);
   });
 
+  // Claude Code reads a chunk that arrives at once as a paste, and a paste's Enter is a newline in the
+  // draft, not a submit: a long reply typed as "text\r" sat unsent. Enter must be its own keypress.
+  it("submit types the text, then presses Enter separately after a pause", () => {
+    vi.useFakeTimers();
+    try {
+      const { spawned, mgr } = setup();
+      expect(mgr.submit("nope", "hi")).toBe(false);
+      mgr.attach("s", { cwd: "/r", argv: [], cols: 80, rows: 24 }, () => {}, () => {});
+      expect(mgr.submit("s", "line one\nline two")).toBe(true);
+      expect(spawned[0].pty.writes).toEqual(["line one\nline two"]);
+      vi.advanceTimersByTime(299);
+      expect(spawned[0].pty.writes).toHaveLength(1);
+      vi.advanceTimersByTime(1);
+      expect(spawned[0].pty.writes).toEqual(["line one\nline two", "\r"]);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("reuses one pty per session; a second viewer takes over output and the first is detached", () => {
     const { spawned, mgr } = setup();
     const a: string[] = [], b: string[] = [];

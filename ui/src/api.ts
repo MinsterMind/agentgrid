@@ -42,6 +42,7 @@ export const api = {
   ack: (id: string) => call<void>("POST", `/api/agents/${encodeURIComponent(id)}/ack`),
   openTerminal: (id: string) => call<{ command: string; opened: boolean }>("POST", `/api/agents/${encodeURIComponent(id)}/open-terminal`),
   say: (id: string, text: string) => call<{ via: "terminal" | "assignment" }>("POST", `/api/agents/${encodeURIComponent(id)}/say`, { text }),
+  rereview: (id: string) => call<Assignment>("POST", `/api/agents/${encodeURIComponent(id)}/rereview`),
   resetSession: (id: string) => call<Agent>("POST", `/api/agents/${encodeURIComponent(id)}/reset`),
   memory: (id: string) => call<MemoryFile[]>("GET", `/api/agents/${encodeURIComponent(id)}/memory`),
   listSessions: () => call<SessionInfo[]>("GET", "/api/sessions"),

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { api } from "./api";
-import { reducer, initial, assignmentFor, counts, todaySpend, waitingIds, unclaimedLiveSessions, liveSessionFor, activityFor, sessionIdFor, bugTaskFor } from "./state/reducer";
+import { reducer, initial, assignmentFor, counts, todaySpend, waitingIds, needsYou, unclaimedLiveSessions, liveSessionFor, activityFor, sessionIdFor, bugTaskFor } from "./state/reducer";
 import { visualOrder } from "./state/sections";
 import { AgentGrid } from "./components/AgentGrid";
 import { SidePanel } from "./components/SidePanel";
@@ -65,7 +65,7 @@ export function App() {
     }
     const liveIds = new Set(s.agents.map(a => a.id));
     for (const id of Object.keys(prevStates.current)) if (!liveIds.has(id)) delete prevStates.current[id];
-    setTitleCount(new Set([...waitingIds(s), ...s.agents.filter(a => activityFor(s, a)?.phase === "waiting" && a.state === "free").map(a => a.id)]).size);
+    setTitleCount(waitingIds(s).length);
   }, [s]);
 
   // Bug-task stage transitions → notifications, for the moments a user isn't looking at the
@@ -112,7 +112,7 @@ export function App() {
   useKeyboard(useMemo(() => ({
     // The grid's bare-key shortcuts act on the grid's selection, which the bug screen does not
     // show — a stray "a" there would approve a permission request nobody can see.
-    select: (i: number) => { if (route.view === "bugs") return; const a = visualOrder(s.agents)[i]; if (a) dispatch({ type: "select", id: a.id }); },
+    select: (i: number) => { if (route.view === "bugs") return; const a = visualOrder(s.agents, ag => needsYou(s, ag))[i]; if (a) dispatch({ type: "select", id: a.id }); },
     allow: () => { if (route.view === "bugs") return; if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "allow" }); },
     deny: () => { if (route.view === "bugs") return; if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "deny" }); },
     newAgent: () => setSpawnOpen(true), fixBug: () => setBugOpen(true), sessions: () => setSessionsOpen(true),
@@ -142,7 +142,9 @@ export function App() {
           onAssign={(id, prompt) => api.assign(id, prompt).then(() => dispatch({ type: "select", id })).catch(showErr)}
           liveSessions={unclaimedLiveSessions(s)} liveFor={ag => liveSessionFor(s, ag)} activityFor={ag => activityFor(s, ag)}
           onPullIn={(sid, role, takeover) => api.adoptSession(sid, { role, takeover }).then(a => { dispatch({ type: "select", id: a.id }); if (takeover) setOpenTerminalRequest(n => n + 1); }).catch(showErr)}
-          bugStageFor={ag => bugTaskFor(s, ag)?.stage} />
+          bugStageFor={ag => bugTaskFor(s, ag)?.stage} needsYou={ag => needsYou(s, ag)}
+          onSay={(id, text) => api.say(id, text).then(() => dispatch({ type: "select", id })).catch(showErr)}
+          onReReview={id => api.rereview(id).then(() => dispatch({ type: "select", id })).catch(showErr)} />
         <SidePanel agent={selected} role={s.roles.find(r => r.name === selected?.role)} assignment={selectedAsg}
           onDecide={decide} onCancel={id => api.cancel(id).catch(showErr)} onAck={id => api.ack(id).catch(showErr)} onOpenTerminal={openTerminal} onTranscript={id => setTranscriptFor(id)} hasSession={!!selected && Object.values(s.assignments).some(a => a.agentId === selected.id && a.sessionId)} terminalSessionId={terminalSessionId} live={selected ? liveSessionFor(s, selected) : null} openTerminalRequest={openTerminalRequest}
           activity={selected ? activityFor(s, selected) : null}

@@ -17,6 +17,8 @@ export interface Handle { write(d: string): void; resize(c: number, r: number): 
 
 interface Entry { pty: PtyLike; viewer: { onData: (d: string) => void; onEnd: (reason: string) => void; sub: { dispose(): void } } | null; /** Recent output, replayed to a reconnecting viewer. */ tail: string }
 const TAIL_MAX = 256 * 1024;
+/** Long enough for Claude Code to finish reading the pasted text before Enter arrives. */
+const SUBMIT_DELAY_MS = 300;
 
 /**
  * The server may itself have been started from inside a Claude Code session; never leak
@@ -78,11 +80,16 @@ export class PtyManager {
     };
   }
 
-  /** Type into a running session's terminal (no viewer needed). Returns false if no pty is open for it. */
-  write(sessionId: string, data: string): boolean {
+  /**
+   * Send a message to a running session's terminal (no viewer needed). Returns false if no pty is open for it.
+   * Claude Code reads input that arrives in one chunk as a paste, and Enter inside a paste is a newline in the
+   * draft — so the text goes first and Enter follows as its own keypress, or a long reply sits unsent.
+   */
+  submit(sessionId: string, text: string): boolean {
     const e = this.entries.get(sessionId);
     if (!e) return false;
-    e.pty.write(data);
+    e.pty.write(text);
+    setTimeout(() => { if (this.entries.get(sessionId) === e) e.pty.write("\r"); }, SUBMIT_DELAY_MS);
     return true;
   }
 

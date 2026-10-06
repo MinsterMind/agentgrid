@@ -3,6 +3,8 @@ import type { Agent, Assignment, Decision, RoleDef, SessionInfo, SessionActivity
 import { AssignBox } from "./AssignBox";
 import { describeRequest, summarise } from "./PendingPrompt";
 import { basename, elapsed, usd } from "../format";
+import { attention } from "../state/attention";
+import { PrLine } from "./PrLine";
 
 export interface AgentTileProps {
   agent: Agent; role: RoleDef | undefined; assignment: Assignment | null; selected: boolean; index: number; recent?: string[];
@@ -12,6 +14,8 @@ export interface AgentTileProps {
   /** Set when the adopted session's process is currently running outside the grid. */ live?: SessionInfo | null;
   /** Transcript-derived activity (embedded terminal work shows up here). */ activity?: SessionActivity | null;
   /** Stage of this agent's in-flight bug-fix task, if any. */ bugStage?: string;
+  /** Answer a finished run's question in its own conversation. */ onSay?: (id: string, text: string) => void;
+  /** Ask the same agent for a second look at its task's PR. */ onReReview?: (id: string) => void;
 }
 
 const STATE = {
@@ -61,13 +65,13 @@ function TileRequest({ agent, a, onDecide, onSelect }: { agent: Agent; a: Assign
   );
 }
 
-export function AgentTile({ agent, role, assignment, selected, index, recent, onSelect, onAssign, onDecide, live, activity, bugStage }: AgentTileProps) {
+export function AgentTile({ agent, role, assignment, selected, index, recent, onSelect, onAssign, onDecide, live, activity, bugStage, onSay, onReReview }: AgentTileProps) {
   const a = assignment;
-  // An idle agent whose terminal session is waiting on you is not "Idle" — say so, loudly.
-  const terminalWaiting = agent.state === "free" && activity?.phase === "waiting";
-  const shown = terminalWaiting ? "waiting" : agent.state;
+  // An agent waiting on you is never "Idle" or "Done", wherever it waits — say so, loudly.
+  const need = attention(agent, a, activity);
+  const shown = need ? "waiting" : agent.state;
   const { Icon, word } = STATE[shown];
-  const line = agent.state === "free" || agent.state === "waiting" ? null
+  const line = agent.state === "free" || agent.state === "waiting" || need?.kind === "asked" ? null
     : agent.state === "done" ? a?.outcome?.split("\n").filter(Boolean).at(-1) ?? "Finished"
     : agent.state === "failed" ? a?.error ?? "The run failed"
     : a?.activity ?? "";
@@ -79,10 +83,19 @@ export function AgentTile({ agent, role, assignment, selected, index, recent, on
         <div><div className="name">{agent.displayName} <span className="role">— {agent.role}</span>{agent.resumeSessionId && <span title="Continues an adopted Claude Code session"> 🔗</span>}</div><div className="repo">{basename(agent.repo)}</div></div>
         {bugStage && <span className="chip" data-testid="tile-bug-stage">{bugStage}</span>}
       </div>
-      <div className={`tile-state ${shown}`} data-testid="tile-state"><Icon /> {word}{terminalWaiting ? " (terminal)" : ""}</div>
+      <div className={`tile-state ${shown}`} data-testid="tile-state"><Icon /> {word}{need?.kind === "terminal" ? " (terminal)" : ""}</div>
       {a && <div className="tasktitle" title={a.prompt}>{a.prompt.split("\n")[0].slice(0, 90)}</div>}
+      {a?.pr && <PrLine pr={a.pr} canReReview={agent.state === "done" || agent.state === "failed"} onReReview={onReReview && (() => onReReview(agent.id))} />}
       {!a && activity?.lastPrompt && <div className="tasktitle" title={activity.lastPrompt}>{activity.lastPrompt.split("\n")[0].slice(0, 90)}</div>}
       {agent.state === "waiting" && <TileRequest agent={agent} a={a} onDecide={onDecide} onSelect={onSelect} />}
+      {need?.kind === "asked" && (
+        <div className="tile-req" data-testid="tile-request" onClick={e => e.stopPropagation()}>
+          <div className="msg">{need.question}</div>
+          {/* An idle adopted agent's own assign box below already continues its session. */}
+          {agent.state !== "free" && onSay && <AssignBox agentId={agent.id} onSubmit={onSay} placeholder="Reply to continue… (⏎ to send)" label="Reply" />}
+        </div>
+      )}
+      {agent.state !== "free" && need?.kind === "terminal" && <div className="act phase waiting" data-testid="tile-phase">{need.text}</div>}
       {line !== null && <div className="act">{line}</div>}
       {agent.state === "free" && activity && activity.phase !== "unknown" && (
         <div className={`act phase ${activity.phase}`} data-testid="tile-phase">

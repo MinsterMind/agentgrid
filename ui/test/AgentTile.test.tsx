@@ -107,6 +107,53 @@ describe("AgentTile", () => {
   });
 });
 
+describe("AgentTile asking you", () => {
+  // The bug: a reviewer ended its run with a question; the card said "Done" and gave no way to answer.
+  it("a finished run that asks a question says Needs you and takes the reply on the card", async () => {
+    const onSay = vi.fn();
+    render(<AgentTile {...base} onSay={onSay} agent={agent("done")} assignment={asg({ state: "done", outcome: "Found 2 issues.\nWant me to post them as PR comments?" })} />);
+    expect(screen.getByTestId("tile-state")).toHaveTextContent("Needs you");
+    const card = screen.getByTestId("tile-request");
+    expect(card).toHaveTextContent("Want me to post them as PR comments?");
+    await userEvent.type(within(card).getByRole("textbox", { name: /reply/i }), "yes{Enter}");
+    expect(onSay).toHaveBeenCalledWith("devops@hrns", "yes");
+  });
+  it("a done agent whose terminal is waiting on approval says Needs you, not Done", () => {
+    render(<AgentTile {...base} agent={agent("done")} assignment={asg({ state: "done", outcome: "ok" })}
+      activity={{ sessionId: "s", phase: "waiting", lastMessage: "", lastPrompt: "", updatedAt: "", pendingTool: { name: "Bash", summary: "gh pr comment 7" } }} />);
+    expect(screen.getByTestId("tile-state")).toHaveTextContent("Needs you");
+    expect(screen.getByTestId("tile-phase")).toHaveTextContent("Needs approval in the terminal: Bash");
+  });
+});
+
+describe("AgentTile pull request", () => {
+  const pr = { number: 42, url: "https://github.com/a/b/pull/42", state: "OPEN" as const, reviewDecision: "CHANGES_REQUESTED", checks: "SUCCESS", headSha: "bbbbbbb2", reviewedSha: "aaaaaaa1" };
+  it("shows the PR's status, that it moved since the review, and offers a re-review", async () => {
+    const onReReview = vi.fn();
+    render(<AgentTile {...base} onReReview={onReReview} agent={agent("done")} assignment={asg({ state: "done", outcome: "2 issues found.", pr })} />);
+    const line = screen.getByTestId("tile-pr");
+    expect(line).toHaveTextContent("PR #42"); expect(line).toHaveTextContent("Open"); expect(line).toHaveTextContent("Changes requested"); expect(line).toHaveTextContent("Checks pass");
+    expect(line).toHaveTextContent("New commits since the review");
+    expect(within(line).getByRole("link", { name: "PR #42" })).toHaveAttribute("href", pr.url);
+    await userEvent.click(within(line).getByRole("button", { name: /re-review/i }));
+    expect(onReReview).toHaveBeenCalledWith("devops@hrns");
+  });
+  it("no re-review once approved, merged, or while the review is still running", () => {
+    const { rerender } = render(<AgentTile {...base} onReReview={vi.fn()} agent={agent("done")} assignment={asg({ state: "done", outcome: "ok", pr: { ...pr, reviewDecision: "APPROVED" } })} />);
+    expect(screen.getByTestId("tile-pr")).toHaveTextContent("Approved");
+    expect(screen.queryByRole("button", { name: /re-review/i })).toBeNull();
+    rerender(<AgentTile {...base} onReReview={vi.fn()} agent={agent("done")} assignment={asg({ state: "done", outcome: "ok", pr: { ...pr, state: "MERGED" } })} />);
+    expect(screen.getByTestId("tile-pr")).toHaveTextContent("Merged");
+    expect(screen.queryByRole("button", { name: /re-review/i })).toBeNull();
+    rerender(<AgentTile {...base} onReReview={vi.fn()} agent={agent("working")} assignment={asg({ pr })} />);
+    expect(screen.queryByRole("button", { name: /re-review/i })).toBeNull();
+  });
+  it("says why there is no status", () => {
+    render(<AgentTile {...base} agent={agent("done")} assignment={asg({ state: "done", outcome: "ok", pr: { number: 42, note: "Couldn't read the PR: gh: not logged in" } })} />);
+    expect(screen.getByTestId("tile-pr")).toHaveTextContent("PR #42"); expect(screen.getByTestId("tile-pr")).toHaveTextContent("Couldn't read the PR: gh: not logged in");
+  });
+});
+
 describe("AgentTile task line", () => {
   it("shows the current task title on a working tile and the last prompt for an idle adopted one", () => {
     const { rerender } = render(<AgentTile {...base} agent={agent("working")} assignment={asg({ prompt: "Rotate the refresh token\nand add tests" })} />);
