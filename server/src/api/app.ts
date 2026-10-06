@@ -457,6 +457,12 @@ export function createApp(deps: AppDeps) {
     res.status(204).end();
   }));
   app.get("/api/bugfix/issues", wrap(async (_req, res) => res.json(await bugs().tracker.listMyIssues())));
+  /** One ticket, in full — the bugs view shows an unstarted bug before anything is created for it. */
+  app.get("/api/bugfix/issues/:key", wrap(async (req, res) => {
+    const key = req.params.key as string;
+    if (!/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(key)) throw new BadRequest("not a ticket key");
+    res.json(await bugs().tracker.fetchIssue(key));
+  }));
   app.get("/api/bugfix/preflight", wrap(async (req, res) => {
     const repo = req.query.repo;
     if (typeof repo !== "string" || !path.isAbsolute(repo)) throw new BadRequest("an absolute repo path is required");

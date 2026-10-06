@@ -61,6 +61,12 @@ describe("bug task routes", () => {
     expect(calls).toContain("no-change bt1");
   });
 
+  it("reads one ticket for the bugs view, refusing a key that isn't one", async () => {
+    expect((await request(app).get("/api/bugfix/issues/PAY-42").expect(200)).body).toMatchObject({ key: "PAY-42", title: "Boom" });
+    await request(app).get("/api/bugfix/issues/..%2Fx").expect(400);
+    await request(app).get("/api/bugfix/issues/PAY 42").expect(400);
+  });
+
   it("serves the plan markdown and the computed diff", async () => {
     await request(app).post("/api/bugtasks").send({ issueRef: "PAY-42", repo: "/r" });
     expect((await request(app).get("/api/bugtasks/bt1/plan").expect(200)).body).toEqual({ markdown: "" });
