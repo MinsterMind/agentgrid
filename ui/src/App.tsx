@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { api } from "./api";
-import { reducer, initial, assignmentFor, counts, todaySpend, waitingIds, needsYou, unclaimedLiveSessions, liveSessionFor, activityFor, sessionIdFor, bugTaskFor } from "./state/reducer";
+import { reducer, initial, assignmentFor, counts, todaySpend, waitingIds, needsYou, permissionFor, unclaimedLiveSessions, liveSessionFor, activityFor, sessionIdFor, bugTaskFor } from "./state/reducer";
 import { visualOrder } from "./state/sections";
 import { AgentGrid } from "./components/AgentGrid";
 import { SidePanel } from "./components/SidePanel";
@@ -125,8 +125,8 @@ export function App() {
     // The grid's bare-key shortcuts act on the grid's selection, which the bug screen does not
     // show — a stray "a" there would approve a permission request nobody can see.
     select: (i: number) => { if (route.view === "bugs") return; const a = visualOrder(s.agents, ag => needsYou(s, ag))[i]; if (a) dispatch({ type: "select", id: a.id }); },
-    allow: () => { if (route.view === "bugs") return; if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "allow" }); },
-    deny: () => { if (route.view === "bugs") return; if (selected && selectedAsg?.pending?.kind === "permission") void decide(selected.id, selectedAsg.pending.toolUseId, { kind: "deny" }); },
+    allow: () => { if (route.view === "bugs" || !selected) return; const id = selectedAsg?.pending?.kind === "permission" ? selectedAsg.pending.toolUseId : permissionFor(s, selected)?.id; if (id) void decide(selected.id, id, { kind: "allow" }); },
+    deny: () => { if (route.view === "bugs" || !selected) return; const id = selectedAsg?.pending?.kind === "permission" ? selectedAsg.pending.toolUseId : permissionFor(s, selected)?.id; if (id) void decide(selected.id, id, { kind: "deny" }); },
     newAgent: () => setSpawnOpen(true), fixBug: () => setBugOpen(true), sessions: () => setSessionsOpen(true),
     open: () => { if (route.view === "bugs") return; if (selected && selectedAsg?.sessionId) void openTerminal(selected.id); },
     escape: () => { if (transcriptFor) { setTranscriptFor(null); return; } if (sessionsOpen) { setSessionsOpen(false); return; } if (spawnOpen) { setSpawnOpen(false); return; } if (bugOpen) { setBugOpen(false); return; } if (settingsOpen) { setSettingsOpen(false); return; } if (route.view === "bugs") { route.go({ view: "grid" }); return; } dispatch({ type: "select", id: null }); },
@@ -140,7 +140,7 @@ export function App() {
         onCycleWaiting={cycleWaiting} onSpawn={() => setSpawnOpen(true)} onSessions={() => setSessionsOpen(true)}
         onFixBug={() => setBugOpen(true)} onOpenSettings={() => setSettingsOpen(true)} />
       {route.view === "bugs" ? (
-        <BugScreen state={s} selectedId={route.bugId} onSelect={(id, opts) => route.go({ view: "bugs", bugId: id }, opts)}
+        <BugScreen state={s} onDecide={decide} selectedId={route.bugId} onSelect={(id, opts) => route.go({ view: "bugs", bugId: id }, opts)}
           onBugChanged={t => dispatch({ type: "change", event: { type: "bugtask", task: t } })} onTranscript={id => setTranscriptFor(id)}
           onOpenSettings={() => setSettingsOpen(true)} onFixBug={() => setBugOpen(true)} />
       ) : s.loaded && s.agents.length === 0 && Object.keys(s.bugTasks).length === 0 ? (
@@ -154,12 +154,13 @@ export function App() {
           onAssign={(id, prompt) => api.assign(id, prompt).then(() => dispatch({ type: "select", id })).catch(showErr)}
           liveSessions={unclaimedLiveSessions(s)} liveFor={ag => liveSessionFor(s, ag)} activityFor={ag => activityFor(s, ag)}
           onPullIn={(sid, role, takeover) => api.adoptSession(sid, { role, takeover }).then(a => { dispatch({ type: "select", id: a.id }); if (takeover) setOpenTerminalRequest(n => n + 1); }).catch(showErr)}
-          bugStageFor={ag => bugTaskFor(s, ag)?.stage} needsYou={ag => needsYou(s, ag)}
+          bugStageFor={ag => bugTaskFor(s, ag)?.stage} needsYou={ag => needsYou(s, ag)} permissionFor={ag => permissionFor(s, ag)}
           onSay={(id, text) => api.say(id, text).then(() => dispatch({ type: "select", id })).catch(showErr)}
           onReReview={id => api.rereview(id).then(() => dispatch({ type: "select", id })).catch(showErr)} />
         <SidePanel agent={selected} role={s.roles.find(r => r.name === selected?.role)} assignment={selectedAsg}
           onDecide={decide} onCancel={id => api.cancel(id).catch(showErr)} onAck={id => api.ack(id).catch(showErr)} onOpenTerminal={openTerminal} onTranscript={id => setTranscriptFor(id)} hasSession={!!selected && Object.values(s.assignments).some(a => a.agentId === selected.id && a.sessionId)} terminalSessionId={terminalSessionId} live={selected ? liveSessionFor(s, selected) : null} openTerminalRequest={openTerminalRequest}
           activity={selected ? activityFor(s, selected) : null}
+          permission={selected ? permissionFor(s, selected) : null}
           onSay={(id, text) => api.say(id, text).catch(showErr)}
           onReset={id => api.resetSession(id).catch(showErr)}
           onRenameSession={(sid, title) => api.renameSession(sid, title).catch(showErr)}

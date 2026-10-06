@@ -112,3 +112,13 @@ describe("SidePanel activity (feature: status + reply from Details)", () => {
   });
 
 });
+
+describe("SidePanel terminal permission", () => {
+  it("answers the embedded terminal's request from Details", async () => {
+    const free: Agent = { ...agent, state: "free", currentAssignmentId: null, resumeSessionId: "s" };
+    render(<SidePanel agent={free} role={role} assignment={null} {...fns} permission={{ id: "pr7", agentId: "devops@hrns", source: "terminal" as const, sessionId: "s", toolName: "Bash", input: { command: "gh pr comment 7" }, suggestedRule: "Bash(gh pr:*)", ruleIsBroad: false, createdAt: "" }} />);
+    expect(screen.getByTestId("pending-permission")).toHaveTextContent("gh pr comment 7");
+    await userEvent.click(screen.getByRole("button", { name: /^allow$/i }));
+    expect(fns.onDecide).toHaveBeenCalledWith("devops@hrns", "pr7", { kind: "allow" });
+  });
+});

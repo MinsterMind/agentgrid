@@ -55,7 +55,8 @@ describe("AgentTile", () => {
     await userEvent.click(within(card).getByRole("button", { name: "Deny" }));
     expect(onDecide).toHaveBeenCalledWith("devops@hrns", "tu1", { kind: "deny" });
     expect(onSelect).not.toHaveBeenCalled();                          // Review Focus 1: the tile underneath is not selected
-    expect(within(card).queryByRole("button", { name: /always/i })).toBeNull();
+    // Always allow is offered on the card too, naming the rule it saves (spec 2026-10-06 §3.3)
+    expect(within(card).getByRole("button", { name: "Always allow Bash(kubectl rollout:*)" })).toBeInTheDocument();
   });
 
   it("answers a single one-choice question with its options", async () => {
@@ -119,11 +120,11 @@ describe("AgentTile asking you", () => {
     expect(onSay).toHaveBeenCalledWith("devops@hrns", "yes");
   });
   it("a done agent whose terminal is asking for approval says Needs you, not Done", () => {
-    render(<AgentTile {...base} agent={agent("done")} assignment={asg({ state: "done", outcome: "ok" })}
+    render(<AgentTile {...base} onDecide={vi.fn()} agent={agent("done")} assignment={asg({ state: "done", outcome: "ok" })}
       activity={{ sessionId: "s", phase: "working", lastMessage: "", lastPrompt: "", updatedAt: "", runningTool: { name: "Bash", summary: "gh pr comment 7" } }}
       permission={{ id: "pr1", agentId: "devops@hrns", source: "terminal", sessionId: "s", toolName: "Bash", input: { command: "gh pr comment 7" }, suggestedRule: "Bash(gh pr:*)", ruleIsBroad: false, createdAt: "" }} />);
     expect(screen.getByTestId("tile-state")).toHaveTextContent("Needs you");
-    expect(screen.getByTestId("tile-phase")).toHaveTextContent("Needs your approval: Bash");
+    expect(screen.getByTestId("tile-request")).toHaveTextContent("gh pr comment 7");
   });
 });
 
@@ -185,4 +186,17 @@ describe("AgentTile task line", () => {
     expect(st).toHaveClass("waiting");
   });
 
+});
+
+describe("AgentTile terminal permission", () => {
+  it("answers a terminal session's request right on the card — Allow, Always allow <rule>, Deny", async () => {
+    const onDecide = vi.fn();
+    render(<AgentTile {...base} onDecide={onDecide} agent={agent("done")} assignment={asg({ state: "done", outcome: "ok" })} permission={{ id: "pr7", agentId: "devops@hrns", source: "terminal" as const, sessionId: "s", toolName: "Bash", input: { command: "gh pr comment 7" }, suggestedRule: "Bash(gh pr:*)", ruleIsBroad: false, createdAt: "" }} />);
+    const card = screen.getByTestId("tile-request");
+    expect(card).toHaveTextContent("gh pr comment 7");
+    await userEvent.click(within(card).getByRole("button", { name: "Allow" }));
+    expect(onDecide).toHaveBeenCalledWith("devops@hrns", "pr7", { kind: "allow" });
+    await userEvent.click(within(card).getByRole("button", { name: "Always allow Bash(gh pr:*)" }));
+    expect(onDecide).toHaveBeenLastCalledWith("devops@hrns", "pr7", { kind: "always" });
+  });
 });

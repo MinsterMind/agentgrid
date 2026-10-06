@@ -253,3 +253,27 @@ describe("BugScreen — review fixes", () => {
 });
 
 });
+
+describe("BugScreen — answering the agent", () => {
+  it("shows the bug agent's permission request in Now, and answers it there", async () => {
+    const onDecide = vi.fn();
+    const state = { ...stateWith([task("implementing")]),
+      agents: [{ id: "bugfix@r", role: "bugfix", repo: "/w", displayName: "PAY-42", createdAt: "", state: "free", currentAssignmentId: null }],
+      permissions: { pr7: { id: "pr7", agentId: "bugfix@r", source: "terminal" as const, sessionId: "s", toolName: "Bash", input: { command: "gh pr comment 7" }, suggestedRule: "Bash(gh pr:*)", ruleIsBroad: false, createdAt: "" } } };
+    render(<BugScreen state={state as never} selectedId="bt1" onSelect={vi.fn()} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={vi.fn()} onDecide={onDecide} />);
+    const now = screen.getByRole("region", { name: "Now" });
+    expect(within(now).getByTestId("pending-permission")).toHaveTextContent("gh pr comment 7");
+    await userEvent.click(within(now).getByRole("button", { name: /^allow$/i }));
+    expect(onDecide).toHaveBeenCalledWith("bugfix@r", "pr7", { kind: "allow" });
+  });
+  it("an SDK run's pending request is answered there too", async () => {
+    const onDecide = vi.fn();
+    const state = { ...stateWith([task("implementing")]),
+      agents: [{ id: "bugfix@r", role: "bugfix", repo: "/w", displayName: "PAY-42", createdAt: "", state: "waiting", currentAssignmentId: "a1" }],
+      assignments: { a1: { id: "a1", agentId: "bugfix@r", prompt: "p", createdAt: "", startedAt: null, endedAt: null, sessionId: "s", state: "waiting", activity: "", outcome: null, error: null, turns: 0, costUsd: 0,
+        pending: { kind: "permission", toolUseId: "tu1", toolName: "Bash", input: { command: "npm test" }, suggestions: [], suggestedRule: "Bash(npm test:*)", ruleIsBroad: false } } } };
+    render(<BugScreen state={state as never} selectedId="bt1" onSelect={vi.fn()} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={vi.fn()} onDecide={onDecide} />);
+    await userEvent.click(within(screen.getByRole("region", { name: "Now" })).getByRole("button", { name: "Always allow Bash(npm test:*)" }));
+    expect(onDecide).toHaveBeenCalledWith("bugfix@r", "tu1", { kind: "always" });
+  });
+});

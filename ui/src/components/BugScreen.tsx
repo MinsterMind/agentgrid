@@ -3,8 +3,9 @@ import { Bug, Check, CheckCircle2, CircleDashed, CircleDot, History, Lightbulb, 
 import { api } from "../api";
 import { blockersFor, isNew, listStatus, nowFor, orderAssumptions, pipelineFor, stageLabel, type Blocker, type ListStatus, type StepState } from "../bugView";
 import { elapsed, relativeTime, usd } from "../format";
-import { activityFor, assignmentFor, type UiState } from "../state/reducer";
-import type { BugTask, SetupReport } from "../types";
+import { activityFor, assignmentFor, permissionFor, type UiState } from "../state/reducer";
+import type { BugTask, Decision, SetupReport } from "../types";
+import { PendingPrompt, asPending } from "./PendingPrompt";
 import { BugGates } from "./BugGates";
 import { DiffView, hunksFor } from "./DiffView";
 import { ErrorCard } from "./ErrorCard";
@@ -42,9 +43,10 @@ function When({ iso, now }: { iso?: string | null; now: number }) {
   return <time dateTime={iso} title={new Date(iso).toLocaleString()}>{relativeTime(iso, now)}</time>;
 }
 
-export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscript, onOpenSettings, onFixBug }: {
+export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscript, onOpenSettings, onFixBug, onDecide }: {
   state: UiState; selectedId: string | null; onSelect: (id: string, opts?: { replace?: boolean }) => void; onBugChanged: (t: BugTask) => void;
   onTranscript: (agentId: string) => void; onOpenSettings: () => void; onFixBug: () => void;
+  /** Answer the bug agent's permission request or question from here. */ onDecide?: (agentId: string, toolUseId: string, d: Decision) => void;
 }) {
   const now = useNow();
   const agentWaiting = (t: BugTask) => {
@@ -101,18 +103,21 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
         </ul>
         <div className="lfoot"><kbd>↑</kbd> <kbd>↓</kbd> move · <kbd>⏎</kbd> open</div>
       </aside>
-      {shown && <BugDetail key={shown.id} task={shown} state={state} now={now} onBugChanged={onBugChanged} onTranscript={onTranscript} onOpenSettings={onOpenSettings} />}
+      {shown && <BugDetail key={shown.id} task={shown} state={state} now={now} onBugChanged={onBugChanged} onTranscript={onTranscript} onOpenSettings={onOpenSettings} onDecide={onDecide} />}
     </div>
   );
 }
 
-function BugDetail({ task, state, now, onBugChanged, onTranscript, onOpenSettings }: {
+function BugDetail({ task, state, now, onBugChanged, onTranscript, onOpenSettings, onDecide }: {
   task: BugTask; state: UiState; now: number; onBugChanged: (t: BugTask) => void; onTranscript: (agentId: string) => void; onOpenSettings: () => void;
+  onDecide?: (agentId: string, toolUseId: string, d: Decision) => void;
 }) {
   const agent = state.agents.find(a => a.id === task.agentId) ?? null;
   const asg = agent ? assignmentFor(state, agent) : null;
   const activity = agent ? activityFor(state, agent) : null;
-  const pending = asg?.pending ?? null;
+  const permission = agent ? permissionFor(state, agent) : null;
+  // What the agent is asking right now: its run's own request, or its embedded terminal's.
+  const pending = asg?.pending ?? (permission ? asPending(permission) : null);
 
   const [setup, setSetup] = useState<SetupReport | null>(null);
   const [setupError, setSetupError] = useState(false);
@@ -184,6 +189,7 @@ function BugDetail({ task, state, now, onBugChanged, onTranscript, onOpenSetting
           <h3 className="panel-title"><Radio /> Now</h3>
           <div className="now-line"><b>{nowLine.headline}</b>{nowLine.since && <> · <Since iso={nowLine.since} kind={nowLine.sinceKind} now={now} /></>}</div>
           {nowLine.detail && <div className="now-detail">{nowLine.detail}</div>}
+          {pending && agent && onDecide && <PendingPrompt who={agent.displayName} pending={pending} onDecide={d => onDecide(agent.id, pending.toolUseId, d)} />}
         </section>
       </div>
 

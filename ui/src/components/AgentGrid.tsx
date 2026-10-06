@@ -1,4 +1,4 @@
-import type { Agent, Assignment, Decision, RoleDef, SessionInfo, SessionActivity } from "../types";
+import type { Agent, Assignment, Decision, PermissionRequest, RoleDef, SessionInfo, SessionActivity } from "../types";
 import { SessionTile } from "./SessionTile";
 import { AgentTile } from "./AgentTile";
 import { Activity, CheckCircle2, Hand, Moon, RadioReceiver } from "lucide-react";
@@ -6,7 +6,7 @@ import { sectionize } from "../state/sections";
 
 const ICON = { waiting: Hand, working: Activity, finished: CheckCircle2, free: Moon };
 
-export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, onSelect, onAssign, onDecide, liveSessions = [], liveFor, activityFor, onPullIn, bugStageFor, needsYou, onSay, onReReview }: {
+export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, onSelect, onAssign, onDecide, liveSessions = [], liveFor, activityFor, onPullIn, bugStageFor, needsYou, onSay, onReReview, permissionFor }: {
   agents: Agent[]; roles: RoleDef[]; assignments: Record<string, Assignment>; selectedId: string | null;
   recentFor: (agentId: string) => string[]; onSelect: (id: string) => void; onAssign: (id: string, prompt: string) => void;
   /** Answer an agent's pending request from its tile. */ onDecide?: (agentId: string, toolUseId: string, d: Decision) => void;
@@ -18,6 +18,7 @@ export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, o
   /** Agents that need you for any reason — they sit in the Needs you section. */ needsYou?: (agent: Agent) => boolean;
   /** Answer a finished run's question from its tile. */ onSay?: (id: string, text: string) => void;
   /** Second look at a finished task's PR. */ onReReview?: (id: string) => void;
+  /** An agent's open terminal permission request, if any. */ permissionFor?: (agent: Agent) => PermissionRequest | null;
 }) {
   const sections = sectionize(agents, needsYou);
   let index = 0;
@@ -33,7 +34,7 @@ export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, o
             {sec.agents.map(agent => (
               <AgentTile key={agent.id} agent={agent} index={index++} role={roles.find(r => r.name === agent.role)}
                 assignment={agent.currentAssignmentId ? assignments[agent.currentAssignmentId] ?? null : null}
-                selected={agent.id === selectedId} recent={recentFor(agent.id)} onSelect={onSelect} onAssign={onAssign} onDecide={onDecide} live={liveFor?.(agent) ?? null} activity={activityFor?.(agent) ?? null} bugStage={bugStageFor?.(agent)} onSay={onSay} onReReview={onReReview} />
+                selected={agent.id === selectedId} recent={recentFor(agent.id)} onSelect={onSelect} onAssign={onAssign} onDecide={onDecide} live={liveFor?.(agent) ?? null} activity={activityFor?.(agent) ?? null} bugStage={bugStageFor?.(agent)} onSay={onSay} onReReview={onReReview} permission={permissionFor?.(agent) ?? null} />
             ))}
           </div>
         </section>
