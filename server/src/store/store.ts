@@ -4,7 +4,7 @@ import path from "node:path";
 import matter from "gray-matter";
 import { paths } from "./paths.js";
 import { loadRoles, ensureDefaultRoles } from "./roles.js";
-import type { Agent, Assignment, GridEvent, GridState, MemoryFile, RoleDef, SessionInfo, SessionActivity } from "../types.js";
+import type { Agent, Assignment, GridEvent, GridState, MemoryFile, RoleDef, SessionInfo, SessionActivity, PermissionRequest } from "../types.js";
 import { mergeSessions, type LiveSession } from "../sessions.js";
 
 export class NotFound extends Error { status = 404; }
@@ -38,6 +38,8 @@ export class Store extends EventEmitter {
   private statuses = new Map<string, SessionActivity>();
   /** Supplied by the server when the bug-fix workflow is wired. */
   bugTasks: () => unknown[] = () => [];
+  /** Open permission requests (set by start.ts from the PermissionBroker). */
+  permissions: () => PermissionRequest[] = () => [];
 
   constructor(home: string, private defaultsDir: string) {
     super();
@@ -210,6 +212,6 @@ export class Store extends EventEmitter {
   sessionStatus(sessionId: string): SessionActivity | undefined { return this.statuses.get(sessionId); }
 
   getState(): GridState {
-    return { roles: this.listRoles(), agents: this.listAgents(), assignments: this.listAssignments(), liveSessions: this.liveSessions(), sessionStatuses: [...this.statuses.values()], bugTasks: this.bugTasks() as GridState["bugTasks"] };
+    return { roles: this.listRoles(), agents: this.listAgents(), assignments: this.listAssignments(), liveSessions: this.liveSessions(), sessionStatuses: [...this.statuses.values()], bugTasks: this.bugTasks() as GridState["bugTasks"], permissions: this.permissions() };
   }
 }
