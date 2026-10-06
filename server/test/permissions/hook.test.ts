@@ -38,6 +38,12 @@ describe("POST /api/hooks/permission", () => {
     expect((await pending).body).toEqual({ decision: { behavior: "allow" } });
     await request(app).post("/api/agents/rev@r/answer").send({ toolUseId: id, decision: { kind: "allow" } }).expect(409);   // Review Focus 1
   });
+  it("the session AgentGrid launched (sent by the hook) wins over Claude Code's own id", async () => {
+    const p = request(app).post("/api/hooks/permission").set("Authorization", `Bearer ${TOKEN}`).set("X-AgentGrid-Session", "s1").send({ ...body, session_id: "forked-id" }).then(r => r);
+    await until(() => broker.list().length === 1);
+    expect(broker.list()[0]).toMatchObject({ agentId: "rev@r", sessionId: "s1" });
+    broker.cancel(broker.list()[0].id); await p;
+  });
   it("a rule answers at once; no owning agent, a question, or a cancel all mean no decision", async () => {
     await rules.add("Bash(npm test:*)");
     expect((await request(app).post("/api/hooks/permission").set("Authorization", `Bearer ${TOKEN}`).send(body)).body).toEqual({ decision: { behavior: "allow" } });
@@ -66,9 +72,9 @@ describe("permission-hook.mjs", { timeout: 60_000 }, () => {
   });
   it("prints the decision as Claude Code's hook output", async () => {
     const server = http.createServer((req, res) => { let b = ""; req.on("data", c => b += c); req.on("end", () => {
-      expect(req.headers.authorization).toBe("Bearer k"); expect(JSON.parse(b).tool_name).toBe("Bash");
+      expect(req.headers.authorization).toBe("Bearer k"); expect(req.headers["x-agentgrid-session"]).toBe("s9"); expect(JSON.parse(b).tool_name).toBe("Bash");
       res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ decision: { behavior: "deny", message: "no" } })); }); }).listen(0);
-    const r = await runHook({ AGENTGRID_URL: `http://127.0.0.1:${(server.address() as any).port}`, AGENTGRID_HOOK_TOKEN: "k" }, JSON.stringify(body));
+    const r = await runHook({ AGENTGRID_URL: `http://127.0.0.1:${(server.address() as any).port}`, AGENTGRID_HOOK_TOKEN: "k", AGENTGRID_SESSION_ID: "s9" }, JSON.stringify(body));
     server.close();
     expect(r.code).toBe(0);
     expect(JSON.parse(r.out)).toEqual({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "deny", message: "no" } } });

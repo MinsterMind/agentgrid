@@ -10,7 +10,7 @@ try {
   if (!base || !token) done();
   const url = new URL("/api/hooks/permission", base);
   const payload = JSON.stringify(input);
-  const req = http.request(url, { method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload), authorization: `Bearer ${token}` } }, res => {
+  const req = http.request(url, { method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload), authorization: `Bearer ${token}`, ...(process.env.AGENTGRID_SESSION_ID ? { "x-agentgrid-session": process.env.AGENTGRID_SESSION_ID } : {}) } }, res => {
     let b = ""; res.setEncoding("utf8"); res.on("data", c => (b += c));
     res.on("end", () => {
       try {

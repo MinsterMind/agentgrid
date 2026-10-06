@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { PtyManager, cleanEnv, type PtyLike, type SpawnFn } from "../src/pty.js";
+import { PtyManager, cleanEnv, hookCommand, hookSettings, type PtyLike, type SpawnFn } from "../src/pty.js";
 
 /** Fake pty: records writes/resizes, lets tests emit output and exit. */
 class FakePty extends EventEmitter implements PtyLike {
@@ -106,5 +106,24 @@ describe("cleanEnv", () => {
   it("strips forge credentials from the embedded terminal's environment", () => {
     const env = cleanEnv({ PATH: "/bin", HOME: "/h", BITBUCKET_API_TOKEN: "secret-bb", GH_TOKEN: "secret-gh", GITHUB_TOKEN: "secret-ghlegacy" });
     expect(env).toEqual({ PATH: "/bin", HOME: "/h", TERM: "xterm-256color", COLORTERM: "truecolor" });
+  });
+
+  it("adds the hook to --resume launches only, with its env, and reports exits", () => {
+    const { spawned, mgr } = setup();
+    const exits: string[] = []; mgr.onSessionExit(s => exits.push(s));
+    mgr.configureHook({ settings: '{"hooks":{}}', env: { AGENTGRID_URL: "http://127.0.0.1:1", AGENTGRID_HOOK_TOKEN: "k" } });
+    mgr.attach("s1", { cwd: "/r", argv: ["--resume", "s1"], cols: 80, rows: 24 }, () => {}, () => {});
+    mgr.attach("s2", { cwd: "/r", argv: ["attach", "bg2"], cols: 80, rows: 24 }, () => {}, () => {});
+    expect(spawned[0].args).toEqual(["--resume", "s1", "--settings", '{"hooks":{}}']);
+    expect(spawned[0].opts.env).toMatchObject({ AGENTGRID_URL: "http://127.0.0.1:1", AGENTGRID_HOOK_TOKEN: "k", AGENTGRID_SESSION_ID: "s1" });
+    expect(spawned[1].args).toEqual(["attach", "bg2"]);
+    expect(spawned[1].opts.env.AGENTGRID_HOOK_TOKEN).toBeUndefined();
+    spawned[0].pty.kill();
+    expect(exits).toEqual(["s1"]);
+  });
+  it("hook command and settings", () => {
+    expect(hookCommand("/usr/bin/node", "/p/hook.mjs", false)).toBe("'/usr/bin/node' '/p/hook.mjs'");
+    expect(hookCommand("/A G.app/x", "/p/h.mjs", true)).toBe("ELECTRON_RUN_AS_NODE=1 '/A G.app/x' '/p/h.mjs'");
+    expect(JSON.parse(hookSettings("cmd"))).toEqual({ hooks: { PermissionRequest: [{ matcher: "*", hooks: [{ type: "command", command: "cmd", timeout: 86400 }] }] } });
   });
 });

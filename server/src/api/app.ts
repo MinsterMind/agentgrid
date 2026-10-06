@@ -196,7 +196,9 @@ export function createApp(deps: AppDeps) {
     const p = deps.permissions; const b = req.body ?? {};
     const toolName = typeof b.tool_name === "string" ? b.tool_name : "";
     const input = b.tool_input && typeof b.tool_input === "object" && !Array.isArray(b.tool_input) ? b.tool_input as Record<string, unknown> : {};
-    const sessionId = typeof b.session_id === "string" ? b.session_id : "";
+    // The session AgentGrid launched (the hook sends it) — Claude Code's own id can differ after a resume.
+    const launched = req.get("x-agentgrid-session");
+    const sessionId = launched && /^[\w-]{1,100}$/.test(launched) ? launched : typeof b.session_id === "string" ? b.session_id : "";
     const agentId = sessionId ? deps.agentForSession?.(sessionId) ?? null : null;
     if (!p || !toolName || toolName === "AskUserQuestion" || !agentId) { res.json({ decision: null }); return; }
     if (p.broker.allowed(toolName, input)) { res.json({ decision: { behavior: "allow" } }); return; }
