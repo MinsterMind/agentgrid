@@ -9,6 +9,8 @@ interface Open { req: PermissionRequest; resolve: (d: BrokerDecision | null) => 
 /** Every open permission request AgentGrid answers for an embedded terminal session; settles each exactly once. */
 export class PermissionBroker extends EventEmitter {
   private open = new Map<string, Open>();
+  /** Recently settled ids, so a late second answer reads as "already answered" (409), not "unknown". */
+  private settled = new Set<string>();
   private next = 1;
   constructor(private rules: RulesStore) { super(); }
 
@@ -34,11 +36,15 @@ export class PermissionBroker extends EventEmitter {
   cancel(id: string): void { if (this.open.has(id)) this.settle(id, null); }
   cancelSession(sessionId: string): void { for (const [id, o] of this.open) if (o.req.sessionId === sessionId) this.settle(id, null); }
   has(id: string): boolean { return this.open.has(id); }
+  /** Open now, or settled recently — either way it is this broker's to answer (or refuse). */
+  owns(id: string): boolean { return this.open.has(id) || this.settled.has(id); }
   list(): PermissionRequest[] { return [...this.open.values()].map(o => o.req); }
 
   private settle(id: string, d: BrokerDecision | null): void {
     const o = this.open.get(id); if (!o) return;
     this.open.delete(id);
+    this.settled.add(id);
+    if (this.settled.size > 500) this.settled.delete(this.settled.values().next().value!);
     o.resolve(d);
     this.emit("event", { type: "permission-settled", id } satisfies GridEvent);
   }

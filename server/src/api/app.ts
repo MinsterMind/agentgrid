@@ -1,5 +1,8 @@
 import express, { type Request, type Response, type NextFunction } from "express";
 import { rereviewPrompt } from "../agentpr.js";
+import { timingSafeEqual } from "node:crypto";
+import type { PermissionBroker } from "../permissions/broker.js";
+import type { RulesStore } from "../permissions/rules.js";
 import path from "node:path";
 import { Store, NotFound, Conflict, BadRequest } from "../store/store.js";
 import { Manager } from "../runner/manager.js";
@@ -66,6 +69,12 @@ export interface AppDeps {
   killSession?: (pid: number) => void;
   /** Send a message into the session's open embedded terminal, pressing Enter for it; false when none is open. */
   submitToTerminal?: (sessionId: string, text: string) => boolean;
+  /** The always-allow rules and the broker that holds embedded terminals' permission requests. */
+  permissions?: { broker: PermissionBroker; rules: RulesStore };
+  /** The per-start secret the PermissionRequest hook must present; null until the server is listening. */
+  hookToken?: () => string | null;
+  /** The agent that owns a Claude Code session (adopted, or ran it), or null. */
+  agentForSession?: (sessionId: string) => string | null;
 }
 
 
@@ -174,9 +183,39 @@ export function createApp(deps: AppDeps) {
     if (typeof prompt !== "string" || !prompt.trim()) throw new BadRequest("prompt is required");
     res.status(201).json(await manager.assign(req.params.id as string, prompt));
   }));
+  /**
+   * Claude Code's PermissionRequest hook, from a session AgentGrid launched in its embedded terminal. Never a
+   * browser, and only with the per-start token. It waits for a human (or a rule) and answers with a decision —
+   * or with none, which makes Claude Code ask in the terminal as it always did.
+   */
+  app.post("/api/hooks/permission", wrap(async (req, res) => {
+    if (req.get("sec-fetch-site")) { res.status(403).json({ error: "not for browsers" }); return; }
+    const token = deps.hookToken?.() ?? null;
+    const given = (req.get("authorization") ?? "").replace(/^Bearer /, "");
+    if (!token || given.length !== token.length || !timingSafeEqual(Buffer.from(given), Buffer.from(token))) { res.status(401).json({ error: "bad token" }); return; }
+    const p = deps.permissions; const b = req.body ?? {};
+    const toolName = typeof b.tool_name === "string" ? b.tool_name : "";
+    const input = b.tool_input && typeof b.tool_input === "object" && !Array.isArray(b.tool_input) ? b.tool_input as Record<string, unknown> : {};
+    const sessionId = typeof b.session_id === "string" ? b.session_id : "";
+    const agentId = sessionId ? deps.agentForSession?.(sessionId) ?? null : null;
+    if (!p || !toolName || toolName === "AskUserQuestion" || !agentId) { res.json({ decision: null }); return; }
+    if (p.broker.allowed(toolName, input)) { res.json({ decision: { behavior: "allow" } }); return; }
+    const { id, decision } = p.broker.ask({ agentId, source: "terminal", sessionId, toolName, input, suggestions: Array.isArray(b.permission_suggestions) ? b.permission_suggestions : [] });
+    // The hook gave up (Claude Code killed it, or it was answered in the terminal and timed out): drop the request.
+    res.on("close", () => { if (!res.writableEnded) p.broker.cancel(id); });
+    const d = await decision;
+    if (!res.writableEnded && !res.destroyed) res.json({ decision: d });
+  }));
   app.post("/api/agents/:id/answer", wrap(async (req, res) => {
     const { toolUseId, decision } = req.body ?? {};
     if (typeof toolUseId !== "string" || !isDecision(decision)) throw new BadRequest("toolUseId and decision are required");
+    // An embedded terminal's request lives in the broker; an SDK run's is parked on its runner.
+    const broker = deps.permissions?.broker;
+    if (broker?.owns(toolUseId)) {
+      const open = broker.list().find(r => r.id === toolUseId);
+      if (open && open.agentId !== req.params.id) throw new NotFound(`no permission request ${toolUseId} for ${req.params.id}`);
+      await broker.answer(toolUseId, decision); res.status(204).end(); return;
+    }
     await manager.answer(req.params.id as string, toolUseId, decision); res.status(204).end();
   }));
   app.post("/api/agents/:id/cancel", wrap(async (req, res) => { await manager.cancel(req.params.id as string); res.status(204).end(); }));
