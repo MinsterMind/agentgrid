@@ -208,6 +208,14 @@ export function createApp(deps: AppDeps) {
     const d = await decision;
     if (!res.writableEnded && !res.destroyed) res.json({ decision: d });
   }));
+  /** The shared always-allow rules, for Settings: list them (with any problem reading the file) and remove one. */
+  const rulesOrThrow = () => { if (!deps.permissions) throw Object.assign(new Error("permissions are not wired"), { status: 501 }); return deps.permissions.rules; };
+  app.get("/api/permissions/rules", wrap(async (_req, res) => { const r = rulesOrThrow(); res.json({ rules: r.list(), problem: r.problem }); }));
+  app.delete("/api/permissions/rules", wrap(async (req, res) => {
+    const r = rulesOrThrow(); const rule = req.body?.rule;
+    if (typeof rule !== "string" || !rule.trim()) throw new BadRequest("rule is required");
+    res.json({ rules: await r.remove(rule), problem: r.problem });
+  }));
   app.post("/api/agents/:id/answer", wrap(async (req, res) => {
     const { toolUseId, decision } = req.body ?? {};
     if (typeof toolUseId !== "string" || !isDecision(decision)) throw new BadRequest("toolUseId and decision are required");

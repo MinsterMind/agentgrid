@@ -85,3 +85,16 @@ describe("permission-hook.mjs", { timeout: 60_000 }, () => {
     expect(await runHook({ AGENTGRID_URL: "http://127.0.0.1:1", AGENTGRID_HOOK_TOKEN: "k" }, "not json")).toEqual({ out: "", code: 0 });
   });
 });
+
+describe("always-allowed rules routes", () => {
+  it("lists rules with any problem, removes one, and says when not wired", async () => {
+    await rules.add("Bash(npm test:*)"); await rules.add("Edit");
+    const r = await request(app).get("/api/permissions/rules").expect(200);
+    expect(r.body).toEqual({ rules: [expect.objectContaining({ rule: "Bash(npm test:*)" }), expect.objectContaining({ rule: "Edit" })], problem: null });
+    const d = await request(app).delete("/api/permissions/rules").send({ rule: "Edit" }).expect(200);
+    expect(d.body.rules.map((x: { rule: string }) => x.rule)).toEqual(["Bash(npm test:*)"]);
+    await request(app).delete("/api/permissions/rules").send({}).expect(400);
+    const home = await mkdtemp(path.join(tmpdir(), "hook-")); const s2 = new Store(home, path.resolve("roles")); await s2.init();
+    await request(createApp({ store: s2, manager: new Manager(s2, { queryFn: makeFakeQuery().queryFn }) })).get("/api/permissions/rules").expect(501);
+  });
+});

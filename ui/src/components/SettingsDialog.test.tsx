@@ -366,3 +366,25 @@ describe("Settings — forge toggle (phase 3 M-4)", () => {
 });
 
 });
+
+describe("SettingsDialog — Always allowed", () => {
+  it("lists the shared rules, and removes one", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report());
+    vi.spyOn(api, "listRules").mockResolvedValue({ rules: [{ rule: "Bash(npm test:*)", addedAt: new Date(Date.now() - 3 * 3600_000).toISOString() }, { rule: "Edit", addedAt: new Date().toISOString() }], problem: null });
+    const remove = vi.spyOn(api, "removeRule").mockResolvedValue({ rules: [{ rule: "Edit", addedAt: new Date().toISOString() }], problem: null });
+    render(<SettingsDialog onClose={() => {}} />);
+    const sec = (await screen.findByRole("heading", { name: /always allowed/i })).closest("section")!;
+    expect(await within(sec as HTMLElement).findByText("Bash(npm test:*)")).toBeTruthy();
+    expect(within(sec as HTMLElement).getByText(/for every agent, bug fix and embedded terminal/i)).toBeTruthy();
+    await userEvent.click(within(sec as HTMLElement).getByRole("button", { name: "Remove Bash(npm test:*)" }));
+    expect(remove).toHaveBeenCalledWith("Bash(npm test:*)");
+    await waitFor(() => expect(within(sec as HTMLElement).queryByText("Bash(npm test:*)")).toBeNull());
+  });
+  it("says how rules get there when there are none, and shows a problem reading the file", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report());
+    vi.spyOn(api, "listRules").mockResolvedValue({ rules: [], problem: "permissions.json could not be read" });
+    render(<SettingsDialog onClose={() => {}} />);
+    expect(await screen.findByText(/Nothing yet — use Always allow on a request to add a rule\./)).toBeTruthy();
+    expect(screen.getByText(/permissions\.json could not be read/)).toBeTruthy();
+  });
+});

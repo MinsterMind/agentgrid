@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Check as CheckIcon, CheckCircle2, FolderGit2, GitPullRequest, PlugZap, Ticket, TriangleAlert, X } from "lucide-react";
+import { Check as CheckIcon, CheckCircle2, FolderGit2, GitPullRequest, PlugZap, ShieldCheck, Ticket, TriangleAlert, X } from "lucide-react";
+import { relativeTime } from "../format";
 import { api } from "../api";
 import type { Check, FixAction, McpServerFound, SetupReport } from "../types";
 
@@ -306,6 +307,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             </section>
           )}
 
+          <AlwaysAllowed />
+
           {report.discovery.problems.length > 0 && (
             <section className="sec">
               <div className="sec-head"><h4>Problems reading your Claude Code configuration</h4><p className="why">AgentGrid lists your MCP servers from Claude Code's own files.</p></div>
@@ -324,5 +327,30 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         </div>
       </section>
     </div>
+  );
+}
+
+/** The shared always-allow rules: what AgentGrid approves without asking, for every agent. Each one removable. */
+function AlwaysAllowed() {
+  const [data, setData] = useState<{ rules: Array<{ rule: string; addedAt: string }>; problem: string | null } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => { let live = true; api.listRules().then(d => { if (live) setData(d); }).catch(e => { if (live) setErr((e as Error).message); }); return () => { live = false; }; }, []);
+  const remove = (rule: string) => api.removeRule(rule).then(setData).catch(e => setErr((e as Error).message));
+  return (
+    <section className="sec">
+      <div className="sec-head"><h4><ShieldCheck />Always allowed</h4><p className="why">Requests matching these rules are approved without asking — for every agent, bug fix and embedded terminal.</p></div>
+      <div className="sec-body maprows">
+        {data?.problem && <div className="warnline"><TriangleAlert /> {data.problem}</div>}
+        {err && <div className="err">{err}</div>}
+        {data && data.rules.length === 0 && <p className="help">Nothing yet — use Always allow on a request to add a rule.</p>}
+        {data?.rules.map(r => (
+          <div key={r.rule} className="maprow">
+            <span className="mono">{r.rule}</span>
+            <span className="help">added {relativeTime(r.addedAt)}</span>
+            <button className="btn sm d" aria-label={`Remove ${r.rule}`} onClick={() => void remove(r.rule)}>Remove</button>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
