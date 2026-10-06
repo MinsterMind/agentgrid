@@ -57,4 +57,26 @@ describe("PermissionBroker", () => {
     broker.reconcile(st({ updatedAt: later }));                                                     // tool finished
     expect(await a.decision).toBeNull(); expect(broker.list()).toEqual([]);
   });
+
+  // Final review: the first answer claims the request before it awaits anything (saving a rule).
+  it("two answers at once: the first wins, the second is refused, and a losing Always saves nothing", async () => {
+    const a = broker.ask(req("ls -la"));
+    const first = broker.answer(a.id, { kind: "deny" });
+    const second = broker.answer(a.id, { kind: "always" });
+    await Promise.all([expect(first).resolves.toBeUndefined(), expect(second).rejects.toMatchObject({ status: 409 })]);
+    expect(await a.decision).toEqual({ behavior: "deny", message: "Denied in AgentGrid" });
+    expect(rules.rules()).toEqual([]);
+    const b = broker.ask(req("ls -la"));
+    const win = broker.answer(b.id, { kind: "always" }); const lose = broker.answer(b.id, { kind: "deny" });
+    await Promise.all([win, expect(lose).rejects.toMatchObject({ status: 409 })]);
+    expect(await b.decision).toEqual({ behavior: "allow" }); expect(rules.rules()).toEqual(["Bash(ls:*)"]);
+  });
+
+  // Final review: a subagent's request arrives under the parent session, whose log shows only the Task/Agent call.
+  it("reconcile leaves a request alone while the session is running subagents", async () => {
+    broker.ask(req("npm test"));
+    const later = new Date(Date.parse(broker.list()[0].createdAt) + 1000).toISOString();
+    for (const name of ["Task", "Agent"]) broker.reconcile({ sessionId: "s1", phase: "working", lastMessage: "", lastPrompt: "", updatedAt: later, runningTool: { name, summary: "explore" } });
+    expect(broker.list()).toHaveLength(1);
+  });
 });

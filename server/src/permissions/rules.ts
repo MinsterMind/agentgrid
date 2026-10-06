@@ -2,17 +2,35 @@ import { readFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { BadRequest, writeAtomic } from "../store/store.js";
 
-const RULE = /^([A-Z][A-Za-z0-9_]*)(?:\((.+)\))?$/;
-const MULTI = new Set(["npm", "git", "yarn", "pnpm", "docker", "kubectl", "gh", "npx", "cargo", "go"]);
+/** A built-in tool (`Bash`, `Edit`, …) or an MCP tool (`mcp__server__tool`), optionally with a parenthesised argument. */
+const RULE = /^([A-Z][A-Za-z0-9_]*|mcp__[\w-]+)(?:\((.+)\))?$/;
+const MULTI = new Set(["npm", "git", "yarn", "pnpm", "docker", "kubectl", "gh", "cargo", "go"]);
+/** Flags that take a value before the subcommand: `git -C <dir> push` is `git push`. */
+const VALUE_FLAGS = new Set(["-C", "-c", "--prefix", "--git-dir", "--work-tree", "-w", "--workspace", "--dir", "--cwd", "--context", "-n", "--namespace"]);
 const BROAD = new Set(["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"]);
+/** A prefix rule on one of these runs anything at all — as broad as bare Bash. */
+const RUNS_ANYTHING = new Set(["bash", "sh", "zsh", "fish", "dash", "python", "python2", "python3", "node", "deno", "bun", "perl", "ruby", "php",
+  "env", "sudo", "doas", "xargs", "eval", "exec", "nohup", "timeout", "time", "nice", "npx", "git", "command", "builtin", "source", "."]);
 
 export function isValidRule(rule: string): boolean { return RULE.test(rule.trim()); }
-export function isBroadRule(rule: string): boolean { return BROAD.has(rule.trim()); }
+export function isBroadRule(rule: string): boolean {
+  const r = rule.trim();
+  if (BROAD.has(r)) return true;
+  const m = /^Bash\((.+):\*\)$/.exec(r);
+  return !!m && RUNS_ANYTHING.has(m[1].trim());
+}
 
-/** Parts of a shell command, split on && || ; | and newlines. Null when it substitutes a command. */
+/**
+ * Parts of a shell command, split on && || ; | and newlines — or null, meaning "never auto-allow, ask".
+ * The matcher overrides Claude Code's own prompt for every agent, so anything it can't read as a plain list
+ * of commands fails closed: command or process substitution, a lone `&` (a second, backgrounded command),
+ * and redirection that writes a file. Redirects to /dev/null or to another descriptor are harmless and kept.
+ */
 export function splitCommand(cmd: string): string[] | null {
-  if (/\$\(|`/.test(cmd)) return null;
-  return cmd.split(/&&|\|\||;|\||\n/).map(p => p.trim()).filter(Boolean);
+  const c = cmd.replace(/&>\s*\/dev\/null|\d*>>?\s*\/dev\/null|\d*>&\d+|\d*<&\d+/g, " ");
+  if (/\$\(|`|<\(|>\(|>/.test(c)) return null;
+  if (/&/.test(c.replace(/&&/g, ""))) return null;
+  return c.split(/&&|\|\||;|\||\n|\r/).map(p => p.trim()).filter(Boolean);
 }
 
 const argOf = (input: Record<string, unknown>): string | null => {
@@ -60,8 +78,15 @@ export function suggestRule(toolName: string, input: Record<string, unknown>, su
     const first = splitCommand(String(input.command ?? ""))?.[0] ?? "";
     const words = first.split(/\s+/).filter(Boolean);
     if (!words.length) return "Bash";
-    const prefix = MULTI.has(words[0]) && words[1] && !words[1].startsWith("-") ? `${words[0]} ${words[1]}` : words[0];
-    return `Bash(${prefix}:*)`;
+    let sub: string | undefined;
+    if (MULTI.has(words[0])) {
+      // The subcommand is the first word that isn't a flag (or a flag's value): `git -C /r push` → `git push`.
+      for (let i = 1; i < words.length; i++) {
+        if (words[i].startsWith("-")) { if (VALUE_FLAGS.has(words[i])) i++; continue; }
+        sub = words[i]; break;
+      }
+    }
+    return `Bash(${sub ? `${words[0]} ${sub}` : words[0]}:*)`;
   }
   if (toolName === "WebFetch") { const h = hostOf(input.url); if (h) return `WebFetch(domain:${h})`; }
   return toolName;

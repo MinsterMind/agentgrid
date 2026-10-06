@@ -30,8 +30,10 @@ export class PermissionBroker extends EventEmitter {
     const o = this.open.get(id);
     if (!o) throw new Conflict(`permission request ${id} is already settled`);
     if (d.kind === "answers") throw new BadRequest("a permission request takes allow, always or deny");
-    if (d.kind === "always") await this.rules.add(o.req.suggestedRule);
+    // Claim it before awaiting anything: a second answer arriving while the rule is saved must lose (409),
+    // never decide too — or a losing "always" could save a rule for a request that was denied.
     this.settle(id, d.kind === "deny" ? { behavior: "deny", message: d.message ?? "Denied in AgentGrid" } : { behavior: "allow" });
+    if (d.kind === "always") await this.rules.add(o.req.suggestedRule);
   }
 
   cancel(id: string): void { if (this.open.has(id)) this.settle(id, null); }
@@ -47,6 +49,9 @@ export class PermissionBroker extends EventEmitter {
       if (r.sessionId !== status.sessionId || !status.updatedAt || status.updatedAt <= r.createdAt) continue;
       const running = status.runningTool;
       if (running && running.name === r.toolName && running.summary === summarise(r.input)) continue;
+      // Subagents' tools don't show in the parent's log (only their Task/Agent call does), yet their
+      // requests arrive under the parent session: while one runs, the log can't say anything moved on.
+      if (running && (running.name === "Task" || running.name === "Agent")) continue;
       this.settle(id, null);
     }
   }

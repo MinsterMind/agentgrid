@@ -282,4 +282,15 @@ describe("Runner and always-allow rules", () => {
     await until(() => store.getAgent(agentId).state === "waiting");
     expect(store.getAssignment(asg.id).pending).toMatchObject({ kind: "question", suggestedRule: "", ruleIsBroad: false });
   });
+
+  it("two answers at once: the first wins and the second is refused", async () => {
+    const rules = new RulesStore(path.dirname(store.memoryDir(agentId))); await rules.load();
+    const r = new Runner(agentId, { store, queryFn: fake.queryFn, buildOptions, rules });
+    await r.assign("go");
+    const p = captured.canUseTool!("Bash", { command: "ls -la" }, { signal: new AbortController().signal, toolUseID: "t9", suggestions: [] } as any);
+    await until(() => store.getAgent(agentId).state === "waiting");
+    const first = r.answer("t9", { kind: "deny" }); const second = r.answer("t9", { kind: "always" });
+    await Promise.all([first, expect(second).rejects.toMatchObject({ status: 409 })]);
+    expect(await p).toMatchObject({ behavior: "deny" }); expect(rules.rules()).toEqual([]);
+  });
 });

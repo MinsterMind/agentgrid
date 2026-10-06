@@ -93,6 +93,8 @@ export class Runner {
   async answer(toolUseId: string, decision: Decision): Promise<void> {
     const parked = this.parked.get(toolUseId);
     if (!parked) throw new Conflict(`no pending prompt ${toolUseId} on ${this.agentId}`);
+    // Claim it before awaiting anything: a second answer while the rule is saved gets 409, never a say.
+    this.parked.delete(toolUseId);
     const { pending } = parked;
     let result: PermissionResult;
     switch (decision.kind) {
