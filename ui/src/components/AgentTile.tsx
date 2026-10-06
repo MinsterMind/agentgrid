@@ -4,6 +4,7 @@ import { AssignBox } from "./AssignBox";
 import { describeRequest, summarise } from "./PendingPrompt";
 import { basename, elapsed, usd } from "../format";
 import { attention } from "../state/attention";
+import { PrLine } from "./PrLine";
 
 export interface AgentTileProps {
   agent: Agent; role: RoleDef | undefined; assignment: Assignment | null; selected: boolean; index: number; recent?: string[];
@@ -14,6 +15,7 @@ export interface AgentTileProps {
   /** Transcript-derived activity (embedded terminal work shows up here). */ activity?: SessionActivity | null;
   /** Stage of this agent's in-flight bug-fix task, if any. */ bugStage?: string;
   /** Answer a finished run's question in its own conversation. */ onSay?: (id: string, text: string) => void;
+  /** Ask the same agent for a second look at its task's PR. */ onReReview?: (id: string) => void;
 }
 
 const STATE = {
@@ -63,7 +65,7 @@ function TileRequest({ agent, a, onDecide, onSelect }: { agent: Agent; a: Assign
   );
 }
 
-export function AgentTile({ agent, role, assignment, selected, index, recent, onSelect, onAssign, onDecide, live, activity, bugStage, onSay }: AgentTileProps) {
+export function AgentTile({ agent, role, assignment, selected, index, recent, onSelect, onAssign, onDecide, live, activity, bugStage, onSay, onReReview }: AgentTileProps) {
   const a = assignment;
   // An agent waiting on you is never "Idle" or "Done", wherever it waits — say so, loudly.
   const need = attention(agent, a, activity);
@@ -83,6 +85,7 @@ export function AgentTile({ agent, role, assignment, selected, index, recent, on
       </div>
       <div className={`tile-state ${shown}`} data-testid="tile-state"><Icon /> {word}{need?.kind === "terminal" ? " (terminal)" : ""}</div>
       {a && <div className="tasktitle" title={a.prompt}>{a.prompt.split("\n")[0].slice(0, 90)}</div>}
+      {a?.pr && <PrLine pr={a.pr} canReReview={agent.state === "done" || agent.state === "failed"} onReReview={onReReview && (() => onReReview(agent.id))} />}
       {!a && activity?.lastPrompt && <div className="tasktitle" title={activity.lastPrompt}>{activity.lastPrompt.split("\n")[0].slice(0, 90)}</div>}
       {agent.state === "waiting" && <TileRequest agent={agent} a={a} onDecide={onDecide} onSelect={onSelect} />}
       {need?.kind === "asked" && (

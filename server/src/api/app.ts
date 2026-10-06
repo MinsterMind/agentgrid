@@ -1,4 +1,5 @@
 import express, { type Request, type Response, type NextFunction } from "express";
+import { rereviewPrompt } from "../agentpr.js";
 import path from "node:path";
 import { Store, NotFound, Conflict } from "../store/store.js";
 import { Manager } from "../runner/manager.js";
@@ -197,6 +198,14 @@ export function createApp(deps: AppDeps) {
     if (sid && deps.submitToTerminal?.(sid, text.replace(/\r?\n$/, ""))) { res.json({ via: "terminal" }); return; }
     if (agent.state === "working" || agent.state === "waiting") throw new Conflict(`agent is ${agent.state} and has no open terminal`);
     res.status(201).json({ via: "assignment", assignment: await manager.reply(agent.id, text) });
+  }));
+  /** Second look at the PR a finished review named — in the same conversation, so it checks its own findings. */
+  app.post("/api/agents/:id/rereview", wrap(async (req, res) => {
+    const agent = store.getAgent(req.params.id as string);
+    const last = agent.currentAssignmentId ? store.getAssignment(agent.currentAssignmentId) : null;
+    if ((agent.state !== "done" && agent.state !== "failed") || !last) throw new Conflict(`agent is ${agent.state} — re-review once its review has finished`);
+    if (last.pr?.state !== "OPEN") throw new Conflict("no open pull request to re-review");
+    res.status(201).json(await manager.reply(agent.id, rereviewPrompt(last.pr)));
   }));
   app.get("/api/agents/:id/memory", wrap(async (req, res) => res.json(await store.listMemory(req.params.id as string))));
 

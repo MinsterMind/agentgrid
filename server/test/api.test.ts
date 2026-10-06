@@ -285,6 +285,21 @@ describe("reset and say", () => {
     expect(store.getAgent(ag.id).state).toBe("working");
     expect(store.getAgent(ag.id).resumeSessionId).toBeUndefined();   // only this reply continues; it isn't adopted
   });
+  it("rereview continues the review's conversation with what changed; refused when there is nothing to re-review", async () => {
+    const m = new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, ag, e) => ({ cwd: ag.repo, abortController: e.abortController, ...(ag.resumeSessionId ? { resume: ag.resumeSessionId } : {}) }) as Options });
+    const a = createApp({ store, manager: m });
+    const ag = await store.createAgent({ role: "reviewer", repo: "/x/r" });
+    const first = await m.assign(ag.id, "Review PR 42");
+    await request(a).post(`/api/agents/${ag.id}/rereview`).expect(409);                        // still reviewing
+    fake.emit(init("s-rev")); fake.emit(success("2 issues.", 0.5, 3, "s-rev")); fake.end();
+    await until(() => store.getAgent(ag.id).state === "done");
+    await request(a).post(`/api/agents/${ag.id}/rereview`).expect(409);                        // no PR status yet
+    await store.updateAssignment(first.id, { pr: { number: 42, url: "https://github.com/a/b/pull/42", state: "OPEN", reviewDecision: "CHANGES_REQUESTED", headSha: "bbbbbbb2", reviewedSha: "aaaaaaa1" } });
+    const res = await request(a).post(`/api/agents/${ag.id}/rereview`).expect(201);
+    expect(res.body.prompt).toContain("Re-review PR #42");
+    expect(fake.calls.at(-1)!.options.resume).toBe("s-rev");
+    expect(fake.calls.at(-1)!.prompt).toContain("aaaaaaa..bbbbbbb");
+  });
   it("state carries sessionStatuses and SSE emits session-status", async () => {
     const a = createApp({ store, manager: new Manager(store, { queryFn: fake.queryFn }) });
     store.setSessionStatus({ sessionId: "s1", phase: "idle", lastMessage: "hi", lastPrompt: "yo", updatedAt: "t" });

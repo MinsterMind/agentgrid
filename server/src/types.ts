@@ -53,6 +53,15 @@ export interface Assignment {
   error: string | null;
   turns: number;
   costUsd: number;
+  /** The pull request this task names, as last read from the forge (see agentpr.ts). */
+  pr?: AgentPr;
+}
+
+/** A task's pull request. `note` says why there is no status; `reviewedSha` is the head the finished run reviewed. */
+export interface AgentPr {
+  number: number; url?: string;
+  state?: "OPEN" | "MERGED" | "CLOSED"; reviewDecision?: string | null; checks?: string | null;
+  headSha?: string | null; reviewedSha?: string; note?: string;
 }
 
 export type Decision =

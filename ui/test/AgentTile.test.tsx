@@ -126,6 +126,34 @@ describe("AgentTile asking you", () => {
   });
 });
 
+describe("AgentTile pull request", () => {
+  const pr = { number: 42, url: "https://github.com/a/b/pull/42", state: "OPEN" as const, reviewDecision: "CHANGES_REQUESTED", checks: "SUCCESS", headSha: "bbbbbbb2", reviewedSha: "aaaaaaa1" };
+  it("shows the PR's status, that it moved since the review, and offers a re-review", async () => {
+    const onReReview = vi.fn();
+    render(<AgentTile {...base} onReReview={onReReview} agent={agent("done")} assignment={asg({ state: "done", outcome: "2 issues found.", pr })} />);
+    const line = screen.getByTestId("tile-pr");
+    expect(line).toHaveTextContent("PR #42"); expect(line).toHaveTextContent("Open"); expect(line).toHaveTextContent("Changes requested"); expect(line).toHaveTextContent("Checks pass");
+    expect(line).toHaveTextContent("New commits since the review");
+    expect(within(line).getByRole("link", { name: "PR #42" })).toHaveAttribute("href", pr.url);
+    await userEvent.click(within(line).getByRole("button", { name: /re-review/i }));
+    expect(onReReview).toHaveBeenCalledWith("devops@hrns");
+  });
+  it("no re-review once approved, merged, or while the review is still running", () => {
+    const { rerender } = render(<AgentTile {...base} onReReview={vi.fn()} agent={agent("done")} assignment={asg({ state: "done", outcome: "ok", pr: { ...pr, reviewDecision: "APPROVED" } })} />);
+    expect(screen.getByTestId("tile-pr")).toHaveTextContent("Approved");
+    expect(screen.queryByRole("button", { name: /re-review/i })).toBeNull();
+    rerender(<AgentTile {...base} onReReview={vi.fn()} agent={agent("done")} assignment={asg({ state: "done", outcome: "ok", pr: { ...pr, state: "MERGED" } })} />);
+    expect(screen.getByTestId("tile-pr")).toHaveTextContent("Merged");
+    expect(screen.queryByRole("button", { name: /re-review/i })).toBeNull();
+    rerender(<AgentTile {...base} onReReview={vi.fn()} agent={agent("working")} assignment={asg({ pr })} />);
+    expect(screen.queryByRole("button", { name: /re-review/i })).toBeNull();
+  });
+  it("says why there is no status", () => {
+    render(<AgentTile {...base} agent={agent("done")} assignment={asg({ state: "done", outcome: "ok", pr: { number: 42, note: "Couldn't read the PR: gh: not logged in" } })} />);
+    expect(screen.getByTestId("tile-pr")).toHaveTextContent("PR #42"); expect(screen.getByTestId("tile-pr")).toHaveTextContent("Couldn't read the PR: gh: not logged in");
+  });
+});
+
 describe("AgentTile task line", () => {
   it("shows the current task title on a working tile and the last prompt for an idle adopted one", () => {
     const { rerender } = render(<AgentTile {...base} agent={agent("working")} assignment={asg({ prompt: "Rotate the refresh token\nand add tests" })} />);

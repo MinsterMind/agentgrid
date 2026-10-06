@@ -143,7 +143,8 @@ export function App() {
           liveSessions={unclaimedLiveSessions(s)} liveFor={ag => liveSessionFor(s, ag)} activityFor={ag => activityFor(s, ag)}
           onPullIn={(sid, role, takeover) => api.adoptSession(sid, { role, takeover }).then(a => { dispatch({ type: "select", id: a.id }); if (takeover) setOpenTerminalRequest(n => n + 1); }).catch(showErr)}
           bugStageFor={ag => bugTaskFor(s, ag)?.stage} needsYou={ag => needsYou(s, ag)}
-          onSay={(id, text) => api.say(id, text).then(() => dispatch({ type: "select", id })).catch(showErr)} />
+          onSay={(id, text) => api.say(id, text).then(() => dispatch({ type: "select", id })).catch(showErr)}
+          onReReview={id => api.rereview(id).then(() => dispatch({ type: "select", id })).catch(showErr)} />
         <SidePanel agent={selected} role={s.roles.find(r => r.name === selected?.role)} assignment={selectedAsg}
           onDecide={decide} onCancel={id => api.cancel(id).catch(showErr)} onAck={id => api.ack(id).catch(showErr)} onOpenTerminal={openTerminal} onTranscript={id => setTranscriptFor(id)} hasSession={!!selected && Object.values(s.assignments).some(a => a.agentId === selected.id && a.sessionId)} terminalSessionId={terminalSessionId} live={selected ? liveSessionFor(s, selected) : null} openTerminalRequest={openTerminalRequest}
           activity={selected ? activityFor(s, selected) : null}
