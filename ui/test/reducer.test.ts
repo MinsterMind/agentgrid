@@ -37,6 +37,9 @@ describe("reducer", () => {
     expect(counts(s)).toEqual({ free: 1, working: 0, waiting: 1, done: 1, failed: 0 });
     expect(todaySpend(s)).toBe(2);
     expect(waitingIds(s)).toEqual(["a"]);
+    // a finished run that ends on a question needs you too — counter, title and N cycling all follow
+    const asked = reducer(s, { type: "change", event: { type: "assignment", assignment: asg("a2", "b", { state: "done", outcome: "Post the 2 comments?" }) } });
+    expect(waitingIds(asked)).toEqual(["a", "b"]);
   });
   it("todaySpend uses local calendar day, not UTC day", () => {
     // now = 2026-09-12T01:00:00+05:30 == 2026-09-11T19:30:00Z

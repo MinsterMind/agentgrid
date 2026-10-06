@@ -14,6 +14,10 @@ describe("sectionize", () => {
     expect(visualOrder(agents).map(a => a.id)).toEqual(["b", "e", "d", "c", "f", "a"]);
     expect(sectionize([])).toEqual([]);
   });
+  it("an agent that needs you for another reason joins Needs you", () => {
+    const s = sectionize([ag("a", "done", "1"), ag("b", "free", "2")], a => a.id === "a");
+    expect(s.map(x => [x.key, x.agents.map(a => a.id)])).toEqual([["waiting", ["a"]], ["free", ["b"]]]);
+  });
   it("explains every section in one plain line", () => {
     const s = sectionize([ag("a", "free", "1"), ag("b", "waiting", "2"), ag("c", "done", "3"), ag("d", "working", "4")]);
     expect(Object.fromEntries(s.map(x => [x.key, x.hint]))).toEqual({

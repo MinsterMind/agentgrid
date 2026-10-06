@@ -259,15 +259,31 @@ describe("reset and say", () => {
   it("say types into the embedded terminal when open, else starts an assignment", async () => {
     const typed: Array<[string, string]> = []; let open = true;
     const a = createApp({ store, manager: new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, ag, e) => ({ cwd: ag.repo, abortController: e.abortController }) as Options }),
-      writeToTerminal: (sid, data) => { if (!open) return false; typed.push([sid, data]); return true; } });
+      submitToTerminal: (sid, data) => { if (!open) return false; typed.push([sid, data]); return true; } });
     const ag = await store.createAgent({ role: "coder", repo: "/x/r", resumeSessionId: "s-adopt" });
     await request(a).post(`/api/agents/${ag.id}/say`).send({ text: "" }).expect(400);
     expect((await request(a).post(`/api/agents/${ag.id}/say`).send({ text: "continue\n" }).expect(200)).body).toEqual({ via: "terminal" });
-    expect(typed).toEqual([["s-adopt", "continue\r"]]);
+    expect(typed).toEqual([["s-adopt", "continue"]]);   // the terminal presses Enter itself
     open = false;
     const res = await request(a).post(`/api/agents/${ag.id}/say`).send({ text: "do it" }).expect(201);
     expect(res.body.via).toBe("assignment"); expect(res.body.assignment.prompt).toBe("do it");
     await request(a).post(`/api/agents/${ag.id}/say`).send({ text: "again" }).expect(409); // working, no terminal
+  });
+  // An agent that finished by asking a question: the reply answers it in the same conversation,
+  // instead of a 409 (no terminal open) or a fresh session that has forgotten the review.
+  it("say to a finished agent continues its last session", async () => {
+    const m = new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, ag, e) => ({ cwd: ag.repo, abortController: e.abortController, ...(ag.resumeSessionId ? { resume: ag.resumeSessionId } : {}) }) as Options });
+    const a = createApp({ store, manager: m });
+    const ag = await store.createAgent({ role: "reviewer", repo: "/x/r" });
+    await m.assign(ag.id, "review PR 7");
+    fake.emit(init("s-rev")); fake.emit(success("Found 2 issues. Want me to post them as PR comments?", 0.5, 3, "s-rev")); fake.end();
+    await until(() => store.getAgent(ag.id).state === "done");
+    const res = await request(a).post(`/api/agents/${ag.id}/say`).send({ text: "yes, post them" }).expect(201);
+    expect(res.body.via).toBe("assignment");
+    expect(fake.calls.at(-1)!.options.resume).toBe("s-rev");
+    expect(fake.calls.at(-1)!.prompt).toContain("yes, post them");
+    expect(store.getAgent(ag.id).state).toBe("working");
+    expect(store.getAgent(ag.id).resumeSessionId).toBeUndefined();   // only this reply continues; it isn't adopted
   });
   it("state carries sessionStatuses and SSE emits session-status", async () => {
     const a = createApp({ store, manager: new Manager(store, { queryFn: fake.queryFn }) });

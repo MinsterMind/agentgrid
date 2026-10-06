@@ -31,6 +31,14 @@ export class Manager {
   }
 
   async assign(agentId: string, prompt: string): Promise<Assignment> { return this.runner(agentId).assign(prompt); }
+  /** Answer a finished run in its own conversation: dismiss it, then continue its session with `text`. */
+  async reply(agentId: string, text: string): Promise<Assignment> {
+    const agent = this.store.getAgent(agentId);
+    const last = agent.currentAssignmentId ? this.store.getAssignment(agent.currentAssignmentId) : null;
+    if ((agent.state !== "done" && agent.state !== "failed") || !last?.sessionId) return this.assign(agentId, text);
+    await this.ack(agentId);
+    return this.runner(agentId).assign(text, { continueSession: last.sessionId });
+  }
   async answer(agentId: string, toolUseId: string, decision: Decision): Promise<void> { return this.runner(agentId).answer(toolUseId, decision); }
   async cancel(agentId: string): Promise<void> { return this.runner(agentId).cancel(); }
   async ack(agentId: string): Promise<void> { return this.runner(agentId).ack(); }

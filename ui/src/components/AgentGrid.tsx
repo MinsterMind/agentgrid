@@ -6,7 +6,7 @@ import { sectionize } from "../state/sections";
 
 const ICON = { waiting: Hand, working: Activity, finished: CheckCircle2, free: Moon };
 
-export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, onSelect, onAssign, onDecide, liveSessions = [], liveFor, activityFor, onPullIn, bugStageFor }: {
+export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, onSelect, onAssign, onDecide, liveSessions = [], liveFor, activityFor, onPullIn, bugStageFor, needsYou, onSay }: {
   agents: Agent[]; roles: RoleDef[]; assignments: Record<string, Assignment>; selectedId: string | null;
   recentFor: (agentId: string) => string[]; onSelect: (id: string) => void; onAssign: (id: string, prompt: string) => void;
   /** Answer an agent's pending request from its tile. */ onDecide?: (agentId: string, toolUseId: string, d: Decision) => void;
@@ -15,8 +15,10 @@ export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, o
   activityFor?: (agent: Agent) => SessionActivity | null;
   onPullIn?: (sessionId: string, role: string, takeover: boolean) => Promise<void>;
   /** Stage of an agent's in-flight bug-fix task, if any. */ bugStageFor?: (agent: Agent) => string | undefined;
+  /** Agents that need you for any reason — they sit in the Needs you section. */ needsYou?: (agent: Agent) => boolean;
+  /** Answer a finished run's question from its tile. */ onSay?: (id: string, text: string) => void;
 }) {
-  const sections = sectionize(agents);
+  const sections = sectionize(agents, needsYou);
   let index = 0;
   return (
     <div className="board">
@@ -30,7 +32,7 @@ export function AgentGrid({ agents, roles, assignments, selectedId, recentFor, o
             {sec.agents.map(agent => (
               <AgentTile key={agent.id} agent={agent} index={index++} role={roles.find(r => r.name === agent.role)}
                 assignment={agent.currentAssignmentId ? assignments[agent.currentAssignmentId] ?? null : null}
-                selected={agent.id === selectedId} recent={recentFor(agent.id)} onSelect={onSelect} onAssign={onAssign} onDecide={onDecide} live={liveFor?.(agent) ?? null} activity={activityFor?.(agent) ?? null} bugStage={bugStageFor?.(agent)} />
+                selected={agent.id === selectedId} recent={recentFor(agent.id)} onSelect={onSelect} onAssign={onAssign} onDecide={onDecide} live={liveFor?.(agent) ?? null} activity={activityFor?.(agent) ?? null} bugStage={bugStageFor?.(agent)} onSay={onSay} />
             ))}
           </div>
         </section>

@@ -34,7 +34,8 @@ export class Runner {
 
   get busy(): boolean { return this.assignmentId !== null; }
 
-  async assign(prompt: string): Promise<Assignment> {
+  /** `continueSession`: resume this session instead of the agent's own — a reply to a finished run. */
+  async assign(prompt: string, opts: { continueSession?: string } = {}): Promise<Assignment> {
     const { store } = this.deps;
     if (this.assigning) throw new Conflict(`agent ${this.agentId} is being assigned`);
     const agent = store.getAgent(this.agentId);
@@ -49,7 +50,7 @@ export class Runner {
 
       const fullPrompt = assemblePrompt({ memoryDir: store.memoryDir(this.agentId), index: await store.readMemoryIndex(this.agentId), task: prompt });
       this.abort = new AbortController();
-      const options = this.deps.buildOptions(role, agent, { canUseTool: this.canUseTool, abortController: this.abort });
+      const options = this.deps.buildOptions(role, opts.continueSession ? { ...agent, resumeSessionId: opts.continueSession } : agent, { canUseTool: this.canUseTool, abortController: this.abort });
       // Fire-and-forget by design (the stream is consumed in the background), but never
       // bare: any failure that escapes consume()'s own try/catch is logged, not left to
       // become an unhandled rejection that could take down the process.

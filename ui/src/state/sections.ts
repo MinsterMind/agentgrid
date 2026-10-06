@@ -11,13 +11,14 @@ const HINTS: Record<SectionKey, string> = {
   finished: "Finished. Read the outcome, then assign more work or dismiss.",
   free: "Ready for a new task.",
 };
-const keyOf = (a: Agent): SectionKey => a.state === "waiting" ? "waiting" : a.state === "working" ? "working" : a.state === "free" ? "free" : "finished";
+const keyOf = (a: Agent, needs: (a: Agent) => boolean): SectionKey => needs(a) ? "waiting" : a.state === "waiting" ? "waiting" : a.state === "working" ? "working" : a.state === "free" ? "free" : "finished";
 
 /** Partition agents by attention priority; order inside a section is creation order. Empty sections are dropped. */
-export function sectionize(agents: Agent[]): Section[] {
+/** `needs`: agents that need you for a reason other than a pending request (a question, a waiting terminal). */
+export function sectionize(agents: Agent[], needs: (a: Agent) => boolean = () => false): Section[] {
   const order: SectionKey[] = ["waiting", "working", "finished", "free"];
-  return order.map(key => ({ key, title: TITLES[key], hint: HINTS[key], agents: agents.filter(a => keyOf(a) === key) })).filter(s => s.agents.length > 0);
+  return order.map(key => ({ key, title: TITLES[key], hint: HINTS[key], agents: agents.filter(a => keyOf(a, needs) === key) })).filter(s => s.agents.length > 0);
 }
 
 /** Agents in on-screen order (section by section) — what the 1–9 keys index. */
-export const visualOrder = (agents: Agent[]): Agent[] => sectionize(agents).flatMap(s => s.agents);
+export const visualOrder = (agents: Agent[], needs?: (a: Agent) => boolean): Agent[] => sectionize(agents, needs).flatMap(s => s.agents);
