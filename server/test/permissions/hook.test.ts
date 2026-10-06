@@ -57,7 +57,8 @@ describe("POST /api/hooks/permission", () => {
   });
 });
 
-describe("permission-hook.mjs", () => {
+// These start real `node` processes, which can take seconds each when the whole suite runs in parallel.
+describe("permission-hook.mjs", { timeout: 60_000 }, () => {
   const hook = path.resolve("presets/hooks/permission-hook.mjs");
   const runHook = (env: Record<string, string>, stdin: string) => new Promise<{ out: string; code: number }>(res => {
     const c = execFile(process.execPath, [hook], { env: { ...process.env, ...env } }, (err, out) => res({ out: String(out), code: err ? (err as any).code ?? 1 : 0 }));
