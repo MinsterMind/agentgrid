@@ -12,13 +12,13 @@ const asg = (id: string, agentId: string, extra: Partial<Assignment> = {}): Assi
 
 describe("reducer", () => {
   it("snapshot replaces state, keeps selection", () => {
-    const s = reducer({ ...initial, selectedId: "a" }, { type: "snapshot", state: { roles: [], bugTasks: [], liveSessions: [], sessionStatuses: [], agents: [agent("a")], assignments: [asg("a1", "a")] } });
+    const s = reducer({ ...initial, selectedId: "a" }, { type: "snapshot", state: { roles: [], bugTasks: [], liveSessions: [], sessionStatuses: [], permissions: [], agents: [agent("a")], assignments: [asg("a1", "a")] } });
     expect(s.agents.map(a => a.id)).toEqual(["a"]);
     expect(s.assignments.a1.id).toBe("a1");
     expect(s.selectedId).toBe("a");
   });
   it("change: agent upsert preserves order; removal clears selection", () => {
-    let s = reducer(initial, { type: "snapshot", state: { roles: [], bugTasks: [], liveSessions: [], sessionStatuses: [], agents: [agent("a"), agent("b")], assignments: [] } });
+    let s = reducer(initial, { type: "snapshot", state: { roles: [], bugTasks: [], liveSessions: [], sessionStatuses: [], permissions: [], agents: [agent("a"), agent("b")], assignments: [] } });
     s = reducer(s, { type: "change", event: { type: "agent", agent: agent("a", "working", "a1") } });
     expect(s.agents.map(a => a.id)).toEqual(["a", "b"]);
     expect(s.agents[0].state).toBe("working");
@@ -30,7 +30,7 @@ describe("reducer", () => {
   });
   it("selectors", () => {
     const a = agent("a", "waiting", "a1"), b = agent("b", "done", "a2"), c = agent("c");
-    const s = reducer(initial, { type: "snapshot", state: { roles: [], bugTasks: [], liveSessions: [], sessionStatuses: [], agents: [a, b, c],
+    const s = reducer(initial, { type: "snapshot", state: { roles: [], bugTasks: [], liveSessions: [], sessionStatuses: [], permissions: [], agents: [a, b, c],
       assignments: [asg("a1", "a", { state: "waiting", costUsd: 0.5 }), asg("a2", "b", { state: "done", costUsd: 1.5 }), asg("a0", "b", { state: "done", costUsd: 9, createdAt: "2020-01-01T00:00:00Z" })] } });
     expect(assignmentFor(s, a)?.id).toBe("a1");
     expect(assignmentFor(s, c)).toBeNull();
@@ -45,7 +45,7 @@ describe("reducer", () => {
     // now = 2026-09-12T01:00:00+05:30 == 2026-09-11T19:30:00Z
     const now = new Date("2026-09-12T01:00:00+05:30");
     const a = agent("a", "done", "a1"), b = agent("b", "done", "a2");
-    const s = reducer(initial, { type: "snapshot", state: { roles: [], bugTasks: [], liveSessions: [], sessionStatuses: [], agents: [a, b], assignments: [
+    const s = reducer(initial, { type: "snapshot", state: { roles: [], bugTasks: [], liveSessions: [], sessionStatuses: [], permissions: [], agents: [a, b], assignments: [
       // local 12 Sep 01:30 -> counts as "today" relative to `now` (local 12 Sep)
       asg("a1", "a", { state: "done", costUsd: 3, createdAt: "2026-09-11T20:00:00Z" }),
       // local 11 Sep 23:30 -> does not count as "today" relative to `now` (local 12 Sep)
@@ -58,7 +58,7 @@ describe("reducer", () => {
 describe("live sessions", () => {
   const live = (id: string, agentId?: string) => ({ sessionId: id, cwd: "/w/x", title: id, kind: "interactive" as const, status: "idle" as const, at: 1, canAdopt: !agentId, ...(agentId ? { agentId } : {}) });
   it("snapshot + sessions event update liveSessions; unclaimed excludes owned ones", () => {
-    let s = reducer(initial, { type: "snapshot", state: { roles: [], bugTasks: [], agents: [{ ...agent("a"), resumeSessionId: "s-a" }], assignments: [asg("a1", "b", { sessionId: "s-b" })], liveSessions: [live("s-a"), live("s-b"), live("s-c"), live("s-d", "z")], sessionStatuses: [] } });
+    let s = reducer(initial, { type: "snapshot", state: { roles: [], bugTasks: [], agents: [{ ...agent("a"), resumeSessionId: "s-a" }], assignments: [asg("a1", "b", { sessionId: "s-b" })], liveSessions: [live("s-a"), live("s-b"), live("s-c"), live("s-d", "z")], sessionStatuses: [], permissions: [] } });
     expect(unclaimedLiveSessions(s).map(l => l.sessionId)).toEqual(["s-c"]);
     expect(liveSessionFor(s, { ...agent("a"), resumeSessionId: "s-a" })?.sessionId).toBe("s-a");
     expect(liveSessionFor(s, agent("q"))).toBeNull();
@@ -73,7 +73,7 @@ describe("grid-owned live sessions", () => {
     const s = reducer(initial, { type: "snapshot", state: { roles: [], bugTasks: [], agents: [a], assignments: [], liveSessions: [
       { sessionId: "s-a", cwd: "/w", title: "s-a", kind: "interactive", status: "idle", at: 1, agentId: "a", owner: "grid", canAdopt: false },
       { sessionId: "s-z", cwd: "/w", title: "s-z", kind: "interactive", status: "idle", at: 1, owner: "grid", canAdopt: true },
-    ], sessionStatuses: [] } });
+    ], sessionStatuses: [], permissions: [] } });
     expect(liveSessionFor(s, a)).toBeNull();
     expect(unclaimedLiveSessions(s)).toEqual([]);
   });
@@ -82,7 +82,7 @@ describe("grid-owned live sessions", () => {
 describe("activity", () => {
   it("snapshot + session-status events map to agents via their session", () => {
     const a = { ...agent("a"), resumeSessionId: "s-a" };
-    let s = reducer(initial, { type: "snapshot", state: { roles: [], bugTasks: [], agents: [a], assignments: [], liveSessions: [], sessionStatuses: [{ sessionId: "s-a", phase: "idle", lastMessage: "done", lastPrompt: "go", updatedAt: "t" }] } });
+    let s = reducer(initial, { type: "snapshot", state: { roles: [], bugTasks: [], agents: [a], assignments: [], liveSessions: [], permissions: [], sessionStatuses: [{ sessionId: "s-a", phase: "idle", lastMessage: "done", lastPrompt: "go", updatedAt: "t" }] } });
     expect(activityFor(s, a)?.lastMessage).toBe("done");
     s = reducer(s, { type: "change", event: { type: "session-status", status: { sessionId: "s-a", phase: "waiting", lastMessage: "?", lastPrompt: "go", updatedAt: "t2", question: { text: "Which?", options: ["x", "y"], multiSelect: false } } } });
     expect(activityFor(s, a)?.question?.options).toEqual(["x", "y"]);
@@ -93,26 +93,26 @@ describe("activity", () => {
 describe("bug tasks", () => {
   const bt = (id: string, agentId: string, stage: string): any => ({ id, agentId, stage, issue: { key: "PAY-1", title: "t", url: "u", status: "", priority: "", description: "", acceptanceCriteria: [] }, gate: null, history: [] });
   it("snapshot fills bugTasks and events upsert them", () => {
-    let s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [], liveSessions: [], sessionStatuses: [], bugTasks: [bt("bt1", "a", "analyzing")] } });
+    let s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [], liveSessions: [], sessionStatuses: [], permissions: [], bugTasks: [bt("bt1", "a", "analyzing")] } });
     expect(bugTaskFor(s, agent("a"))?.id).toBe("bt1");
     s = reducer(s, { type: "change", event: { type: "bugtask", task: bt("bt1", "a", "plan-review") } });
     expect(bugTaskFor(s, agent("a"))?.stage).toBe("plan-review");
     expect(bugTaskFor(s, agent("other"))).toBeNull();
   });
   it("ignores a cancelled task, which has no card of its own", () => {
-    const s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [], liveSessions: [], sessionStatuses: [], bugTasks: [bt("bt2", "a", "cancelled")] } });
+    const s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [], liveSessions: [], sessionStatuses: [], permissions: [], bugTasks: [bt("bt2", "a", "cancelled")] } });
     expect(bugTaskFor(s, agent("a"))).toBeNull();
   });
   it("still surfaces a done task, so its card and Dismiss button stay reachable", () => {
-    const s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [], liveSessions: [], sessionStatuses: [], bugTasks: [bt("bt1", "a", "done")] } });
+    const s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [], liveSessions: [], sessionStatuses: [], permissions: [], bugTasks: [bt("bt1", "a", "done")] } });
     expect(bugTaskFor(s, agent("a"))?.id).toBe("bt1");
   });
   it("prefers a fresh, active task over a stale done one lingering on a reused agent", () => {
-    const s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [], liveSessions: [], sessionStatuses: [], bugTasks: [bt("bt1", "a", "done"), bt("bt2", "a", "analyzing")] } });
+    const s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [], liveSessions: [], sessionStatuses: [], permissions: [], bugTasks: [bt("bt1", "a", "done"), bt("bt2", "a", "analyzing")] } });
     expect(bugTaskFor(s, agent("a"))?.id).toBe("bt2");
   });
   it("a bugtask-removed change event drops that task from state.bugTasks", () => {
-    let s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [], liveSessions: [], sessionStatuses: [], bugTasks: [bt("bt1", "a", "done"), bt("bt2", "a", "cancelled")] } });
+    let s = reducer(initial, { type: "snapshot", state: { roles: [], agents: [agent("a")], assignments: [], liveSessions: [], sessionStatuses: [], permissions: [], bugTasks: [bt("bt1", "a", "done"), bt("bt2", "a", "cancelled")] } });
     expect(Object.keys(s.bugTasks)).toEqual(["bt1", "bt2"]);
     s = reducer(s, { type: "change", event: { type: "bugtask-removed", id: "bt1" } });
     expect(Object.keys(s.bugTasks)).toEqual(["bt2"]);

@@ -46,7 +46,7 @@ function agent(id: string, state: Agent["state"]): Agent {
   return { id, role: "coder", repo: "/tmp", displayName: id, createdAt: new Date().toISOString(), state, currentAssignmentId: null };
 }
 
-function snapshot(agents: Agent[], bugTasks: BugTask[] = []): GridState { return { roles: [role], agents, assignments: [], liveSessions: [], sessionStatuses: [], bugTasks }; }
+function snapshot(agents: Agent[], bugTasks: BugTask[] = []): GridState { return { roles: [role], agents, assignments: [], liveSessions: [], sessionStatuses: [], permissions: [], bugTasks }; }
 
 function bugTask(id: string, stage: BugTask["stage"], error: string | null = null, outcome: BugTask["outcome"] = null): BugTask {
   return {
