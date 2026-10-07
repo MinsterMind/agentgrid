@@ -291,3 +291,20 @@ describe("blockersFor — regression tests", () => {
     expect(titles(task("diff-review", { ...diff, testsInDiff: null }))).not.toContain("No regression test in this change");
   });
 });
+
+describe("conflicts and the queue", () => {
+  const C = { files: ["src/a.ts", "src/b.ts"], base: "develop", detectedAt: "2026-10-07T10:00:00Z", returnTo: "monitoring" as const };
+  it("a conflict says what it conflicts with, and which files", () => {
+    const n = nowFor({ task: task("conflict", { gate: { kind: "conflict", openedAt: "" }, conflict: C }), pending: null, activity: null });
+    expect(n.headline).toBe("Conflicts with develop"); expect(n.detail).toBe("src/a.ts, src/b.ts");
+    expect(listStatus(task("conflict", { gate: { kind: "conflict", openedAt: "" } }), false)).toBe("waiting");
+  });
+  it("a queued run says its place in line", () => {
+    const n = nowFor({ task: task("analyzing", { queuedAt: "2026-10-07T10:00:00Z" }), pending: null, activity: null, queue: { position: 2, of: 3 } });
+    expect(n.headline).toBe("Queued (2 of 3)");
+  });
+  it("a conflict check that couldn't run is a blocker", () => {
+    const b = blockersFor({ task: task("monitoring", { conflictCheckError: "Couldn't check for conflicts: could not resolve host" }), pending: null, setup: null, setupError: false });
+    expect(b.map(x => x.title)).toContain("Couldn't check for conflicts: could not resolve host");
+  });
+});

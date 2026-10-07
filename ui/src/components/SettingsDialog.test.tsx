@@ -388,3 +388,21 @@ describe("SettingsDialog — Always allowed", () => {
     expect(screen.getByText(/permissions\.json could not be read/)).toBeTruthy();
   });
 });
+
+describe("SettingsDialog — agents at once", () => {
+  it("shows the saved limit, refuses a value out of range, and saves a good one", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report());
+    vi.spyOn(api, "getIntegrations").mockResolvedValue({ projectRepos: {}, maxConcurrentRuns: 6 } as never);
+    vi.spyOn(api, "listRules").mockResolvedValue({ rules: [], problem: null });
+    const put = vi.spyOn(api, "putIntegrations").mockResolvedValue({ projectRepos: {} });
+    render(<SettingsDialog onClose={() => {}} />);
+    const input = await screen.findByLabelText("Bug-fix agents at once");
+    await waitFor(() => expect(input).toHaveValue(6));
+    await userEvent.clear(input); await userEvent.type(input, "0");
+    expect(screen.getByText("Between 1 and 32")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Set limit" })).toBeDisabled();
+    await userEvent.clear(input); await userEvent.type(input, "8");
+    await userEvent.click(screen.getByRole("button", { name: "Set limit" }));
+    expect(put).toHaveBeenCalledWith({ maxConcurrentRuns: 8 });
+  });
+});

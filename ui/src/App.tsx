@@ -94,6 +94,7 @@ export function App() {
         const key = t.issue.key;
         if (t.stage === "review-feedback") notifyBugTask(`${key}: reviewers asked for changes`, "attention");
         else if (t.stage === "approved") notifyBugTask(`${key}: PR approved — ready to merge`, "attention");
+        else if (t.stage === "conflict") notifyBugTask(`${key} conflicts with ${t.conflict?.base ?? t.baseBranch}`, "attention");
         else if (t.stage === "done") {
           // The server's own recorded outcome, not the error text: a merged task can carry an
           // error (cleanup leftovers) and a closed one's message is prose.

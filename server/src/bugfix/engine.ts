@@ -249,6 +249,13 @@ export class BugFixEngine {
     }
     return this.advance(taskId, { type: "approve" });
   }
+  /** "Resolve all N conflicts": approve every task waiting at the conflict gate. The run cap paces them. */
+  async resolveConflicts(): Promise<string[]> {
+    const ids = this.deps.bugs.list().filter(t => t.stage === "conflict").map(t => t.id);
+    const done: string[] = [];
+    for (const id of ids) { try { await this.approve(id); done.push(id); } catch (err) { if (!(err instanceof Conflict)) throw err; } }
+    return done;
+  }
   /** Approve the diff although it adds no test, saying why — kept on the task and in its history. */
   async overrideTests(taskId: string, reason: string): Promise<BugTask> {
     const why = reason.trim();

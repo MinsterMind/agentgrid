@@ -80,6 +80,7 @@ function gateHeadline(task: BugTask): string {
   const g = task.gate;
   if (!g) return "";
   if (g.kind === "plan") return "Waiting on you: approve the plan";
+  if (g.kind === "conflict") return `Waiting on you: resolve the conflict with ${task.conflict?.base ?? task.baseBranch}`;
   if (g.kind === "diff") return g.reason === "rebase" ? "Waiting on you: review the rebased branch"
     : g.reason === "feedback" ? "Waiting on you: review the changes made for the reviewers"
     : g.reason === "external" ? "Waiting on you: review the pull request opened outside AgentGrid" : "Waiting on you: review the diff";
@@ -89,8 +90,11 @@ function gateHeadline(task: BugTask): string {
 /** `sinceKind` says how to read `since`: how long a stage has been running, how long a gate has
  *  been waiting, or when the PR was last checked — a bare "6 min ago" reads as a timestamp. */
 export interface Now { headline: string; detail?: string; since?: string; sinceKind?: "running" | "waiting" | "checked" }
-export function nowFor({ task, pending, activity }: { task: BugTask; pending: Pending | null; activity: SessionActivity | null }): Now {
+export function nowFor({ task, pending, activity, queue }: { task: BugTask; pending: Pending | null; activity: SessionActivity | null; queue?: { position: number; of: number } }): Now {
   const since = task.history.at(-1)?.at;
+  // Waiting for a slot under the agents-at-once limit (spec 2026-10-07 §5).
+  if (task.queuedAt && !TERMINAL_STAGES.includes(task.stage)) return { headline: queue ? `Queued (${queue.position} of ${queue.of})` : "Queued", detail: `${stageLabel(task.stage)} starts when an agent is free`, since: task.queuedAt, sinceKind: "waiting" };
+  if (task.stage === "conflict") return { headline: `Conflicts with ${task.conflict?.base ?? task.baseBranch}`, ...(task.conflict?.files.length ? { detail: task.conflict.files.join(", ") } : {}), since: task.gate?.openedAt || since, sinceKind: "waiting" };
   if (task.stage === "done" && task.outcome === "no-change") return { headline: "Closed — no change needed" };
   if (task.stage === "done") return { headline: task.outcome === "closed" || (!task.outcome && task.pr?.state === "CLOSED") ? "Closed without merging" : "Merged" };
   if (task.stage === "cancelled") return { headline: "Cancelled" };
@@ -134,6 +138,7 @@ export function blockersFor({ task, pending, setup, setupError }: { task: BugTas
     if (task.pr.reviewDecision === "CHANGES_REQUESTED") out.push({ kind: "pr", title: "Reviewers asked for changes" });
     if (task.pr.mergeable === "CONFLICTING") out.push({ kind: "pr", title: `The branch conflicts with ${task.baseBranch}` });
   }
+  if (task.conflictCheckError) out.push({ kind: "pr", title: task.conflictCheckError });
   if (task.error?.startsWith(UNREACHABLE)) out.push({ kind: "pr", title: "Could not check the pull request", detail: task.error.slice(UNREACHABLE.length).trim() });
   if (setupError) out.push({ kind: "setup", title: "Could not check setup" });
   else for (const c of setup?.checks ?? []) if (c.blocks && c.state !== "ok") out.push({ kind: "setup", title: c.detail });

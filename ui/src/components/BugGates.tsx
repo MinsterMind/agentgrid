@@ -114,6 +114,18 @@ export function BugGates({ task, onChanged, onTranscript }: { task: BugTask; onC
     <div className="buggates">
       {err && <div className="err">{err}</div>}
 
+      {gate === "conflict" && (
+        <div className="gate" data-testid="gate-conflict">
+          <h4>Conflicts with {task.conflict?.base ?? task.baseBranch}</h4>
+          <p className="hint">Another change landed on <code>{task.conflict?.base ?? task.baseBranch}</code> since this PR was opened, and they touch the same lines. Resolving rebases the branch onto it; you review the result before anything is pushed.</p>
+          {(task.conflict?.files.length ?? 0) > 0 && <ul className="conflict-files">{task.conflict!.files.map(f => <li key={f} className="mono">{f}</li>)}</ul>}
+          <div className="row">
+            <button className="btn p" disabled={busy} onClick={() => act(() => api.approveBug(task.id))}>Resolve conflict</button>
+            <button className="btn d" disabled={busy} onClick={() => act(() => api.cancelBug(task.id))}>Cancel task</button>
+          </div>
+        </div>
+      )}
+
       {gate === "plan" && (
         <div className="gate" data-testid="gate-plan">
           <h4>Plan</h4>

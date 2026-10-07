@@ -17,6 +17,7 @@ const getSetup = vi.fn(async (): Promise<unknown> => SETUP);
 const bugPlan = vi.fn(async () => ({ markdown: "## Root cause\nA\n\n## Fix\nB" }));
 const bugDiff = vi.fn(async () => ({ patch: "", files: [], additions: 0, deletions: 0 }));
 const approveBug = vi.fn(async (_id: string, _m?: string) => task("implementing"));
+const resolveConflicts = vi.fn(async () => ({ ids: ["bt1", "bt2"] }));
 const myIssues = vi.fn(async (): Promise<Array<{ key: string; title: string; url: string; status: string; priority: string }>> => []);
 vi.mock("../src/api", () => ({
   ApiError,
@@ -26,7 +27,7 @@ vi.mock("../src/api", () => ({
     requestBugChanges: vi.fn(), cancelBug: vi.fn(), retryBug: vi.fn(), listBugTasks: vi.fn(async () => []),
     addressComments: vi.fn(), dismissBug: vi.fn(),
     myIssues: () => myIssues(), issue: vi.fn(async () => ({ key: "PAY-1", title: "Not started", url: "u", status: "Open", priority: "High", description: "", acceptanceCriteria: [] })),
-    getIntegrations: vi.fn(async () => ({ projectRepos: {} })), bugPreflight: vi.fn(async () => ({ ok: true, problems: [] })), createBugTask: vi.fn(), pickFolder: vi.fn(),
+    getIntegrations: vi.fn(async () => ({ projectRepos: {} })), resolveConflicts: () => resolveConflicts(), bugPreflight: vi.fn(async () => ({ ok: true, problems: [] })), createBugTask: vi.fn(), pickFolder: vi.fn(),
   },
 }));
 
@@ -338,5 +339,19 @@ describe("mergeRows", () => {
     const rows = mergeRows([{ key: "PAY-42", title: "x", url: "u", status: "Open", priority: "High" }], [{ t: active, status: "running" }, { t: old, status: "cancelled" }]);
     expect(rows.map(r => r.task?.id)).toEqual(["bt3", "bt1"]);
     expect(rows.every(r => r.assigned)).toBe(true);
+  });
+});
+
+describe("BugScreen — conflicts and the queue", () => {
+  const C = { files: ["a"], base: "main", detectedAt: "", returnTo: "monitoring" as const };
+  it("offers Resolve all when bugs wait at the conflict gate", async () => {
+    renderScreen([task("conflict", { gate: { kind: "conflict", openedAt: "" }, conflict: C }), task("conflict", { id: "bt2", issue: { ...ISSUE, key: "PAY-43" }, gate: { kind: "conflict", openedAt: "" }, conflict: C })]);
+    await userEvent.click(screen.getByRole("button", { name: "Resolve all 2 conflicts" }));
+    expect(resolveConflicts).toHaveBeenCalled();
+  });
+  it("no conflicts, no Resolve all; queued bugs say so in the list", () => {
+    renderScreen([task("analyzing", { queuedAt: "2026-10-07T10:00:00Z" })]);
+    expect(screen.queryByRole("button", { name: /Resolve all/ })).toBeNull();
+    expect(screen.getAllByRole("option")[0]).toHaveTextContent("Queued (1 of 1)");
   });
 });

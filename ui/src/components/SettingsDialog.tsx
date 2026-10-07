@@ -307,6 +307,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             </section>
           )}
 
+          <AgentsAtOnce />
+
           <AlwaysAllowed />
 
           {report.discovery.problems.length > 0 && (
@@ -350,6 +352,30 @@ function AlwaysAllowed() {
             <button className="btn sm d" aria-label={`Remove ${r.rule}`} onClick={() => void remove(r.rule)}>Remove</button>
           </div>
         ))}
+      </div>
+    </section>
+  );
+}
+
+/** How many bug-fix agents may run at once; the rest wait in line (spec 2026-10-07 §5). */
+function AgentsAtOnce() {
+  const [value, setValue] = useState("4");
+  const [saved, setSaved] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => { let live = true; api.getIntegrations().then(i => { if (live && i.maxConcurrentRuns) setValue(String(i.maxConcurrentRuns)); }).catch(() => {}); return () => { live = false; }; }, []);
+  const n = Number(value);
+  const ok = Number.isInteger(n) && n >= 1 && n <= 32;
+  const save = () => api.putIntegrations({ maxConcurrentRuns: n }).then(() => { setSaved(`Saved — up to ${n} at once.`); setErr(null); }).catch(e => setErr((e as Error).message));
+  return (
+    <section className="sec">
+      <div className="sec-head"><h4><Ticket />Bug fixes</h4><p className="why">With many bugs in flight, at most this many agents work at once — plans, fixes and conflict resolutions. The rest wait their turn, in order. Waiting on you doesn't count.</p></div>
+      <div className="sec-body row">
+        <label className="label" htmlFor="max-runs">Bug-fix agents at once</label>
+        <input id="max-runs" className="input mono" type="number" min={1} max={32} style={{ width: 90 }} value={value} onChange={e => { setValue(e.target.value); setSaved(null); }} />
+        <button className="btn sm" disabled={!ok} onClick={() => void save()}>Set limit</button>
+        {!ok && <span className="errtext">Between 1 and 32</span>}
+        {saved && <span className="oktext">{saved}</span>}
+        {err && <span className="errtext">{err}</span>}
       </div>
     </section>
   );

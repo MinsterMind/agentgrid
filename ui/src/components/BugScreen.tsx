@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Bug, Check, CheckCircle2, CircleDashed, CircleDot, History, Lightbulb, MessageCircleQuestion, OctagonAlert, Radio, TriangleAlert, ClipboardList, Code2, Copy, ExternalLink, FileDiff, GitMerge, GitPullRequest, Hand, Inbox, Loader, Minus, MinusCircle, Radar, ScrollText, Search, RefreshCw, X, XCircle } from "lucide-react";
+import { Bug, Check, CheckCircle2, CircleDashed, CircleDot, History, Lightbulb, MessageCircleQuestion, OctagonAlert, Radio, TriangleAlert, ClipboardList, Code2, Copy, ExternalLink, FileDiff, GitMerge, GitPullRequest, Hand, Inbox, Loader, Minus, MinusCircle, Radar, ScrollText, Search, RefreshCw, X, XCircle, Clock } from "lucide-react";
 import { api } from "../api";
 import { blockersFor, isNew, listStatus, nowFor, orderAssumptions, pipelineFor, stageLabel, type Blocker, type ListStatus, type StepState } from "../bugView";
 import { elapsed, relativeTime, usd } from "../format";
@@ -102,6 +102,12 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
   // eslint-disable-next-line react-hooks/exhaustive-deps
   [state.bugTasks, state.assignments, state.agents, state.permissions]);
   const rows = useMemo(() => mergeRows(mine.issues, tasks), [mine.issues, tasks]);
+  // Place in line under the agents-at-once limit, oldest first (spec 2026-10-07 §5).
+  const queued = useMemo(() => Object.values(state.bugTasks).filter(t => t.queuedAt && !TERMINAL.includes(t.stage)).sort((a, b) => a.queuedAt!.localeCompare(b.queuedAt!)), [state.bugTasks]);
+  const queueOf = (t: BugTask) => { const i = queued.findIndex(q => q.id === t.id); return i === -1 ? undefined : { position: i + 1, of: queued.length }; };
+  const conflicts = tasks.filter(x => x.t.stage === "conflict").length;
+  const [resolving, setResolving] = useState(false);
+  const resolveAll = () => { setResolving(true); void api.resolveConflicts().catch(() => {}).finally(() => setResolving(false)); };
 
   const task = tasks.find(x => x.t.id === selectedId)?.t ?? null;
   const ticket = !task && selectedTicket && rows.some(r => r.key === selectedTicket && !r.task) ? selectedTicket : null;
@@ -142,6 +148,7 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
       <aside className="buglist">
         <div className="lh"><span>My bugs</span><span className="mono">{rows.length}</span>
           <button className="btn sm" aria-label="Refresh from the tracker" title="Refresh from the tracker" disabled={mine.loading} onClick={mine.refresh}><RefreshCw /></button></div>
+        {conflicts > 0 && <button className="btn p resolve-all" disabled={resolving} title="Rebase every conflicted bug onto its base — the agents-at-once limit paces them, and you review each result" onClick={resolveAll}><GitMerge /> Resolve all {conflicts} conflict{conflicts === 1 ? "" : "s"}</button>}
         {mine.err && <div className="warnline"><TriangleAlert /> Couldn't refresh from the tracker: {mine.err}{mine.issues ? " — showing the last list." : ""}</div>}
         <ul role="listbox" aria-label="Bug fixes" onKeyDown={e => {
           if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
@@ -164,7 +171,9 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
                 className="bugrow" data-status={r.status} onClick={() => open(r)} onKeyDown={e => { if (e.key === "Enter") open(r); }}>
                 <span className="k">{t.issue.key}</span>
                 <span className="t" title={t.issue.title}>{t.issue.title}</span>
-                <span className={`s ${r.status}`}><Icon /> {word} · {stageLabel(t.stage === "failed" || t.stage === "cancelled" ? lastRealStage(t) : t.stage)}</span>
+                {queueOf(t)
+                  ? <span className="s queued"><Clock /> Queued ({queueOf(t)!.position} of {queueOf(t)!.of}) · {stageLabel(t.stage)}</span>
+                  : <span className={`s ${r.status}`}><Icon /> {word} · {stageLabel(t.stage === "failed" || t.stage === "cancelled" ? lastRealStage(t) : t.stage)}</span>}
               </li>
             )];
           })}
@@ -212,7 +221,9 @@ function BugDetail({ task, state, now, onBugChanged, onTranscript, onOpenSetting
   }, [task.id, hasDiff, task.approvedHead]);
 
   const steps = pipelineFor(task, !!pending);
-  const nowLine = nowFor({ task, pending, activity });
+  const queuedAll = Object.values(state.bugTasks).filter(t => t.queuedAt && !TERMINAL.includes(t.stage)).sort((a, b) => a.queuedAt!.localeCompare(b.queuedAt!));
+  const qi = queuedAll.findIndex(q => q.id === task.id);
+  const nowLine = nowFor({ task, pending, activity, ...(qi !== -1 ? { queue: { position: qi + 1, of: queuedAll.length } } : {}) });
   const blockers = blockersFor({ task, pending, setup, setupError });
   const items = orderAssumptions(task.assumptions);
   const openInDiff = (p: string) => { setOpenFile(p); document.getElementById("bug-changes")?.scrollIntoView({ behavior: "smooth" }); };

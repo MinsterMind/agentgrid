@@ -513,3 +513,14 @@ describe("BugPanel — regression tests", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Create PR" })).not.toBeDisabled());
   });
 });
+
+describe("BugPanel — conflict gate", () => {
+  it("lists what conflicts, and Resolve conflict approves the rebase", async () => {
+    const onChanged = vi.fn();
+    render(<BugPanel task={task("conflict", { gate: { kind: "conflict", openedAt: "" }, conflict: { files: ["src/a.ts"], base: "develop", detectedAt: "", returnTo: "monitoring" } })} onChanged={onChanged} />);
+    const gate = screen.getByTestId("gate-conflict");
+    expect(gate).toHaveTextContent("Conflicts with develop"); expect(gate).toHaveTextContent("src/a.ts");
+    await userEvent.click(within(gate).getByRole("button", { name: "Resolve conflict" }));
+    expect(approveBug).toHaveBeenCalledWith("bt1");
+  });
+});

@@ -84,7 +84,7 @@ export function AgentTile({ agent, role, assignment, selected, index, recent, on
       <div className="hd">
         <div className="av">{role?.avatar ?? "🤖"}</div>
         <div><div className="name">{agent.displayName} <span className="role">— {agent.role}</span>{agent.resumeSessionId && <span title="Continues an adopted Claude Code session"> 🔗</span>}</div><div className="repo">{basename(agent.repo)}</div></div>
-        {bugStage && <span className="chip" data-testid="tile-bug-stage">{bugStage}</span>}
+        {bugStage && <span className={`chip ${bugStage === "conflict" ? "conflict" : ""}`} data-testid="tile-bug-stage">{bugStage}</span>}
       </div>
       <div className={`tile-state ${shown}`} data-testid="tile-state"><Icon /> {word}{need?.kind === "terminal" ? " (terminal)" : ""}</div>
       {a && <div className="tasktitle" title={a.prompt}>{a.prompt.split("\n")[0].slice(0, 90)}</div>}

@@ -21,6 +21,7 @@ const fakeEngine = (bugs: BugTaskStore, calls: string[]) => ({
   preflight: async (repo: string) => { calls.push(`preflight ${repo}`); return { ok: true, problems: [] }; },
   closeNoChange: async (id: string) => { calls.push(`no-change ${id}`); return bugs.get(id); },
   setMaxConcurrentRuns: (n: number) => { calls.push(`cap ${n}`); },
+  resolveConflicts: async () => { calls.push("resolve-all"); return ["bt1"]; },
   overrideTests: async (id: string, reason: string) => { calls.push(`override ${id} ${reason}`); return bugs.get(id); },
   intake: async (input: { issueRef: string; repo: string; baseBranch?: string; startAnyway?: boolean }) => { calls.push(`intake ${input.issueRef}${input.baseBranch ? ` base=${input.baseBranch}` : ""}${input.startAnyway ? " anyway" : ""}`);
     if (input.issueRef === "PAY-1") throw Object.assign(new Error("PAY-1 may already be fixed"), { status: 409, code: "already-on-base" });
@@ -123,6 +124,11 @@ describe("bug task routes", () => {
     expect(saved.body.maxConcurrentRuns).toBe(8);
     expect(calls).toContain("cap 8");
     expect((await request(app).get("/api/integrations")).body.maxConcurrentRuns).toBe(8);
+  });
+
+  it("Resolve all approves every bug waiting at the conflict gate", async () => {
+    expect((await request(app).post("/api/bugtasks/resolve-conflicts").expect(200)).body).toEqual({ ids: ["bt1"] });
+    expect(calls).toContain("resolve-all");
   });
 
   it("returns a single bug task by id", async () => {

@@ -1298,6 +1298,16 @@ describe("at most N bug-fix agents at once", () => {
   });
 });
 
+describe("Resolve all conflicts", () => {
+  it("approves only the tasks waiting at the conflict gate", async () => {
+    const { engine, bugs } = await onMonitoringTask();
+    expect(await engine.resolveConflicts()).toEqual([]);
+    await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflicting", files: ["a"], base: "main" } });
+    expect(await engine.resolveConflicts()).toEqual(["bt1"]);
+    expect(bugs.get("bt1").stage).toBe("rebase");
+  });
+});
+
 describe("a rebase round", () => {
   it("dispatches rebase on a conflict and opens a diff gate labelled rebase", async () => {
     const { engine, bugs, fake, gitState } = await onMonitoringTask();
