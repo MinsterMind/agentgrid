@@ -1555,7 +1555,8 @@ describe("merging", () => {
     const { engine, bugs, gitState, taskId } = await atMergeGate();
     gitState.deleteRemoteError = "remote rejected the delete (protected branch)";
     await engine.approve(taskId);
-    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    // The cleanup note lands just after the task reaches done (runServerStage writes it after the transition).
+    await until(() => bugs.get(taskId).stage !== "merging" && !!bugs.get(taskId).error, 2000);
     const t = bugs.get(taskId);
     expect(t.stage).toBe("done");
     expect(t.outcome).toBe("merged");
