@@ -28,6 +28,7 @@ export function reducer(s: UiState, a: Action): UiState {
       if (e.type === "assignment") return { ...s, assignments: { ...s.assignments, [e.assignment.id]: e.assignment } };
       if (e.type === "agent-removed") return { ...s, agents: s.agents.filter(x => x.id !== e.id), selectedId: s.selectedId === e.id ? null : s.selectedId };
       if (e.type === "bugtask") return { ...s, bugTasks: { ...s.bugTasks, [e.task.id]: e.task } };
+      if (e.type === "tracker-issues" || e.type === "tracker-issue") return s;   // Task 3 keeps these
       if (e.type === "permission") return { ...s, permissions: { ...s.permissions, [e.request.id]: e.request } };
       if (e.type === "permission-settled") { const { [e.id]: _gone, ...permissions } = s.permissions; return { ...s, permissions }; }
       if (e.type === "bugtask-removed") { const { [e.id]: _drop, ...bugTasks } = s.bugTasks; return { ...s, bugTasks }; }

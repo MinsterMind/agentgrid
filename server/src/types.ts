@@ -1,5 +1,5 @@
 export type { BugTask } from "./bugfix/types.js";
-import type { BugTask } from "./bugfix/types.js";
+import type { BugTask, IssueSummary, TrackerIssue } from "./bugfix/types.js";
 
 export type AgentState = "free" | "working" | "waiting" | "done" | "failed";
 export type AssignmentState = Exclude<AgentState, "free">;
@@ -83,7 +83,12 @@ export type GridEvent =
   | { type: "bugtask"; task: BugTask }
   | { type: "bugtask-removed"; id: string }
   | { type: "permission"; request: PermissionRequest }
-  | { type: "permission-settled"; id: string };
+  | { type: "permission-settled"; id: string }
+  | { type: "tracker-issues"; list: IssueList }
+  | { type: "tracker-issue"; issue: TrackerIssue };
+
+/** My open bugs, as the tracker cache holds them (spec 2026-10-08 §3.3): answered at once, refreshed behind the scenes. */
+export interface IssueList { issues: IssueSummary[]; fetchedAt: string | null; refreshing: boolean; error: string | null }
 
 export interface GridState { roles: RoleDef[]; agents: Agent[]; assignments: Assignment[]; liveSessions: SessionInfo[]; sessionStatuses: SessionActivity[]; bugTasks: BugTask[]; permissions: PermissionRequest[] }
 
