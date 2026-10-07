@@ -7,6 +7,7 @@ import { activityFor, assignmentFor, permissionFor, type UiState } from "../stat
 import type { BugTask, Decision, IssueList, IssueSummary, SetupReport } from "../types";
 import { TicketDetail } from "./TicketDetail";
 import { BulkStart } from "./BulkStart";
+import { ImportTickets } from "./ImportTickets";
 import { PendingPrompt, asPending } from "./PendingPrompt";
 import { BugGates } from "./BugGates";
 import { DiffView, hunksFor } from "./DiffView";
@@ -127,6 +128,8 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
   const pickedRows = startable.filter(r => picked.has(r.key));
   // Once a run starts, its bugs stop being "not started" — keep the panel on what was sent, until Done.
   const [running, setRunning] = useState<IssueSummary[] | null>(null);
+  /** The Import tickets dialog is open in the right pane (spec 2026-10-09 §3.1). */
+  const [importing, setImporting] = useState(false);
   const bulkShown = running ?? (pickedRows.length ? pickedRows.map(r => ({ key: r.key, title: r.title, url: "", status: "", priority: r.priority ?? "" })) : null);
   const toggle = (key: string) => setPicked(x => { const n = new Set(x); if (n.has(key)) n.delete(key); else n.add(key); return n; });
   const [resolving, setResolving] = useState(false);
@@ -173,7 +176,8 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
       <aside className="buglist">
         <div className="lh"><span>My bugs</span><span className="mono">{rows.length}</span>
           {mine.fetchedAt && <span className="help updated" title={new Date(mine.fetchedAt).toLocaleString()}>updated {relativeTime(mine.fetchedAt, now)}</span>}
-          <button className="btn sm" aria-label={mine.refreshing ? "Refreshing…" : "Refresh from the tracker"} title={mine.refreshing ? "Refreshing…" : "Refresh from the tracker"} disabled={mine.refreshing} onClick={mine.refresh}><RefreshCw className={mine.refreshing ? "spin" : ""} /></button></div>
+          <button className="btn sm" aria-label={mine.refreshing ? "Refreshing…" : "Refresh from the tracker"} title={mine.refreshing ? "Refreshing…" : "Refresh from the tracker"} disabled={mine.refreshing} onClick={mine.refresh}><RefreshCw className={mine.refreshing ? "spin" : ""} /></button>
+          <button className="btn sm" title="Pick up tickets already being worked on — their PRs and branches" onClick={() => setImporting(true)}>Import tickets…</button></div>
         {startable.length > 0 && (
           <div className="row pick-row">
             {pickedRows.length < startable.length && <button className="btn sm" onClick={() => setPicked(new Set(startable.map(r => r.key)))}>Select all not started ({startable.length})</button>}
@@ -214,7 +218,9 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
         </ul>
         <div className="lfoot"><kbd>↑</kbd> <kbd>↓</kbd> move · <kbd>⏎</kbd> open</div>
       </aside>
-      {bulkShown
+      {importing
+        ? <ImportTickets imports={state.imports ?? {}} onClose={() => setImporting(false)} />
+        : bulkShown
         ? <BulkStart selected={bulkShown} batches={state.batches ?? {}} onStarted={() => setRunning(r => r ?? bulkShown)} onClose={() => { setRunning(null); setPicked(new Set()); }} />
         : task || (shown && !ticket && !selectedTicket)
         ? <BugDetail key={(task ?? shown)!.id} task={(task ?? shown)!} state={state} now={now} onBugChanged={onBugChanged} onTranscript={onTranscript} onOpenSettings={onOpenSettings} onDecide={onDecide} />

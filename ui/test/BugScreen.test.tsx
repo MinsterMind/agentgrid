@@ -32,7 +32,7 @@ vi.mock("../src/api", () => ({
     requestBugChanges: vi.fn(), cancelBug: vi.fn(), retryBug: vi.fn(), listBugTasks: vi.fn(async () => []),
     addressComments: vi.fn(), dismissBug: vi.fn(),
     myIssues: () => myIssues(), refreshIssues: () => refreshIssues(), issue: vi.fn(async () => ({ key: "PAY-1", title: "Not started", url: "u", status: "Open", priority: "High", description: "", acceptanceCriteria: [] })),
-    getIntegrations: vi.fn(async () => ({ projectRepos: {} })), resolveConflicts: () => resolveConflicts(), bugPreflight: () => bugPreflight(), createBugTask: vi.fn(), pickFolder: vi.fn(), startBatch: vi.fn(async () => ({ batchId: "b1" })),
+    getIntegrations: vi.fn(async () => ({ projectRepos: {} })), resolveConflicts: () => resolveConflicts(), bugPreflight: () => bugPreflight(), createBugTask: vi.fn(), pickFolder: vi.fn(), startBatch: vi.fn(async () => ({ batchId: "b1" })), startImport: vi.fn(async () => ({ importId: "i1" })), spend: vi.fn(async () => ({ today: 0, limit: null })),
   },
 }));
 
@@ -57,6 +57,13 @@ const renderScreen = (tasks: BugTask[], selectedId: string | null = tasks[0]?.id
 };
 
 describe("BugScreen", () => {
+  it("opens Import tickets from the list header", async () => {
+    renderScreen([task("implementing")]);
+    await userEvent.click(screen.getByRole("button", { name: "Import tickets…" }));
+    expect(screen.getByTestId("import-tickets")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByTestId("import-tickets")).toBeNull();
+  });
   it("lists every bug with a status word, active ones first", () => {
     renderScreen([task("done", { id: "bt1", issue: { ...ISSUE, key: "PAY-1" } }), task("plan-review", { id: "bt2", issue: { ...ISSUE, key: "PAY-2" } })], "bt2");
     const rows = screen.getAllByRole("option");
