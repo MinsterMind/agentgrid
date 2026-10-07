@@ -74,6 +74,7 @@ export const api = {
   addressComments: (id: string, text?: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/address-comments`, text ? { text } : undefined),
   dismissBug: (id: string) => call<void>("DELETE", `/api/bugtasks/${encodeURIComponent(id)}`),
   myIssues: () => call<IssueList>("GET", "/api/bugfix/issues"),
+  transitions: (key: string) => call<Array<{ id: string; name: string; to: string }>>("GET", `/api/bugfix/transitions?key=${encodeURIComponent(key)}`),
   refreshIssues: () => call<object>("POST", "/api/bugfix/issues/refresh"),
   repoStatus: (path: string) => call<{ exists: boolean; isRepo: boolean; branch: string | null }>("GET", `/api/repo-status?path=${encodeURIComponent(path)}`),
   bugPreflight: (repo: string) => call<{ ok: boolean; problems: string[]; remote?: string | null; baseBranch?: string | null; branches?: string[] }>("GET", `/api/bugfix/preflight?repo=${encodeURIComponent(repo)}`),

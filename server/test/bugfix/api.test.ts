@@ -157,6 +157,26 @@ describe("bug task routes", () => {
     await request(app).post("/api/bugtasks/bt1/approve").send({ expect: "nonsense" }).expect(400);
   });
 
+  it("reads a ticket's workflow transitions for Settings; says when the tracker can't", async () => {
+    await request(app).get("/api/bugfix/transitions").query({ key: "PAY 1" }).expect(400);
+    const r = await request(app).get("/api/bugfix/transitions").query({ key: "PAY-42" }).expect(501);
+    expect(r.body.error).toMatch(/status sync isn't supported for this tracker/);
+    const store = new Store(home, path.resolve("roles")); await store.init();
+    const tracker = { listMyIssues: async () => [], fetchIssue: async () => ISSUE, comment: async () => {},
+      listTransitions: async () => [{ id: "11", name: "Start Progress", to: "In Progress" }] };
+    const a = createApp({ store, manager: new Manager(store, { queryFn: makeFakeQuery().queryFn }), bugs: { engine: fakeEngine(bugs, calls) as never, store: bugs, integrations: new IntegrationsStore(home), tracker } });
+    expect((await request(a).get("/api/bugfix/transitions").query({ key: "PAY-42" }).expect(200)).body).toEqual([{ id: "11", name: "Start Progress", to: "In Progress" }]);
+  });
+
+  it("the status map: projects, the five moments, a transition and its target — validated, saved", async () => {
+    const ok = { PAY: { started: { transition: "Start Progress", to: "In Progress" }, merged: { transition: "Done", to: "Done" } } };
+    await request(app).put("/api/integrations").send({ statusMap: { pay: ok.PAY } }).expect(400);
+    await request(app).put("/api/integrations").send({ statusMap: { PAY: { launched: { transition: "x", to: "y" } } } }).expect(400);
+    await request(app).put("/api/integrations").send({ statusMap: { PAY: { started: "Start Progress" } } }).expect(400);
+    await request(app).put("/api/integrations").send({ statusMap: ok }).expect(200);
+    expect((await request(app).get("/api/integrations")).body.statusMap).toEqual(ok);
+  });
+
   it("returns a single bug task by id", async () => {
     await request(app).post("/api/bugtasks").send({ issueRef: "PAY-42", repo: "/r" });
     const res = await request(app).get("/api/bugtasks/bt1").expect(200);

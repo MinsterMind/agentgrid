@@ -139,6 +139,7 @@ export function blockersFor({ task, pending, setup, setupError }: { task: BugTas
     if (task.pr.mergeable === "CONFLICTING") out.push({ kind: "pr", title: `The branch conflicts with ${task.baseBranch}` });
   }
   if (task.conflictCheckError) out.push({ kind: "pr", title: task.conflictCheckError });
+  if (task.trackerSyncError) out.push({ kind: "pr", title: task.trackerSyncError });
   if (task.error?.startsWith(UNREACHABLE)) out.push({ kind: "pr", title: "Could not check the pull request", detail: task.error.slice(UNREACHABLE.length).trim() });
   if (setupError) out.push({ kind: "setup", title: "Could not check setup" });
   else for (const c of setup?.checks ?? []) if (c.blocks && c.state !== "ok") out.push({ kind: "setup", title: c.detail });

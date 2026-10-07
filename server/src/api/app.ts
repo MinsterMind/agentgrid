@@ -19,6 +19,7 @@ import type { BugTaskStore } from "../bugfix/store.js";
 import type { IntegrationsStore, Integrations } from "../bugfix/integrations.js";
 import type { TrackerProvider } from "../bugfix/tracker.js";
 import type { TrackerCache } from "../bugfix/trackerCache.js";
+import { MOMENTS } from "../bugfix/trackerSync.js";
 import type { ForgeAdapter } from "../bugfix/forge/types.js";
 import { discoverMcpServers } from "../bugfix/mcp-discovery.js";
 import { buildSetupReport } from "../bugfix/setup.js";
@@ -405,6 +406,7 @@ export function createApp(deps: AppDeps) {
   const redactIntegrations = (cfg: Integrations) => ({
     projectRepos: cfg.projectRepos,
     ...(cfg.maxConcurrentRuns !== undefined ? { maxConcurrentRuns: cfg.maxConcurrentRuns } : {}),
+    ...(cfg.statusMap !== undefined ? { statusMap: cfg.statusMap } : {}),
     ...(cfg.forge ? { forge: cfg.forge } : {}),
     ...(cfg.tracker ? { tracker: {
       preset: cfg.tracker.preset,
@@ -486,6 +488,20 @@ export function createApp(deps: AppDeps) {
     const now = b.trackerCache.myIssues();
     res.json(now.fetchedAt === null ? await b.trackerCache.refresh() : now);
   }));
+  /** A ticket's available workflow transitions, for Settings → Ticket statuses. Cached an hour per project. */
+  const transitionsByProject = new Map<string, { at: number; list: unknown }>();
+  app.get("/api/bugfix/transitions", wrap(async (req, res) => {
+    const key = typeof req.query.key === "string" ? req.query.key : "";
+    if (!/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(key)) throw new BadRequest("a ticket key like PAY-42 is required");
+    const b = bugs();
+    if (!b.tracker.listTransitions) { res.status(501).json({ error: "status sync isn't supported for this tracker (its preset has no listTransitions/transition)" }); return; }
+    const project = key.split("-")[0].toUpperCase();
+    const hit = transitionsByProject.get(project);
+    if (hit && Date.now() - hit.at < 3_600_000) { res.json(hit.list); return; }
+    const list = await b.tracker.listTransitions(key);
+    transitionsByProject.set(project, { at: Date.now(), list });
+    res.json(list);
+  }));
   app.post("/api/bugfix/issues/refresh", wrap(async (_req, res) => {
     const b = bugs();
     if (b.trackerCache) void b.trackerCache.refresh();
@@ -508,7 +524,23 @@ export function createApp(deps: AppDeps) {
     // Only the two known top-level fields are accepted; anything else in the body is
     // deliberately dropped rather than persisted (same "pick the fields you accept"
     // convention POST /api/agents already uses), not silently merged onto disk.
-    const patch: { tracker?: unknown; forge?: unknown; maxConcurrentRuns?: number } = {};
+    const patch: { tracker?: unknown; forge?: unknown; maxConcurrentRuns?: number; statusMap?: unknown } = {};
+    if (body.statusMap !== undefined) {
+      const m = body.statusMap;
+      const bad = (why: string) => { throw new BadRequest(`statusMap: ${why}`); };
+      if (!m || typeof m !== "object" || Array.isArray(m)) bad("must be an object of projects");
+      for (const [project, moments] of Object.entries(m)) {
+        if (!/^[A-Z][A-Z0-9_]*$/.test(project)) bad(`"${project}" is not a project key like PAY`);
+        if (!moments || typeof moments !== "object" || Array.isArray(moments)) bad(`${project} must map moments to transitions`);
+        for (const [moment, v] of Object.entries(moments as Record<string, unknown>)) {
+          if (!(MOMENTS as string[]).includes(moment)) bad(`"${moment}" is not one of ${MOMENTS.join(", ")}`);
+          const t = v as { transition?: unknown; to?: unknown };
+          const okStr = (x: unknown) => typeof x === "string" && x.trim().length > 0 && x.length <= 100;
+          if (!t || typeof t !== "object" || !okStr(t.transition) || !okStr(t.to)) bad(`${project}.${moment} needs a transition and the status it leads to`);
+        }
+      }
+      patch.statusMap = m;
+    }
     if (body.maxConcurrentRuns !== undefined) {
       const n = body.maxConcurrentRuns;
       if (!Number.isInteger(n) || n < 1 || n > 32) throw new BadRequest("maxConcurrentRuns must be a whole number from 1 to 32");

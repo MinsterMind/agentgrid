@@ -308,3 +308,10 @@ describe("conflicts and the queue", () => {
     expect(b.map(x => x.title)).toContain("Couldn't check for conflicts: could not resolve host");
   });
 });
+
+describe("blockersFor — the tracker's status", () => {
+  it("a status move that failed shows on the card", () => {
+    const b = blockersFor({ task: task("monitoring", { trackerSyncError: "Couldn't move PAY-42 to In Review: no such transition" }), pending: null, setup: null, setupError: false });
+    expect(b.map(x => x.title)).toContain("Couldn't move PAY-42 to In Review: no such transition");
+  });
+});
