@@ -21,6 +21,7 @@ import { IntegrationsStore, type Integrations } from "./bugfix/integrations.js";
 import { GitOps } from "./bugfix/git.js";
 import { makeForge } from "./bugfix/forge/index.js";
 import { AgentPrWatcher } from "./agentpr.js";
+import { ConflictWatcher } from "./bugfix/conflicts.js";
 import { mcpTracker, type TrackerProvider } from "./bugfix/tracker.js";
 import { BugFixEngine, recoverStuckBugTasks } from "./bugfix/engine.js";
 import { PrWatcher } from "./bugfix/watcher.js";
@@ -179,6 +180,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
 
   let wiredBugFix: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider } | undefined;
   let wiredWatcher: PrWatcher | null = null;
+  let wiredConflicts: ConflictWatcher | null = null;
   let lastCfg = cfg;
 
   /**
@@ -200,6 +202,14 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
           ...(fake ? { baseMs: 200, ceilingMs: 1_000 } : {}) })
       : null;
     wiredWatcher?.start(fake ? 100 : 1_000);
+    // Conflicts across every resting PR, from local git — no forge calls (spec 2026-10-07 §4.1).
+    wiredConflicts?.stop();
+    wiredConflicts = new ConflictWatcher({ bugs: bugStore, git: new GitOps(),
+      onFinding: f => engine.onConflictFinding(f).catch(err => log(`bugfix: conflict finding failed: ${(err as Error).message}`)),
+      onProblem: (id, m) => engine.onConflictProblem(id, m).catch(() => {}),
+      intervalMs: fake ? 500 : 60_000 });
+    engine.setConflictNudge(repo => wiredConflicts?.nudge(repo));
+    wiredConflicts.start();
     wiredBugFix = { engine, store: bugStore, integrations, tracker };
     return wiredBugFix;
   };
@@ -246,6 +256,6 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     port: bound, url, home,
     ...(fakeForgeHandle ? { fakeForge: fakeForgeHandle } : {}),
     bugEngineForTest: () => wiredBugFix?.engine,
-    close: () => new Promise<void>(resolve => { watcher.stop(); statuses.stop(); agentPrs.stop(); wiredWatcher?.stop(); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }),
+    close: () => new Promise<void>(resolve => { watcher.stop(); statuses.stop(); agentPrs.stop(); wiredWatcher?.stop(); wiredConflicts?.stop(); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }),
   };
 }

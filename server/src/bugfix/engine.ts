@@ -376,6 +376,16 @@ export class BugFixEngine {
    * a stale "couldn't reach the forge" note clears. Nothing here touches stage, so it needs no
    * place in `advance()`'s chain.
    */
+  private conflictNudge: ((repo: string) => void) | null = null;
+  /** Called with a repo when one of its PRs merges: the ConflictWatcher re-checks its siblings at once. */
+  setConflictNudge(fn: ((repo: string) => void) | null): void { this.conflictNudge = fn; }
+
+  /** Why a conflict check couldn't run for this task, or null once one did. */
+  async onConflictProblem(taskId: string, message: string | null): Promise<void> {
+    const t = this.deps.bugs.get(taskId);
+    if (t.conflictCheckError !== message) await this.deps.bugs.patch(taskId, { conflictCheckError: message });
+  }
+
   /** A ConflictWatcher finding. A late one for a task that has moved on (say, Resolve was pressed
    *  meanwhile) is simply out of date: nextStage refuses it, and that is not an error. */
   async onConflictFinding(f: { taskId: string; event: BugEvent }): Promise<void> {
@@ -495,6 +505,8 @@ export class BugFixEngine {
         : { files, base: event.base ?? current.baseBranch, detectedAt: new Date().toISOString(), returnTo: current.stage === "approved" ? "approved" : "monitoring" } });
     }
     let task = await this.deps.bugs.apply(taskId, t);
+    // A merge moves the base: every sibling PR in this repo may conflict now — check them right away.
+    if (event.type === "pr-merged") this.conflictNudge?.(task.sourceRepo);
     // The conflict is over once it cleared, the PR ended, or the rebase it allowed is up for review.
     const conflictOver = event.type === "conflict-cleared" || (current.stage === "conflict" && (event.type === "pr-merged" || event.type === "pr-closed"))
       || (event.type === "stage-done" && current.stage === "rebase");

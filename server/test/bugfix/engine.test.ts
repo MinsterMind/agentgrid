@@ -1240,6 +1240,23 @@ describe("the conflict gate, in the engine", () => {
   });
 });
 
+describe("conflict checks and the engine", () => {
+  it("records why a conflict check couldn't run, and clears it", async () => {
+    const { engine, bugs } = await onMonitoringTask();
+    await engine.onConflictProblem("bt1", "Couldn't check for conflicts: could not resolve host");
+    expect(bugs.get("bt1").conflictCheckError).toBe("Couldn't check for conflicts: could not resolve host");
+    await engine.onConflictProblem("bt1", null);
+    expect(bugs.get("bt1").conflictCheckError).toBeNull();
+  });
+  it("a merged PR nudges a re-check of its repo — its siblings are what a merge can break", async () => {
+    const { engine, bugs } = await onMonitoringTask();
+    const nudged: string[] = []; engine.setConflictNudge(r => nudged.push(r));
+    await engine.onPrFinding({ taskId: "bt1", pr: { ...bugs.get("bt1").pr!, state: "MERGED" }, event: { type: "pr-merged" } });
+    await until(() => nudged.length > 0, 2000);
+    expect(nudged).toEqual([bugs.get("bt1").sourceRepo]);
+  });
+});
+
 describe("a rebase round", () => {
   it("dispatches rebase on a conflict and opens a diff gate labelled rebase", async () => {
     const { engine, bugs, fake, gitState } = await onMonitoringTask();

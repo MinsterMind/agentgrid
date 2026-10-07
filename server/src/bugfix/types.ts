@@ -68,6 +68,8 @@ export interface BugTask {
   testOverride: { reason: string; at: string; head: string } | null;
   /** What the PR conflicts on, while it waits at the conflict gate (kept through the rebase it allows). */
   conflict: { files: string[]; base: string; detectedAt: string; returnTo: "monitoring" | "approved" } | null;
+  /** Why the last conflict check couldn't run (a fetch failed…), shown on the card; null once one succeeds. */
+  conflictCheckError: string | null;
   agentId: string;
   stage: BugStage;
   gate: { kind: GateKind; openedAt: string; reason?: "feedback" | "rebase" | "external" } | null;
