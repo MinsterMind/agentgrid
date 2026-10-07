@@ -5,9 +5,9 @@ The approved plan is at {{planPath}} — follow it; if reality contradicts it, s
 Your branch was cut from {{baseRef}}. See what you have done with `git log --oneline {{baseRef}}..HEAD`
 and `git diff {{baseRef}}...HEAD` — never against a local branch.
 
-1. Make the change.
-2. Add or update tests that fail before your fix and pass after it.
-3. Run the project's tests and make sure they pass.
+1. Write the plan's regression tests first, and run them: they must fail, for the reason the plan gives.
+2. Make the change.
+3. Run the regression tests again — they must pass — then the project's whole test suite.
 4. Commit on {{branch}} with a message starting "{{issueKey}}: ".
 
 **Do not push. Do not create a pull request.** The human reviews the diff first.
@@ -27,4 +27,5 @@ Write {{assumptionsPath}} — a JSON list of anything in this step you decided w
 
 Only real decisions a reviewer might want to overturn. If there are none, write an empty list: []
 
-Finish with a 2–3 line summary: what changed, what you verified, what is left.
+Finish with a 2–3 line summary: what changed, what you verified, what is left — and list each regression
+test as "<test> — failed before, passes after".

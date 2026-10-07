@@ -58,7 +58,7 @@ None — this is a fake agent used to exercise the workflow offline.
 ## Risks
 
 Nothing: the change is confined to the task's own worktree.
-`;
+\n## Regression tests\n\n- fake-fix.test.txt › the fake bug stays fixed — fails today: the fixture reproduces it\n`;
 
 /** Commit inside the worktree. `-c` rather than `config` so a machine with no git identity still works. */
 async function commitSomething(cwd: string): Promise<void> {

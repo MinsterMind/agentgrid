@@ -5,7 +5,7 @@ import path from "node:path";
 import { Store } from "../../src/store/store.js";
 import { Manager } from "../../src/runner/manager.js";
 import { BugTaskStore } from "../../src/bugfix/store.js";
-import { BugFixEngine, recoverStuckBugTasks, FEEDBACK_ROUND_CAP } from "../../src/bugfix/engine.js";
+import { regressionTests, BugFixEngine, recoverStuckBugTasks, FEEDBACK_ROUND_CAP } from "../../src/bugfix/engine.js";
 import { nextStage } from "../../src/bugfix/stages.js";
 import { GitOps } from "../../src/bugfix/git.js";
 import { IntegrationsStore } from "../../src/bugfix/integrations.js";
@@ -218,6 +218,20 @@ describe("the base a fix is cut from (PULSEAI-414)", () => {
     const counts = gitFake.calls.filter(c => c.startsWith("ahead of"));
     expect(counts.length).toBeGreaterThan(0);
     expect(new Set(counts)).toEqual(new Set(["ahead of origin/develop"]));
+  });
+});
+
+describe("regression tests in the plan", () => {
+  it("reads the list under the heading, ignoring code and stopping at the next heading", () => {
+    const plan = "Verdict: change needed\n## Root cause\nx\n## Regression tests\n- `test/cart.test.ts` › totals match with a coupon — fails today: double discount\n* test/cart.test.ts › coupon applies once\n```\n- not a test\n```\n## Risks\n- none";
+    expect(regressionTests(plan)).toEqual(["`test/cart.test.ts` › totals match with a coupon — fails today: double discount", "test/cart.test.ts › coupon applies once"]);
+    expect(regressionTests("## Fix\n- a")).toEqual([]);
+  });
+  it("the analyze stage records the planned tests on the task", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "Verdict: change needed\n## Regression tests\n- test/a.test.ts › rotates once\n");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    expect(bugs.get(t.id).plannedTests).toEqual(["test/a.test.ts › rotates once"]);
   });
 });
 

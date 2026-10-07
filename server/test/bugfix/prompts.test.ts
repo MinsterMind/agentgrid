@@ -54,6 +54,12 @@ describe("renderStagePrompt — the base and the no-change path (PULSEAI-414)", 
     const p = await renderStagePrompt("implementing", { ...task, stage: "implementing" }, ctx, presets);
     expect(p).toMatch(/nothing to change/i); expect(p).toMatch(/do not make an empty/i);
   });
+  it("the plan must name regression tests; the change step writes them first and proves fail→pass", async () => {
+    const a = await renderStagePrompt("analyzing", task, ctx, presets);
+    expect(a).toContain("Regression tests"); expect(a).toMatch(/fails on today's code/i);
+    const i = await renderStagePrompt("implementing", { ...task, stage: "implementing" }, ctx, presets);
+    expect(i).toMatch(/write the plan's regression tests first/i); expect(i).toMatch(/failed before, passes after/i);
+  });
   it("opening the PR lists the commits that go up", async () => {
     const p = await renderStagePrompt("opening-pr", { ...task, stage: "opening-pr" }, ctx, presets);
     expect(p).toContain("git log --oneline origin/develop..HEAD");

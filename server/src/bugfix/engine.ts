@@ -851,7 +851,7 @@ export class BugFixEngine {
     if (task.stage === "analyzing") {
       const plan = await bugs.readArtifact(task.id, "plan.md");
       if (!plan?.trim()) throw new Error("the agent did not write plan.md");
-      await bugs.patch(task.id, { verdict: planVerdict(plan) });
+      await bugs.patch(task.id, { verdict: planVerdict(plan), plannedTests: regressionTests(plan) });
       return;
     }
     if (task.stage === "implementing") {
@@ -984,4 +984,19 @@ function noChangeReport(task: BugTask, evidence: string): string {
   const prior = task.ticketCommits.length ? `\n\nCommits on ${task.baseRef} that name ${task.issue.key}:\n${task.ticketCommits.map(c => `  ${c}`).join("\n")}` : "";
   return `${evidence.trim()}${prior}\n\nNothing was pushed and no pull request was opened.\n` +
     `Suggested for ${task.issue.key}: move it to Done (or "Won't fix" if it never reproduced), with a comment pointing at the evidence above.`;
+}
+
+/** The items under the plan's "Regression tests" heading — the tests that stop this bug coming back. */
+export function regressionTests(plan: string): string[] {
+  const out: string[] = [];
+  let capture = false, fence = false;
+  for (const line of plan.replace(/\r\n/g, "\n").split("\n")) {
+    if (/^\s*(```|~~~)/.test(line)) { fence = !fence; continue; }
+    if (fence) continue;
+    const h = /^#{1,3}\s+(.+?)\s*#*\s*$/.exec(line);
+    if (h) { capture = /^regression tests$/i.test(h[1].trim()); continue; }
+    const item = capture && /^\s*[-*]\s+(.+)$/.exec(line);
+    if (item) out.push(item[1].trim());
+  }
+  return out;
 }

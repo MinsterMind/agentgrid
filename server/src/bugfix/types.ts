@@ -58,6 +58,8 @@ export interface BugTask {
   verdict: string | null;
   /** Why a task closed without a change: the evidence and what to do with the ticket. Null otherwise. */
   report: string | null;
+  /** The plan's "Regression tests" items — what stops this bug coming back. Records before 0.12.0 normalise to []. */
+  plannedTests: string[];
   agentId: string;
   stage: BugStage;
   gate: { kind: GateKind; openedAt: string; reason?: "feedback" | "rebase" | "external" } | null;
