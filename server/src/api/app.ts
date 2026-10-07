@@ -504,7 +504,7 @@ export function createApp(deps: AppDeps) {
   // The very first read has nothing to show yet, so it waits for it.
   app.get("/api/bugfix/issues", wrap(async (_req, res) => {
     const b = bugs();
-    if (!b.trackerCache) return res.json({ issues: await b.tracker.listMyIssues(), fetchedAt: new Date().toISOString(), refreshing: false, error: null });
+    if (!b.trackerCache) return res.json({ issues: await b.tracker.listMyIssues(), fetchedAt: new Date().toISOString(), refreshing: false, error: null, generation: 0 });
     const now = b.trackerCache.myIssues();
     res.json(now.fetchedAt === null ? await b.trackerCache.refresh() : now);
   }));

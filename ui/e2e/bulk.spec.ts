@@ -37,11 +37,9 @@ test("pick two bugs, start them together; their tickets move to In Progress", as
   await bulk.getByLabel("Repo for FAKE").fill(repo);
   const start = bulk.getByRole("button", { name: "Start 2 fixes" });
   await expect(start).toBeEnabled({ timeout: 30_000 });
-  await page.screenshot({ path: "/private/tmp/claude-501/-Users-manojmali-MinsterMind-hrns/86e01a86-3942-42df-a509-b1f90fcdb800/scratchpad/bulk-panel.png" });
   await start.click();
 
   await expect(bulk.getByText("Started 2 of 2")).toBeVisible({ timeout: 30_000 });
-  await page.screenshot({ path: "/private/tmp/claude-501/-Users-manojmali-MinsterMind-hrns/86e01a86-3942-42df-a509-b1f90fcdb800/scratchpad/bulk-done.png" });
 
   // Both tasks exist, and the ticket's history says it moved.
   const tasks = await (await request.get(`${BASE}/api/bugtasks`)).json();

@@ -20,7 +20,7 @@ const approveBug = vi.fn(async (_id: string, _m?: string) => task("implementing"
 const resolveConflicts = vi.fn(async () => ({ ids: ["bt1", "bt2"] }));
 type Issue = { key: string; title: string; url: string; status: string; priority: string };
 /** The list as the server's tracker cache answers it. */
-const L = (issues: Issue[], over: Record<string, unknown> = {}) => ({ issues, fetchedAt: new Date(Date.now() - 2 * 60_000).toISOString(), refreshing: false, error: null as string | null, ...over });
+const L = (issues: Issue[], over: Record<string, unknown> = {}) => ({ issues, fetchedAt: new Date(Date.now() - 2 * 60_000).toISOString() as string | null, refreshing: false, error: null as string | null, generation: 0, ...over });
 const myIssues = vi.fn(async (): Promise<ReturnType<typeof L>> => L([]));
 const refreshIssues = vi.fn(async () => ({}));
 const bugPreflight = vi.fn(async () => ({ ok: true, problems: [], baseBranch: "main", branches: ["main"] }));
@@ -438,5 +438,24 @@ describe("BugScreen — a start-many run stays on screen", () => {
     expect(screen.getByTestId("bulk-start")).toHaveTextContent("Started 1 of 1");
     await userEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(screen.queryByTestId("bulk-start")).toBeNull();
+  });
+});
+
+describe("BugScreen — the list stays honest (final review #2, #7)", () => {
+  it("a cleared list (the tracker changed) replaces the old one, even though it has no time yet", async () => {
+    myIssues.mockResolvedValue(L([{ key: "OLD-1", title: "Old tracker's bug", url: "u", status: "Open", priority: "High" }]));
+    const { rerender } = render(<BugScreen state={stateWith([]) as never} selectedId={null} onSelect={vi.fn()} onSelectTicket={vi.fn()} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={vi.fn()} />);
+    expect(await screen.findByText("Old tracker's bug")).toBeInTheDocument();
+    rerender(<BugScreen state={{ ...stateWith([]), tracker: L([], { fetchedAt: null, refreshing: true, generation: 1 }) } as never} selectedId={null} onSelect={vi.fn()} onSelectTicket={vi.fn()} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={vi.fn()} />);
+    await waitFor(() => expect(screen.queryByText("Old tracker's bug")).toBeNull());
+  });
+  it("an open screen asks again every minute (the server refreshes when the list has gone stale)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderScreen([]);
+      await waitFor(() => expect(myIssues).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(myIssues).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
   });
 });

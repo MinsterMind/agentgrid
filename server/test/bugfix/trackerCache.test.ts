@@ -109,3 +109,47 @@ describe("TrackerCache — disk and events", () => {
     expect(c.myIssues()).toMatchObject({ issues: [], fetchedAt: null });
   });
 });
+
+describe("TrackerCache — reads in flight (final review #8)", () => {
+  it("opening a ticket that prefetch is reading joins that read — one tracker call", async () => {
+    let release!: () => void; const gate = new Promise<void>(r => { release = r; });
+    const slow: TrackerProvider = { ...tracker, fetchIssues: async (keys: string[]) => { calls.batch.push(keys); await gate; return { issues: keys.map(full), missing: [] }; } };
+    const c = new TrackerCache({ tracker: slow, file, now: () => t, writeEveryMs: 0 });
+    const batch = c.issues(["PAY-1", "PAY-2"]);
+    const one = c.issue("PAY-1");
+    release(); await Promise.all([batch, one]);
+    expect(calls.fetch).toEqual([]); expect(calls.batch).toEqual([["PAY-1", "PAY-2"]]);
+  });
+  it("an older answer never replaces a newer one", async () => {
+    let release!: () => void; const gate = new Promise<void>(r => { release = r; });
+    const slow: TrackerProvider = { ...tracker,
+      fetchIssues: async (keys: string[]) => { await gate; return { issues: keys.map(k => ({ ...full(k), title: "old" })), missing: [] }; },
+      fetchIssue: async (k: string) => ({ ...full(k), title: "new" }) };
+    const c = new TrackerCache({ tracker: slow, file, now: () => t, writeEveryMs: 0 });
+    const batch = c.issues(["PAY-1"]);                  // started first, answers last
+    t = 1000; c.invalidate("PAY-1");                    // e.g. the ticket was just started
+    expect((await c.issue("PAY-1")).title).toBe("new");
+    release(); await batch;
+    expect((await c.issue("PAY-1")).title).toBe("new");
+  });
+});
+
+describe("TrackerCache — a different tracker (final review #2, Review Focus 4)", () => {
+  it("a cache file written for another tracker is not loaded", async () => {
+    const a = new TrackerCache({ tracker, file, now: () => t, writeEveryMs: 0, identity: "jira|mcp__old" });
+    await a.refresh(); await a.flush();
+    const b = new TrackerCache({ tracker, file, now: () => t, writeEveryMs: 0, identity: "jira|mcp__new" }); await b.load();
+    expect(b.myIssues().issues).toEqual([]);
+    const same = new TrackerCache({ tracker, file, now: () => t, writeEveryMs: 0, identity: "jira|mcp__old" }); await same.load();
+    expect(same.myIssues().issues).toEqual(list);
+  });
+  it("a read that began before a clear doesn't bring the old list back", async () => {
+    const c = cache();
+    listGate = deferred();
+    const r = c.refresh();
+    c.clear();
+    listGate.resolve(); await r;
+    expect(c.myIssues()).toMatchObject({ fetchedAt: null });
+    expect(c.myIssues().generation).toBeGreaterThan(0);
+  });
+});

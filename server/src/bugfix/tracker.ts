@@ -24,16 +24,20 @@ export interface TrackerProvider {
   transition?(key: string, name: string): Promise<TransitionResult>;
 }
 
-/** Many tickets: one batched call when the tracker can, else one by one, at most 3 at a time. Never throws. */
-export async function fetchIssuesVia(t: TrackerProvider, keys: string[]): Promise<{ issues: TrackerIssue[]; missing: string[] }> {
+/** Many tickets: one batched call when the tracker can, else (or when that call fails) one by one, at most
+ *  3 at a time. Never throws; `errors` says why a ticket couldn't be read. */
+export async function fetchIssuesVia(t: TrackerProvider, keys: string[]): Promise<{ issues: TrackerIssue[]; missing: string[]; errors: Record<string, string> }> {
   if (t.fetchIssues) {
-    try { return await t.fetchIssues(keys); } catch { return { issues: [], missing: [...keys] }; }
+    try {
+      const r = await t.fetchIssues(keys);
+      return { ...r, errors: Object.fromEntries(r.missing.map(k => [k, "not in the tracker's answer"])) };
+    } catch { /* a failed batch (max turns, an unparseable answer): read this batch one by one instead */ }
   }
-  const found = new Map<string, TrackerIssue>(); const missing: string[] = [];
+  const found = new Map<string, TrackerIssue>(); const errors: Record<string, string> = {};
   let next = 0;
-  const worker = async () => { while (next < keys.length) { const k = keys[next++]; try { found.set(k, await t.fetchIssue(k)); } catch { missing.push(k); } } };
+  const worker = async () => { while (next < keys.length) { const k = keys[next++]; try { found.set(k, await t.fetchIssue(k)); } catch (e) { errors[k] = (e as Error).message; } } };
   await Promise.all(Array.from({ length: Math.min(3, keys.length) }, worker));
-  return { issues: keys.filter(k => found.has(k)).map(k => found.get(k)!), missing: keys.filter(k => missing.includes(k)) };
+  return { issues: keys.filter(k => found.has(k)).map(k => found.get(k)!), missing: keys.filter(k => k in errors), errors };
 }
 
 /** Pull the first JSON value out of a model reply that may be fenced or padded with prose. */

@@ -209,3 +209,15 @@ describe("tracker sessions are limited (final review #3)", () => {
     expect(max).toBe(3);
   });
 });
+
+describe("a batched read that fails (final review #6)", () => {
+  it("falls back to one-by-one for that batch, and says why a ticket couldn't be read", async () => {
+    const t: TrackerProvider = { listMyIssues: async () => [], comment: async () => {},
+      fetchIssues: async () => { throw new Error("tracker query failed: error_max_turns"); },
+      fetchIssue: async (k: string) => { if (k === "PAY-2") throw new Error("PAY-2 does not exist"); return parseIssue(JSON.stringify({ key: k })); } };
+    const r = await fetchIssuesVia(t, ["PAY-1", "PAY-2"]);
+    expect(r.issues.map(i => i.key)).toEqual(["PAY-1"]);
+    expect(r.missing).toEqual(["PAY-2"]);
+    expect(r.errors).toEqual({ "PAY-2": "PAY-2 does not exist" });
+  });
+});

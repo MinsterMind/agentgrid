@@ -48,3 +48,16 @@ describe("BulkStart", () => {
     expect(startBatch).toHaveBeenLastCalledWith([{ issueRef: "PAY-3", repo: "/r/pay", baseBranch: "develop" }], undefined);
   });
 });
+
+describe("BulkStart — typing a repo (final review #1)", () => {
+  it("typing a path character by character still checks the final path, and Start enables", async () => {
+    // A real check takes a while: keystrokes land while one is in flight.
+    bugPreflight.mockImplementation(async (repo: string) => { await new Promise(r => setTimeout(r, 40)); return okPreflight(repo); });
+    render(<BulkStart selected={[I("NEW-1")]} batches={{}} />);       // no remembered repo for NEW
+    const input = await screen.findByLabelText("Repo for NEW");
+    await userEvent.type(input, "/r/new");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start 1 fix" })).not.toBeDisabled());
+    expect(screen.queryByText("Checking repo…")).toBeNull();
+    expect(bugPreflight).toHaveBeenLastCalledWith("/r/new");
+  });
+});

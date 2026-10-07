@@ -98,7 +98,8 @@ export interface BatchState {
 }
 
 /** My open bugs, as the tracker cache holds them (spec 2026-10-08 §3.3): answered at once, refreshed behind the scenes. */
-export interface IssueList { issues: IssueSummary[]; fetchedAt: string | null; refreshing: boolean; error: string | null }
+export interface IssueList { issues: IssueSummary[]; fetchedAt: string | null; refreshing: boolean; error: string | null;
+  /** Bumped when the cache is cleared (a tracker change): a client keeps the list with the highest generation. */ generation: number }
 
 export interface GridState { roles: RoleDef[]; agents: Agent[]; assignments: Assignment[]; liveSessions: SessionInfo[]; sessionStatuses: SessionActivity[]; bugTasks: BugTask[]; permissions: PermissionRequest[] }
 

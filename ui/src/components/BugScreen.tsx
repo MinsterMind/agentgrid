@@ -83,13 +83,16 @@ function useMyIssues(live: IssueList | null) {
   const load = useCallback(() => {
     api.myIssues().then(v => { setList(v); setErr(null); }).catch(e => setErr((e as Error).message));
   }, []);
-  useEffect(() => { load(); }, [load]);
+  // Ask again every minute: the server answers from its cache and re-reads the tracker once the list is stale.
+  useEffect(() => { load(); const t = setInterval(load, 60_000); return () => clearInterval(t); }, [load]);
   const refresh = useCallback(() => {
     setAsking(true);
     void api.refreshIssues().catch(() => {}).then(() => load()).finally(() => setAsking(false));
   }, [load]);
-  // The newer of what we fetched and what the server pushed.
-  const cur = live && (!list || (live.fetchedAt ?? "") >= (list.fetchedAt ?? "")) ? live : list;
+  // The newer of what we fetched and what the server pushed: a higher generation (the cache was cleared —
+  // a tracker change) wins outright, even before it has a time; then the later fetch.
+  const newer = (a: IssueList, b: IssueList) => (a.generation ?? 0) !== (b.generation ?? 0) ? (a.generation ?? 0) > (b.generation ?? 0) : (a.fetchedAt ?? "") >= (b.fetchedAt ?? "");
+  const cur = live && (!list || newer(live, list)) ? live : list;
   return { issues: cur ? cur.issues : null, fetchedAt: cur?.fetchedAt ?? null, refreshing: asking || !!cur?.refreshing,
     err: err ?? cur?.error ?? null, refresh };
 }

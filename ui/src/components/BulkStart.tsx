@@ -36,19 +36,23 @@ export function BulkStart({ selected, batches, onStarted, onClose }: { selected:
     return () => { live = false; };
   }, [projects]);
 
-  const setRepo = (p: string, repo: string) => setGroups(g => ({ ...g, [p]: { ...(g[p] ?? { base: "", checking: false }), repo, preflight: null } as Group }));
-  // Each project's repo is checked (remote, forge, branch to cut from) as it is set.
+  const setRepo = (p: string, repo: string) => setGroups(g => ({ ...g, [p]: { ...(g[p] ?? { base: "" }), repo, preflight: null, checking: false } as Group }));
+  // Each project's repo is checked (remote, forge, branch to cut from) once typing pauses. An answer counts
+  // only if the field still holds the path it was for — a slower answer for an earlier path is dropped.
   const repoKey = projects.map(p => `${p}=${groups[p]?.repo ?? ""}`).join("|");
   useEffect(() => {
-    let live = true;
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
     for (const p of projects) {
-      const g = groups[p];
-      if (!g || !g.repo.trim().startsWith("/") || g.preflight || g.checking) continue;
-      setGroups(x => ({ ...x, [p]: { ...x[p]!, checking: true } }));
-      api.bugPreflight(g.repo.trim()).then(pf => { if (live) setGroups(x => ({ ...x, [p]: { ...x[p]!, preflight: pf, checking: false, base: x[p]!.base || pf.baseBranch || "" } })); })
-        .catch(e => { if (live) setGroups(x => ({ ...x, [p]: { ...x[p]!, preflight: { ok: false, problems: [(e as Error).message] }, checking: false } })); });
+      const asked = groups[p]?.repo.trim() ?? "";
+      if (!asked.startsWith("/") || groups[p]?.preflight) continue;
+      timers.push(setTimeout(() => {
+        setGroups(x => ({ ...x, [p]: { ...x[p]!, checking: true } }));
+        const apply = (pf: Preflight) => setGroups(x => x[p] && x[p]!.repo.trim() === asked
+          ? { ...x, [p]: { ...x[p]!, preflight: pf, checking: false, base: x[p]!.base || pf.baseBranch || "" } } : x);
+        api.bugPreflight(asked).then(apply).catch(e => apply({ ok: false, problems: [(e as Error).message] }));
+      }, 250));
     }
-    return () => { live = false; };
+    return () => timers.forEach(clearTimeout);
   }, [repoKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const itemsFor = (keys: string[]) => keys.map(k => { const g = groups[projectOf(k)]!; return { issueRef: k, repo: g.repo.trim(), ...(g.base ? { baseBranch: g.base } : {}) }; });

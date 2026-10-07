@@ -17,9 +17,10 @@ const engine = () => ({ intake: async (i: (typeof intakes)[number]) => {
   return { id: `bt-${key}` };
 } });
 const git = () => ({ fetch: async (repo: string) => { fetched.push(repo); if (fetchGate) await fetchGate; if (failFetch.has(repo)) throw new Error("could not resolve host"); } });
-const starter = () => { const s = new BatchStarter({ engine: engine() as never, git: git() as never, tracker: tracker(), cache: null }); s.on("event", e => events.push(e.state)); return s; };
+let active: Record<string, string>;
+const starter = () => { const s = new BatchStarter({ engine: engine() as never, git: git() as never, tracker: tracker(), cache: null, activeTaskFor: k => active[k] ?? null }); s.on("event", e => events.push(e.state)); return s; };
 const finished = async (s: BatchStarter, id: string) => { for (let i = 0; i < 200 && !s.get(id)?.finished; i++) await new Promise(r => setTimeout(r, 5)); return s.get(id)!; };
-beforeEach(() => { fetched = []; reads = []; intakes = []; fetchGate = null; failFetch = new Set(); missing = new Set(); leftovers = new Set(); onBase = new Set(); events = []; });
+beforeEach(() => { fetched = []; reads = []; intakes = []; fetchGate = null; failFetch = new Set(); missing = new Set(); leftovers = new Set(); onBase = new Set(); events = []; active = {}; });
 
 describe("BatchStarter", () => {
   // Review Focus 2
@@ -39,7 +40,7 @@ describe("BatchStarter", () => {
     missing.add("PAY-2");
     const s = starter(); const st = await finished(s, s.start([{ issueRef: "PAY-1", repo: "/r" }, { issueRef: "PAY-2", repo: "/r" }], []));
     expect(st.started.map(x => x.key)).toEqual(["PAY-1"]);
-    expect(st.failed).toEqual([{ key: "PAY-2", message: "couldn't read PAY-2 from the tracker" }]);
+    expect(st.failed).toEqual([{ key: "PAY-2", message: "couldn't read PAY-2 from the tracker: not in the tracker's answer" }]);
   });
   it("may-already-be-fixed is skipped with its commits; start-anyway starts it", async () => {
     onBase.add("PAY-1");
@@ -76,5 +77,23 @@ describe("BatchStarter", () => {
     await finished(s, a); await finished(s, b);
     expect(fetched).toEqual(["/r", "/r"]);
     expect(intakes.map(i => i.issueRef)).toEqual(["PAY-1", "PAY-2"]);
+  });
+
+  it("a ticket URL with a query string starts by its key; a read that fails says why", async () => {
+    missing.add("PAY-2");
+    const s = starter(); const st = await finished(s, s.start([{ issueRef: "https://jira/browse/PAY-1?focusedCommentId=99#c", repo: "/r" }, { issueRef: "PAY-2", repo: "/r" }], []));
+    expect(st.started.map(x => x.key)).toEqual(["PAY-1"]);
+    expect(st.failed[0]).toEqual({ key: "PAY-2", message: "couldn't read PAY-2 from the tracker: not in the tracker's answer" });
+  });
+
+  // Final review #5: the leftover-worktree advice told the user to force-remove a live fix's worktree.
+  it("a ticket already being fixed is said so plainly; a ticket listed twice is started once", async () => {
+    active["PAY-1"] = "bt12";
+    const s = starter();
+    const st = await finished(s, s.start([{ issueRef: "PAY-1", repo: "/r" }, { issueRef: "PAY-2", repo: "/r" }, { issueRef: "PAY-2", repo: "/r" }], []));
+    expect(st.total).toBe(2);
+    expect(st.failed).toEqual([{ key: "PAY-1", message: "PAY-1 is already being fixed (bt12)" }]);
+    expect(st.started.map(x => x.key)).toEqual(["PAY-2"]);
+    expect(intakes.map(i => i.issueRef)).toEqual(["PAY-2"]);
   });
 });

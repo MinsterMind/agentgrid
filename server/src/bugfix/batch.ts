@@ -9,7 +9,8 @@ import type { BatchState, GridEvent } from "../types.js";
 export type { BatchState };
 export interface BatchItem { issueRef: string; repo: string; baseBranch?: string }
 const KEEP = 10;
-const keyOf = (ref: string) => (/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(ref) ? ref : ref.split(/[/?#]/).filter(Boolean).pop() ?? ref);
+/** The ticket key a reference names: the key itself, or the last path segment of its URL (query and fragment ignored). */
+const keyOf = (ref: string) => (/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(ref) ? ref : ref.split(/[?#]/)[0].split("/").filter(Boolean).pop() ?? ref);
 
 /**
  * Starts fixes for many tickets at once (spec 2026-10-08 §5.2). Each repo is fetched once and its
@@ -20,12 +21,16 @@ const keyOf = (ref: string) => (/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(ref) ? ref : 
 export class BatchStarter extends EventEmitter {
   private states = new Map<string, BatchState>();
   private repoLocks = new Map<string, Promise<void>>();
-  constructor(private deps: { engine: Pick<BugFixEngine, "intake">; git: Pick<GitOps, "fetch">; tracker: TrackerProvider; cache: TrackerCache | null }) { super(); }
+  /** `activeTaskFor(key)`: the id of a task already fixing this ticket (not finished), if any. */
+  constructor(private deps: { engine: Pick<BugFixEngine, "intake">; git: Pick<GitOps, "fetch">; tracker: TrackerProvider; cache: TrackerCache | null; activeTaskFor?: (key: string) => string | null }) { super(); }
 
   get(id: string): BatchState | null { return this.states.get(id) ?? null; }
 
   /** Start in the background; returns the batch id at once. */
-  start(items: BatchItem[], startAnyway: string[]): string {
+  start(all: BatchItem[], startAnyway: string[]): string {
+    // A ticket listed twice is started once.
+    const seen = new Set<string>();
+    const items = all.filter(it => { const k = keyOf(it.issueRef).toUpperCase(); if (seen.has(k)) return false; seen.add(k); return true; });
     const batchId = `b${randomBytes(4).toString("hex")}`;
     const state: BatchState = { batchId, total: items.length, done: 0, started: [], skipped: [], failed: [], finished: false };
     this.states.set(batchId, state);
@@ -60,8 +65,11 @@ export class BatchStarter extends EventEmitter {
     const byKey = new Map(read.issues.map(i => [i.key.toUpperCase(), i]));
     for (const it of items) {
       const key = keyOf(it.issueRef);
+      // Already being fixed: say so — intake's leftover-worktree advice would mean removing a live fix's worktree.
+      const active = this.deps.activeTaskFor?.(key.toUpperCase()) ?? null;
+      if (active) { finish(key, { failed: `${key} is already being fixed (${active})` }); continue; }
       const issue = byKey.get(key.toUpperCase());
-      if (!issue) { finish(key, { failed: `couldn't read ${key} from the tracker` }); continue; }
+      if (!issue) { finish(key, { failed: `couldn't read ${key} from the tracker: ${("errors" in read ? read.errors[key] : undefined) ?? "not in the tracker's answer"}` }); continue; }
       try {
         const t = await this.deps.engine.intake({ issueRef: it.issueRef, repo, ...(it.baseBranch ? { baseBranch: it.baseBranch } : {}),
           issue, fetched: true, ...(anyway.has(key.toUpperCase()) ? { startAnyway: true } : {}) });

@@ -209,7 +209,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     const forge = fakeForgeHandle ?? makeForge(config.forge);
     // Tracker reads are model runs: answer from a cache that refreshes itself (spec 2026-10-08 §3.3).
     await wiredCache?.flush().catch(() => {});
-    wiredCache = new TrackerCache({ tracker, file: path.join(home, "tracker-cache.json") });
+    wiredCache = new TrackerCache({ tracker, file: path.join(home, "tracker-cache.json"),
+      identity: fake ? "fake" : JSON.stringify([config.tracker?.preset, config.tracker?.toolPrefix, config.tracker?.hints ?? ""]) });
     await wiredCache.load();
     wiredCache.on("event", e => store.emit("event", e));
     const trackerCache = wiredCache;
@@ -232,7 +233,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       intervalMs: fake ? 500 : 60_000 });
     engine.setConflictNudge(repo => wiredConflicts?.nudge(repo));
     wiredConflicts.start();
-    const batches = new BatchStarter({ engine, git: new GitOps(), tracker, cache: trackerCache });
+    const batches = new BatchStarter({ engine, git: new GitOps(), tracker, cache: trackerCache,
+      activeTaskFor: key => bugStore.list().find(t => t.issue.key.toUpperCase() === key && !["done", "cancelled", "failed"].includes(t.stage))?.id ?? null });
     batches.on("event", e => store.emit("event", e));
     wiredBugFix = { engine, store: bugStore, integrations, tracker, trackerCache, batches };
     return wiredBugFix;
@@ -280,6 +282,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     port: bound, url, home,
     ...(fakeForgeHandle ? { fakeForge: fakeForgeHandle } : {}),
     bugEngineForTest: () => wiredBugFix?.engine,
-    close: () => new Promise<void>(resolve => { watcher.stop(); statuses.stop(); agentPrs.stop(); wiredWatcher?.stop(); wiredConflicts?.stop(); void wiredCache?.flush().catch(() => {}); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }),
+    // The tracker cache reaches disk before the server goes — a clear() after a tracker change included.
+    close: async () => { await wiredCache?.flush().catch(() => {}); return new Promise<void>(resolve => { watcher.stop(); statuses.stop(); agentPrs.stop(); wiredWatcher?.stop(); wiredConflicts?.stop(); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }); },
   };
 }
