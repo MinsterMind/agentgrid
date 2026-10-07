@@ -1222,7 +1222,14 @@ describe("the conflict gate, in the engine", () => {
     expect(fake.calls.at(-1)!.prompt).toContain("src/b.ts");
     gitState.head = "ddd"; gitState.commitsAhead = 1;
     await finishStage(fake);
-    expect(bugs.get("bt1")).toMatchObject({ stage: "diff-review", conflict: null });
+    // the rebased diff's review shows what conflicted (spec §4.2); it's forgotten once that diff is approved
+    expect(bugs.get("bt1")).toMatchObject({ stage: "diff-review", conflict: { files: ["src/a.ts", "src/b.ts"] } });
+    const deps = (engine as any).deps;
+    deps.git.push = async () => {};
+    deps.forge = { ...deps.forge, getPr: async () => ({ found: { number: 7, url: "u", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: "ddd", lastSeenEventAt: "t" } }) };
+    await engine.approve("bt1");
+    await until(() => bugs.get("bt1").stage !== "pushing", 2000);
+    expect(bugs.get("bt1").conflict).toBeNull();
   });
   it("a conflict that clears on its own returns the task where it was", async () => {
     const { engine, bugs } = await onMonitoringTask();

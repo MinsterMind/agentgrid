@@ -527,9 +527,10 @@ export class BugFixEngine {
     let task = await this.deps.bugs.apply(taskId, t);
     // A merge moves the base: every sibling PR in this repo may conflict now — check them right away.
     if (event.type === "pr-merged") this.conflictNudge?.(task.sourceRepo);
-    // The conflict is over once it cleared, the PR ended, or the rebase it allowed is up for review.
+    // Kept through the rebase and its review (the diff gate shows what conflicted); forgotten once that
+    // diff is approved, the conflict clears, or the task ends.
     const conflictOver = event.type === "conflict-cleared" || (current.stage === "conflict" && (event.type === "pr-merged" || event.type === "pr-closed"))
-      || (event.type === "stage-done" && current.stage === "rebase");
+      || (current.stage === "diff-review" && event.type === "approve") || TERMINAL_STAGES.includes(task.stage);
     if (conflictOver && task.conflict) task = await this.deps.bugs.patch(taskId, { conflict: null });
     await this.settleTerminal(task);
     // A server stage is work the engine does itself: no assignment, no agent, no tokens. It

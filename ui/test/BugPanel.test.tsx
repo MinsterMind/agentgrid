@@ -524,3 +524,11 @@ describe("BugPanel — conflict gate", () => {
     expect(approveBug).toHaveBeenCalledWith("bt1");
   });
 });
+
+describe("BugPanel — reviewing a rebased diff", () => {
+  it("says which files conflicted", async () => {
+    render(<BugPanel task={task("diff-review", { gate: { kind: "diff", openedAt: "", reason: "rebase" }, testsInDiff: ["a.test.ts"], approvedHead: "h",
+      conflict: { files: ["fake-fix.txt", "src/b.ts"], base: "main", detectedAt: "", returnTo: "monitoring" } })} onChanged={vi.fn()} />);
+    expect(await screen.findByText("Conflicted: fake-fix.txt, src/b.ts")).toBeInTheDocument();
+  });
+});

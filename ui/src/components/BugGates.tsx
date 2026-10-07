@@ -176,6 +176,9 @@ export function BugGates({ task, onChanged, onTranscript }: { task: BugTask; onC
           {task.gate?.reason === "rebase" && (
             <p className="hint" data-testid="gate-reason"><b>This branch conflicts with <code>{task.baseBranch}</code>.</b></p>
           )}
+          {task.gate?.reason === "rebase" && (task.conflict?.files.length ?? 0) > 0 && (
+            <p className="hint" data-testid="conflicted-files">Conflicted: {task.conflict!.files.join(", ")}</p>
+          )}
           {/* The diff above is a live `git diff`; this is the commit the server pinned when the
               gate opened, and the one it will insist on before pushing. */}
           {task.approvedHead && <p className="hint" data-testid="diff-commit">Reviewing commit {task.approvedHead.slice(0, 7)}</p>}
