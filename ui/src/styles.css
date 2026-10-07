@@ -431,3 +431,9 @@ textarea.input { resize:none; }
 .bugrow .s.queued { color:var(--text-muted); display:inline-flex; align-items:center; gap:4px; }
 .gate .conflict-files { margin:6px 0 10px 18px; } .gate .conflict-files li { font-size:12.5px; margin:2px 0; }
 .chip.conflict { color:var(--st-needs-you); border-color:#FBBF2455; background:rgba(251,191,36,.06); }
+
+/* The cached bug list */
+.buglist .lh .updated { margin-left:auto; font-size:11px; color:var(--text-muted); text-transform:none; letter-spacing:0; }
+.buglist .lh .updated + .btn { margin-left:6px; }
+@keyframes ag-spin { to { transform: rotate(360deg); } }
+.spin { animation: ag-spin 1s linear infinite; }

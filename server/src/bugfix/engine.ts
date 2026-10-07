@@ -9,6 +9,7 @@ import { BugTaskStore } from "./store.js";
 import { GitOps, branchName, worktreePath, type DiffResult } from "./git.js";
 import { testFilesIn } from "./tests.js";
 import { RunQueue } from "./queue.js";
+import type { TrackerCache } from "./trackerCache.js";
 import { IntegrationsStore } from "./integrations.js";
 import type { ForgeAdapter } from "./forge/index.js";
 import type { TrackerProvider } from "./tracker.js";
@@ -64,6 +65,8 @@ export interface EngineDeps {
   store: Store; bugs: BugTaskStore; manager: Manager; git: GitOps;
   integrations: IntegrationsStore; tracker: TrackerProvider; forge: ForgeAdapter | null;
   presetsDir: string; role?: string;
+  /** Tracker reads, cached (spec 2026-10-08 §3.3); a started ticket is re-read. */
+  trackerCache?: TrackerCache;
 }
 
 /**
@@ -232,6 +235,7 @@ export class BugFixEngine {
     const project = issue.key.split("-")[0] ?? issue.key;
     await integrations.rememberRepo(project, input.repo);
 
+    this.deps.trackerCache?.invalidate(issue.key);
     const task = await bugs.create({
       issue, trackerProject: project, sourceRepo: input.repo, worktree,
       branch, baseBranch, baseRef, ticketCommits, agentId: agent.id,

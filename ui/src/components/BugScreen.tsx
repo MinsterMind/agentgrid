@@ -4,7 +4,7 @@ import { api } from "../api";
 import { blockersFor, isNew, listStatus, nowFor, orderAssumptions, pipelineFor, stageLabel, type Blocker, type ListStatus, type StepState } from "../bugView";
 import { elapsed, relativeTime, usd } from "../format";
 import { activityFor, assignmentFor, permissionFor, type UiState } from "../state/reducer";
-import type { BugTask, Decision, IssueSummary, SetupReport } from "../types";
+import type { BugTask, Decision, IssueList, IssueSummary, SetupReport } from "../types";
 import { TicketDetail } from "./TicketDetail";
 import { PendingPrompt, asPending } from "./PendingPrompt";
 import { BugGates } from "./BugGates";
@@ -70,16 +70,27 @@ export function mergeRows(issues: IssueSummary[] | null, tasks: Array<{ t: BugTa
 }
 
 /** My open bugs from the tracker: loaded on open, every 5 minutes and on Refresh; the last good list survives an error. */
-function useMyIssues() {
-  const [issues, setIssues] = useState<IssueSummary[] | null>(null);
+/**
+ * My open bugs, from the server's tracker cache (spec 2026-10-08 §3): the first read answers at once
+ * from the cache; newer lists arrive as events (`live`); Refresh asks the server to re-read. A tracker
+ * error keeps the last list and says why.
+ */
+function useMyIssues(live: IssueList | null) {
+  const [list, setList] = useState<IssueList | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [asking, setAsking] = useState(false);
   const load = useCallback(() => {
-    setLoading(true);
-    api.myIssues().then(v => { setIssues(v); setErr(null); }).catch(e => setErr((e as Error).message)).finally(() => setLoading(false));
+    api.myIssues().then(v => { setList(v); setErr(null); }).catch(e => setErr((e as Error).message));
   }, []);
-  useEffect(() => { load(); const t = setInterval(load, 5 * 60_000); return () => clearInterval(t); }, [load]);
-  return { issues, err, loading, refresh: load };
+  useEffect(() => { load(); }, [load]);
+  const refresh = useCallback(() => {
+    setAsking(true);
+    void api.refreshIssues().catch(() => {}).then(() => load()).finally(() => setAsking(false));
+  }, [load]);
+  // The newer of what we fetched and what the server pushed.
+  const cur = live && (!list || (live.fetchedAt ?? "") >= (list.fetchedAt ?? "")) ? live : list;
+  return { issues: cur ? cur.issues : null, fetchedAt: cur?.fetchedAt ?? null, refreshing: asking || !!cur?.refreshing,
+    err: err ?? cur?.error ?? null, refresh };
 }
 
 export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscript, onOpenSettings, onFixBug, onDecide, selectedTicket = null, onSelectTicket, onStarted }: {
@@ -91,7 +102,7 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
   /** A ticket was just started from its view. */ onStarted?: (t: BugTask) => void;
 }) {
   const now = useNow();
-  const mine = useMyIssues();
+  const mine = useMyIssues(state.tracker ?? null);
   const agentWaiting = (t: BugTask) => {
     const ag = state.agents.find(a => a.id === t.agentId);
     return !!ag && (!!assignmentFor(state, ag)?.pending || !!permissionFor(state, ag));
@@ -149,7 +160,8 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
     <div className="bugscreen" data-testid="bug-screen">
       <aside className="buglist">
         <div className="lh"><span>My bugs</span><span className="mono">{rows.length}</span>
-          <button className="btn sm" aria-label="Refresh from the tracker" title="Refresh from the tracker" disabled={mine.loading} onClick={mine.refresh}><RefreshCw /></button></div>
+          {mine.fetchedAt && <span className="help updated" title={new Date(mine.fetchedAt).toLocaleString()}>updated {relativeTime(mine.fetchedAt, now)}</span>}
+          <button className="btn sm" aria-label={mine.refreshing ? "Refreshing…" : "Refresh from the tracker"} title={mine.refreshing ? "Refreshing…" : "Refresh from the tracker"} disabled={mine.refreshing} onClick={mine.refresh}><RefreshCw className={mine.refreshing ? "spin" : ""} /></button></div>
         {conflicts > 0 && <button className="btn p resolve-all" disabled={resolving} title="Rebase every conflicted bug onto its base — the agents-at-once limit paces them, and you review each result" onClick={resolveAll}><GitMerge /> Resolve all {conflicts} conflict{conflicts === 1 ? "" : "s"}</button>}
         {mine.err && <div className="warnline"><TriangleAlert /> Couldn't refresh from the tracker: {mine.err}{mine.issues ? " — showing the last list." : ""}</div>}
         <ul role="listbox" aria-label="Bug fixes" onKeyDown={e => {

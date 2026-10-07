@@ -1,4 +1,4 @@
-import type { TrackerIssue } from "./types";
+import type { IssueList, TrackerIssue } from "./types";
 import type { Agent, Assignment, BugTask, Decision, DirListing, GridEvent, GridState, Integrations, IssueSummary, MemoryFile, SessionInfo, SetupReport } from "./types";
 
 export interface TranscriptEntry { ts: string; role: "user" | "assistant"; kind: "text" | "tool_use" | "tool_result"; text: string; tool?: string; input?: unknown }
@@ -73,7 +73,8 @@ export const api = {
   retryBug: (id: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/retry`),
   addressComments: (id: string, text?: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/address-comments`, text ? { text } : undefined),
   dismissBug: (id: string) => call<void>("DELETE", `/api/bugtasks/${encodeURIComponent(id)}`),
-  myIssues: () => call<IssueSummary[]>("GET", "/api/bugfix/issues"),
+  myIssues: () => call<IssueList>("GET", "/api/bugfix/issues"),
+  refreshIssues: () => call<object>("POST", "/api/bugfix/issues/refresh"),
   repoStatus: (path: string) => call<{ exists: boolean; isRepo: boolean; branch: string | null }>("GET", `/api/repo-status?path=${encodeURIComponent(path)}`),
   bugPreflight: (repo: string) => call<{ ok: boolean; problems: string[]; remote?: string | null; baseBranch?: string | null; branches?: string[] }>("GET", `/api/bugfix/preflight?repo=${encodeURIComponent(repo)}`),
   getIntegrations: () => call<Integrations>("GET", "/api/integrations"),

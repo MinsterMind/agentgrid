@@ -22,6 +22,7 @@ import { GitOps } from "./bugfix/git.js";
 import { makeForge } from "./bugfix/forge/index.js";
 import { AgentPrWatcher } from "./agentpr.js";
 import { ConflictWatcher } from "./bugfix/conflicts.js";
+import { TrackerCache } from "./bugfix/trackerCache.js";
 import { mcpTracker, type TrackerProvider } from "./bugfix/tracker.js";
 import { BugFixEngine, recoverStuckBugTasks } from "./bugfix/engine.js";
 import { PrWatcher } from "./bugfix/watcher.js";
@@ -188,9 +189,10 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const fakePrScript = fake ? (opts.fakePrScript ?? parseFakePrScript(process.env.AGENTGRID_FAKE_PR_SCRIPT)) : undefined;
   const fakeForgeHandle = fake ? fakeForge(fakePrScript ?? []) : null;
 
-  let wiredBugFix: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider } | undefined;
+  let wiredBugFix: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider; trackerCache?: TrackerCache } | undefined;
   let wiredWatcher: PrWatcher | null = null;
   let wiredConflicts: ConflictWatcher | null = null;
+  let wiredCache: TrackerCache | null = null;
   let lastCfg = cfg;
 
   /**
@@ -203,7 +205,13 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     const tracker = fake ? fakeTracker : (config.tracker ? mcpTracker(config.tracker, presetsDir) : null);
     if (!tracker) return null;
     const forge = fakeForgeHandle ?? makeForge(config.forge);
-    const engine = new BugFixEngine({ store, bugs: bugStore, manager, git: new GitOps(), integrations, tracker, forge, presetsDir });
+    // Tracker reads are model runs: answer from a cache that refreshes itself (spec 2026-10-08 §3.3).
+    await wiredCache?.flush().catch(() => {});
+    wiredCache = new TrackerCache({ tracker, file: path.join(home, "tracker-cache.json") });
+    await wiredCache.load();
+    wiredCache.on("event", e => store.emit("event", e));
+    const trackerCache = wiredCache;
+    const engine = new BugFixEngine({ store, bugs: bugStore, manager, git: new GitOps(), integrations, tracker, forge, presetsDir, trackerCache });
     engine.attach();
     wiredWatcher?.stop();
     wiredWatcher = forge
@@ -220,7 +228,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       intervalMs: fake ? 500 : 60_000 });
     engine.setConflictNudge(repo => wiredConflicts?.nudge(repo));
     wiredConflicts.start();
-    wiredBugFix = { engine, store: bugStore, integrations, tracker };
+    wiredBugFix = { engine, store: bugStore, integrations, tracker, trackerCache };
     return wiredBugFix;
   };
 
@@ -266,6 +274,6 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     port: bound, url, home,
     ...(fakeForgeHandle ? { fakeForge: fakeForgeHandle } : {}),
     bugEngineForTest: () => wiredBugFix?.engine,
-    close: () => new Promise<void>(resolve => { watcher.stop(); statuses.stop(); agentPrs.stop(); wiredWatcher?.stop(); wiredConflicts?.stop(); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }),
+    close: () => new Promise<void>(resolve => { watcher.stop(); statuses.stop(); agentPrs.stop(); wiredWatcher?.stop(); wiredConflicts?.stop(); void wiredCache?.flush().catch(() => {}); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }),
   };
 }

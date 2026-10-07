@@ -18,7 +18,11 @@ const bugPlan = vi.fn(async () => ({ markdown: "## Root cause\nA\n\n## Fix\nB" }
 const bugDiff = vi.fn(async () => ({ patch: "", files: [], additions: 0, deletions: 0 }));
 const approveBug = vi.fn(async (_id: string, _m?: string) => task("implementing"));
 const resolveConflicts = vi.fn(async () => ({ ids: ["bt1", "bt2"] }));
-const myIssues = vi.fn(async (): Promise<Array<{ key: string; title: string; url: string; status: string; priority: string }>> => []);
+type Issue = { key: string; title: string; url: string; status: string; priority: string };
+/** The list as the server's tracker cache answers it. */
+const L = (issues: Issue[], over: Record<string, unknown> = {}) => ({ issues, fetchedAt: new Date(Date.now() - 2 * 60_000).toISOString(), refreshing: false, error: null as string | null, ...over });
+const myIssues = vi.fn(async (): Promise<ReturnType<typeof L>> => L([]));
+const refreshIssues = vi.fn(async () => ({}));
 vi.mock("../src/api", () => ({
   ApiError,
   api: {
@@ -26,7 +30,7 @@ vi.mock("../src/api", () => ({
     approveBug: (id: string, m?: string) => (m ? approveBug(id, m) : approveBug(id)),
     requestBugChanges: vi.fn(), cancelBug: vi.fn(), retryBug: vi.fn(), listBugTasks: vi.fn(async () => []),
     addressComments: vi.fn(), dismissBug: vi.fn(),
-    myIssues: () => myIssues(), issue: vi.fn(async () => ({ key: "PAY-1", title: "Not started", url: "u", status: "Open", priority: "High", description: "", acceptanceCriteria: [] })),
+    myIssues: () => myIssues(), refreshIssues: () => refreshIssues(), issue: vi.fn(async () => ({ key: "PAY-1", title: "Not started", url: "u", status: "Open", priority: "High", description: "", acceptanceCriteria: [] })),
     getIntegrations: vi.fn(async () => ({ projectRepos: {} })), resolveConflicts: () => resolveConflicts(), bugPreflight: vi.fn(async () => ({ ok: true, problems: [] })), createBugTask: vi.fn(), pickFolder: vi.fn(),
   },
 }));
@@ -40,7 +44,7 @@ function task(stage: BugTask["stage"], extra: Partial<BugTask> = {}): BugTask {
     createdAt: "", updatedAt: "2026-10-05T10:05:00Z", feedbackRounds: 0, assumptions: [], assumptionsProblem: null, assumptionsToken: null, ...extra };
 }
 
-beforeEach(() => { vi.clearAllMocks(); getSetup.mockImplementation(async () => SETUP); myIssues.mockImplementation(async () => []); });
+beforeEach(() => { vi.clearAllMocks(); getSetup.mockImplementation(async () => SETUP); myIssues.mockImplementation(async () => L([])); });
 
 import { initial } from "../src/state/reducer";
 
@@ -286,7 +290,7 @@ describe("BugScreen — every bug assigned to me", () => {
   const MINE = [{ key: "PAY-1", title: "Not started", url: "u", status: "Open", priority: "High" }, { key: "PAY-42", title: "Refresh token rotates twice", url: "u", status: "Open", priority: "Low" }];
   const keys = () => screen.getAllByRole("option").map(r => r.querySelector(".k")!.textContent);
   it("lists every open bug assigned to me, started or not — active work first", async () => {
-    myIssues.mockResolvedValue(MINE);
+    myIssues.mockResolvedValue(L(MINE));
     renderScreen([task("implementing")]);
     await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
     expect(keys()).toEqual(["PAY-42", "PAY-1"]);
@@ -294,7 +298,7 @@ describe("BugScreen — every bug assigned to me", () => {
     expect(unstarted).toHaveTextContent("Not started"); expect(unstarted).toHaveTextContent("High");
   });
   it("a started task whose ticket left my list sits in its own group, last", async () => {
-    myIssues.mockResolvedValue([MINE[0]]);
+    myIssues.mockResolvedValue(L([MINE[0]]));
     renderScreen([task("monitoring", { id: "bt9", issue: { ...ISSUE, key: "PAY-9", title: "Old one" } })], "bt9");
     await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
     expect(keys()).toEqual(["PAY-1", "PAY-9"]);
@@ -306,13 +310,13 @@ describe("BugScreen — every bug assigned to me", () => {
     renderScreen([task("monitoring")]);
     expect(await screen.findByText(/tracker unavailable/)).toBeInTheDocument();
     expect(screen.getAllByRole("option")).toHaveLength(1);
-    myIssues.mockResolvedValue(MINE);
+    myIssues.mockResolvedValue(L(MINE));
     await userEvent.click(screen.getByRole("button", { name: /refresh/i }));
     await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
     expect(screen.queryByText(/tracker unavailable/)).toBeNull();
   });
   it("clicking an unstarted bug routes to its ticket", async () => {
-    myIssues.mockResolvedValue(MINE);
+    myIssues.mockResolvedValue(L(MINE));
     const onSelectTicket = vi.fn();
     renderScreen([task("implementing")], "bt1", { onSelectTicket });
     await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
@@ -320,13 +324,13 @@ describe("BugScreen — every bug assigned to me", () => {
     expect(onSelectTicket).toHaveBeenCalledWith("PAY-1");
   });
   it("a selected ticket shows its details instead of a task", async () => {
-    myIssues.mockResolvedValue(MINE);
+    myIssues.mockResolvedValue(L(MINE));
     renderScreen([task("implementing")], null, { selectedTicket: "PAY-1", onSelectTicket: vi.fn() });
     expect(await screen.findByTestId("ticket-detail")).toBeInTheDocument();
     expect(screen.getAllByRole("option")[1]).toHaveAttribute("aria-selected", "true");
   });
   it("the empty state shows only when there are no tasks and no assigned bugs", async () => {
-    myIssues.mockResolvedValue([MINE[0]]);
+    myIssues.mockResolvedValue(L([MINE[0]]));
     renderScreen([]);
     await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
     expect(screen.queryByText("No bug fixes yet")).toBeNull();
@@ -360,11 +364,32 @@ describe("BugScreen — a link to a bug that hasn't loaded yet", () => {
   // Found by the conflicts e2e: the tracker list arrived before the task list, and the screen
   // "fell back" from #/bugs/bt1 to the first assigned ticket — a reload landed on the wrong bug.
   it("doesn't fall back to another row until the task list has loaded", async () => {
-    myIssues.mockResolvedValue([{ key: "PAY-1", title: "Other", url: "u", status: "Open", priority: "High" }]);
+    myIssues.mockResolvedValue(L([{ key: "PAY-1", title: "Other", url: "u", status: "Open", priority: "High" }]));
     const onSelect = vi.fn(); const onSelectTicket = vi.fn();
     render(<BugScreen state={{ ...initial, loaded: false } as never} selectedId="bt1" onSelect={onSelect} onSelectTicket={onSelectTicket} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={vi.fn()} />);
     await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
     await new Promise(r => setTimeout(r, 50));                       // the fallback runs in an effect, after the list renders
     expect(onSelectTicket).not.toHaveBeenCalled(); expect(onSelect).not.toHaveBeenCalled();
+  });
+});
+
+describe("BugScreen — the cached list (spec 2026-10-08 §3)", () => {
+  it("says how fresh the list is, and shows a refresh in progress", async () => {
+    myIssues.mockResolvedValue(L([{ key: "PAY-1", title: "One", url: "u", status: "Open", priority: "High" }], { refreshing: true }));
+    renderScreen([]);
+    expect(await screen.findByText(/updated 2 min ago/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /refreshing/i })).toBeDisabled();
+  });
+  it("a tracker error keeps the last list, with the reason", async () => {
+    myIssues.mockResolvedValue(L([{ key: "PAY-1", title: "One", url: "u", status: "Open", priority: "High" }], { error: "rate limited" }));
+    renderScreen([]);
+    expect(await screen.findByText(/Couldn't refresh from the tracker: rate limited/)).toBeInTheDocument();
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+  });
+  it("a newer list from the server (an event) replaces what it fetched", async () => {
+    myIssues.mockResolvedValue(L([]));
+    const state = { ...stateWith([]), tracker: L([{ key: "PAY-5", title: "Pushed", url: "u", status: "Open", priority: "High" }], { fetchedAt: new Date().toISOString() }) };
+    render(<BugScreen state={state as never} selectedId={null} onSelect={vi.fn()} onSelectTicket={vi.fn()} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={vi.fn()} />);
+    expect(await screen.findByText("Pushed")).toBeInTheDocument();
   });
 });

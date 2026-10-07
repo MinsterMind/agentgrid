@@ -11,6 +11,7 @@ import { IntegrationsStore } from "../../src/bugfix/integrations.js";
 import { makeFakeQuery } from "../helpers/fakeQuery.js";
 import { until } from "../helpers/until.js";
 import { createBugFixTestApp } from "./realEngineApp.js";
+import { TrackerCache } from "../../src/bugfix/trackerCache.js";
 import type { BugTask, TrackerIssue } from "../../src/bugfix/types.js";
 
 const ISSUE: TrackerIssue = { key: "PAY-42", title: "Boom", url: "https://x/PAY-42", status: "Open", priority: "High", description: "d", acceptanceCriteria: [] };
@@ -98,9 +99,27 @@ describe("bug task routes", () => {
   });
 
   it("lists my issues and runs preflight", async () => {
-    expect((await request(app).get("/api/bugfix/issues").expect(200)).body[0].key).toBe("PAY-42");
+    expect((await request(app).get("/api/bugfix/issues").expect(200)).body).toMatchObject({ issues: [{ key: "PAY-42" }], fetchedAt: expect.any(String), refreshing: false, error: null });
     expect((await request(app).get("/api/bugfix/preflight").query({ repo: "/r" }).expect(200)).body).toEqual({ ok: true, problems: [] });
     await request(app).get("/api/bugfix/preflight").expect(400);
+  });
+
+  it("with the tracker cache: answers from it, refreshes on request, and forgets it when the tracker changes", async () => {
+    let listed = 0;
+    const tracker = { listMyIssues: async () => { listed++; return [{ key: "PAY-42", title: "Boom", url: "u", status: "Open", priority: "High" }]; }, fetchIssue: async () => ISSUE, comment: async () => {} };
+    const cache = new TrackerCache({ tracker, file: path.join(home, "tracker-cache.json"), writeEveryMs: 0 });
+    const store = new Store(home, path.resolve("roles")); await store.init();
+    const integrations = new IntegrationsStore(home);
+    const a = createApp({ store, manager: new Manager(store, { queryFn: makeFakeQuery().queryFn }), integrations,
+      bugs: { engine: fakeEngine(bugs, calls) as never, store: bugs, integrations, tracker, trackerCache: cache } });
+    expect((await request(a).get("/api/bugfix/issues").expect(200)).body.issues[0].key).toBe("PAY-42");   // first ever: waits for it
+    await request(a).get("/api/bugfix/issues").expect(200);
+    expect(listed).toBe(1);                                                                              // then from the cache
+    await request(a).post("/api/bugfix/issues/refresh").expect(202);
+    await until(() => listed === 2);
+    // Review Focus 4: a new tracker must not show the old one's bugs
+    await request(a).put("/api/integrations").send({ tracker: { preset: "jira", toolPrefix: "mcp__other" } }).expect(200);
+    expect(cache.myIssues().fetchedAt).toBeNull();
   });
 
   it("rejects a non-absolute repo path for preflight, same as it does for POST /api/bugtasks", async () => {

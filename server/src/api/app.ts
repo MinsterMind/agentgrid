@@ -18,6 +18,7 @@ import type { BugFixEngine } from "../bugfix/engine.js";
 import type { BugTaskStore } from "../bugfix/store.js";
 import type { IntegrationsStore, Integrations } from "../bugfix/integrations.js";
 import type { TrackerProvider } from "../bugfix/tracker.js";
+import type { TrackerCache } from "../bugfix/trackerCache.js";
 import type { ForgeAdapter } from "../bugfix/forge/types.js";
 import { discoverMcpServers } from "../bugfix/mcp-discovery.js";
 import { buildSetupReport } from "../bugfix/setup.js";
@@ -26,7 +27,7 @@ export interface AppDeps {
   store: Store;
   manager: Manager;
   /** Bug-fix workflow; absent when the feature is not configured (routes answer 501). */
-  bugs?: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider };
+  bugs?: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider; trackerCache?: TrackerCache };
   /** The config store, needed with or without an engine: an unconfigured machine must still
    *  be able to read and write its own integrations.json. */
   integrations?: IntegrationsStore;
@@ -477,12 +478,25 @@ export function createApp(deps: AppDeps) {
     await bugs().engine.dismiss(req.params.id as string);
     res.status(204).end();
   }));
-  app.get("/api/bugfix/issues", wrap(async (_req, res) => res.json(await bugs().tracker.listMyIssues())));
+  // My open bugs, from the tracker cache: at once, refreshed behind the scenes (spec 2026-10-08 §3.4).
+  // The very first read has nothing to show yet, so it waits for it.
+  app.get("/api/bugfix/issues", wrap(async (_req, res) => {
+    const b = bugs();
+    if (!b.trackerCache) return res.json({ issues: await b.tracker.listMyIssues(), fetchedAt: new Date().toISOString(), refreshing: false, error: null });
+    const now = b.trackerCache.myIssues();
+    res.json(now.fetchedAt === null ? await b.trackerCache.refresh() : now);
+  }));
+  app.post("/api/bugfix/issues/refresh", wrap(async (_req, res) => {
+    const b = bugs();
+    if (b.trackerCache) void b.trackerCache.refresh();
+    res.status(202).json({});
+  }));
   /** One ticket, in full — the bugs view shows an unstarted bug before anything is created for it. */
   app.get("/api/bugfix/issues/:key", wrap(async (req, res) => {
     const key = req.params.key as string;
     if (!/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(key)) throw new BadRequest("not a ticket key");
-    res.json(await bugs().tracker.fetchIssue(key));
+    const b = bugs();
+    res.json(b.trackerCache ? await b.trackerCache.issue(key) : await b.tracker.fetchIssue(key));
   }));
   app.get("/api/bugfix/preflight", wrap(async (req, res) => {
     const repo = req.query.repo;
@@ -544,6 +558,8 @@ export function createApp(deps: AppDeps) {
     }
     const saved = await integrationsStore().write(patch as never);
     deps.onConfigSaved?.(saved);
+    // A different tracker: its bugs aren't the old one's — never show those (Review Focus 4).
+    if (patch.tracker !== undefined) wired?.trackerCache?.clear();
     if (patch.maxConcurrentRuns !== undefined) wired?.engine.setMaxConcurrentRuns(patch.maxConcurrentRuns);
     await tryWire();
     res.json(redactIntegrations(saved));
