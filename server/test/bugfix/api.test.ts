@@ -20,6 +20,7 @@ let app: ReturnType<typeof createApp>; let bugs: BugTaskStore; let calls: string
 const fakeEngine = (bugs: BugTaskStore, calls: string[]) => ({
   preflight: async (repo: string) => { calls.push(`preflight ${repo}`); return { ok: true, problems: [] }; },
   closeNoChange: async (id: string) => { calls.push(`no-change ${id}`); return bugs.get(id); },
+  setMaxConcurrentRuns: (n: number) => { calls.push(`cap ${n}`); },
   overrideTests: async (id: string, reason: string) => { calls.push(`override ${id} ${reason}`); return bugs.get(id); },
   intake: async (input: { issueRef: string; repo: string; baseBranch?: string; startAnyway?: boolean }) => { calls.push(`intake ${input.issueRef}${input.baseBranch ? ` base=${input.baseBranch}` : ""}${input.startAnyway ? " anyway" : ""}`);
     if (input.issueRef === "PAY-1") throw Object.assign(new Error("PAY-1 may already be fixed"), { status: 409, code: "already-on-base" });
@@ -112,6 +113,16 @@ describe("bug task routes", () => {
     const saved = await request(app).put("/api/integrations").send({ forge: { preset: "github" } }).expect(200);
     expect(saved.body.forge).toEqual({ preset: "github" });
     expect((await request(app).get("/api/integrations")).body.forge).toEqual({ preset: "github" });
+  });
+
+  it("the agents-at-once cap: a whole number from 1 to 32, saved and applied", async () => {
+    await request(app).put("/api/integrations").send({ maxConcurrentRuns: 0 }).expect(400);
+    await request(app).put("/api/integrations").send({ maxConcurrentRuns: 2.5 }).expect(400);
+    await request(app).put("/api/integrations").send({ maxConcurrentRuns: 33 }).expect(400);
+    const saved = await request(app).put("/api/integrations").send({ maxConcurrentRuns: 8 }).expect(200);
+    expect(saved.body.maxConcurrentRuns).toBe(8);
+    expect(calls).toContain("cap 8");
+    expect((await request(app).get("/api/integrations")).body.maxConcurrentRuns).toBe(8);
   });
 
   it("returns a single bug task by id", async () => {

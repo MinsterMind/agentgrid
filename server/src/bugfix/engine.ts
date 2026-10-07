@@ -8,6 +8,7 @@ import type { Assignment } from "../types.js";
 import { BugTaskStore } from "./store.js";
 import { GitOps, branchName, worktreePath, type DiffResult } from "./git.js";
 import { testFilesIn } from "./tests.js";
+import { RunQueue } from "./queue.js";
 import { IntegrationsStore } from "./integrations.js";
 import type { ForgeAdapter } from "./forge/index.js";
 import type { TrackerProvider } from "./tracker.js";
@@ -53,6 +54,8 @@ const REVIEW_FEEDBACK_EVENTS: ReadonlySet<BugEvent["type"]> = new Set(["review-c
 export async function recoverStuckBugTasks(bugs: BugTaskStore): Promise<void> {
   for (const task of bugs.list()) {
     if (!RECOVERABLE_STAGES.includes(task.stage)) continue;
+    // Waiting for a slot is not running: nothing was dispatched, so there is nothing to fail. The next engine resumes it.
+    if (task.queuedAt) continue;
     await bugs.apply(task.id, nextStage(task, { type: "stage-failed", reason: "server restarted while this stage was running" }));
   }
 }
@@ -122,9 +125,18 @@ export class BugFixEngine {
   constructor(deps: EngineDeps) { this.deps = deps; this.role = deps.role ?? "bugfix"; }
 
   /** React to assignments finishing; safe to call more than once — a repeat call is a no-op. */
+  private maxRuns = 4;
+  private queue = new RunQueue(() => this.maxRuns);
+  /** The run cap (spec 2026-10-07 §5): raising it starts whoever now fits. */
+  setMaxConcurrentRuns(n: number): void {
+    this.maxRuns = Math.max(1, Math.min(32, Math.floor(n) || 4));
+    for (const id of this.queue.drain()) this.startQueuedDetached(id);
+  }
+
   attach(): void {
     if (this.attached) return;
     this.attached = true;
+    void this.deps.integrations.read().then(c => { if (c.maxConcurrentRuns) this.setMaxConcurrentRuns(c.maxConcurrentRuns); }).catch(() => {}).finally(() => this.resumeQueued());
     this.deps.store.on("event", e => {
       if (e?.type !== "assignment") return;
       const a = e.assignment as Assignment;
@@ -295,6 +307,7 @@ export class BugFixEngine {
     // silently eaten, or it orphans the agent directory with nothing left to report it.
     await this.deps.store.archiveAgent(task.agentId).catch(err => { if (!(err instanceof NotFound)) throw err; });
     this.currentDispatch.delete(task.id);
+    this.releaseRun(task.id);
     await this.deps.bugs.remove(task.id);
   }
 
@@ -519,8 +532,15 @@ export class BugFixEngine {
     // detached from the store's event listener rather than awaited there).
     if (SERVER_STAGES.includes(task.stage)) { void this.runServerStage(task); return task; }
     if (!t.run) return task;
+    // Over the cap: wait in line. The slot's release (any way a run ends) starts the next in line.
+    if (!this.queue.tryStart(task.id)) return this.deps.bugs.patch(taskId, { queuedAt: new Date().toISOString() });
+    return this.dispatchLocked(taskId, task, t.run);
+  }
+
+  /** Run an agent stage whose slot is held; a failure to start it fails the task (and frees the slot). */
+  private async dispatchLocked(taskId: string, task: BugTask, stage: BugStage): Promise<BugTask> {
     try {
-      task = await this.runStage(task, t.run);
+      task = await this.runStage(task, stage);
     } catch (err) {
       const original = err as Error;
       try {
@@ -838,6 +858,8 @@ export class BugFixEngine {
     // task — see `currentDispatch`'s own comment for why this alone is both necessary
     // and sufficient (no separate durable-field check needed).
     if (this.currentDispatch.get(task.id) !== a.id) return;
+    // This run is over: its slot goes to the next in line while this stage is verified.
+    this.releaseRun(task.id);
 
     await bugs.patch(task.id, { costUsd: Number((task.costUsd + (a.costUsd ?? 0)).toFixed(4)) });
     await this.collectAssumptions(task.id);
@@ -989,9 +1011,31 @@ export class BugFixEngine {
   /** A task that just reached a terminal stage owns nothing any more: drop its dispatch
    *  entry (a stale one is dead weight, and would have to be matched against forever)
    *  and release its agent. */
+  /** A run ended (or a queued task left the line): free its slot and start whoever is next. */
+  private releaseRun(taskId: string): void {
+    for (const id of this.queue.release(taskId)) this.startQueuedDetached(id);
+  }
+  private startQueuedDetached(id: string): void {
+    void this.serial(id, () => this.startQueued(id)).catch(err => console.error("[bugfix] starting a queued run failed", err));
+  }
+  /** A queued task's turn: start the agent stage it was waiting to run — if it still is. */
+  private async startQueued(id: string): Promise<BugTask> {
+    let task: BugTask;
+    try { task = this.deps.bugs.get(id); } catch { this.releaseRun(id); throw new NotFound(id); }
+    if (!task.queuedAt || !AGENT_STAGES.includes(task.stage)) { this.releaseRun(id); return task; }
+    task = await this.deps.bugs.patch(id, { queuedAt: null });
+    return this.dispatchLocked(id, task, task.stage);
+  }
+  /** After a restart: tasks that were waiting for a slot line up again, oldest first. */
+  private resumeQueued(): void {
+    const waiting = this.deps.bugs.list().filter(t => t.queuedAt && AGENT_STAGES.includes(t.stage)).sort((a, b) => a.queuedAt!.localeCompare(b.queuedAt!));
+    for (const t of waiting) if (this.queue.tryStart(t.id)) this.startQueuedDetached(t.id);
+  }
+
   private async settleTerminal(task: BugTask): Promise<void> {
     if (!TERMINAL_STAGES.includes(task.stage)) return;
     this.currentDispatch.delete(task.id);
+    this.releaseRun(task.id);
     // Best-effort, deliberately guarded: the task's transition into a terminal stage has
     // already landed and persisted by the time this runs, so a failure here (`stopAgent`'s
     // own `store.getAgent` throwing when the agent was archived out from under the task) must

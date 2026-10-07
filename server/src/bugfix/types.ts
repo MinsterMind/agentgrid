@@ -70,6 +70,8 @@ export interface BugTask {
   conflict: { files: string[]; base: string; detectedAt: string; returnTo: "monitoring" | "approved" } | null;
   /** Why the last conflict check couldn't run (a fetch failed…), shown on the card; null once one succeeds. */
   conflictCheckError: string | null;
+  /** Set while the task's next agent stage waits for a free slot (the run cap); null when running or resting. */
+  queuedAt: string | null;
   agentId: string;
   stage: BugStage;
   gate: { kind: GateKind; openedAt: string; reason?: "feedback" | "rebase" | "external" } | null;

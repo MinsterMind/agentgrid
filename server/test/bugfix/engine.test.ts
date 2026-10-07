@@ -104,7 +104,7 @@ beforeEach(async () => {
   engine = new BugFixEngine({
     store, bugs, manager: new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, a, e) => ({ cwd: a.repo, abortController: e.abortController, canUseTool: e.canUseTool } as Options) }),
     git: (gitFake = fakeGit(gitState)).git, integrations: new IntegrationsStore(home),
-    tracker: { listMyIssues: async () => [], fetchIssue: async () => ISSUE, comment: async (k, t) => { comments.push([k, t]); } },
+    tracker: { listMyIssues: async () => [], fetchIssue: async (ref: string) => ({ ...ISSUE, key: ref }), comment: async (k, t) => { comments.push([k, t]); } },
     forge, presetsDir: path.resolve("presets"),
   });
   engine.attach();
@@ -1254,6 +1254,47 @@ describe("conflict checks and the engine", () => {
     await engine.onPrFinding({ taskId: "bt1", pr: { ...bugs.get("bt1").pr!, state: "MERGED" }, event: { type: "pr-merged" } });
     await until(() => nudged.length > 0, 2000);
     expect(nudged).toEqual([bugs.get("bt1").sourceRepo]);
+  });
+});
+
+describe("at most N bug-fix agents at once", () => {
+  const finishCurrent = async (id: string, from: string) => { fake.emit(success("done")); fake.end(); await until(() => bugs.get(id).stage !== from, 2000); };
+  it("a run over the cap waits its turn, and starts when a slot frees", async () => {
+    engine.setMaxConcurrentRuns(1);
+    const a = await engine.intake({ issueRef: "PAY-42", repo });
+    const b = await engine.intake({ issueRef: "PAY-43", repo });
+    expect(b.stage).toBe("analyzing"); expect(b.queuedAt).toEqual(expect.any(String));
+    expect(fake.calls).toHaveLength(1);
+    await bugs.writeArtifact(a.id, "plan.md", "Verdict: change needed\n## Regression tests\n- t\n");
+    await finishCurrent(a.id, "analyzing");
+    await until(() => fake.calls.length === 2, 2000);
+    expect(bugs.get(b.id).queuedAt).toBeNull();
+    expect(fake.calls[1].prompt).toContain("PAY-43");
+  });
+  // Review Focus 3
+  it("cancelling a queued task takes it out of line; a failed dispatch frees its slot", async () => {
+    engine.setMaxConcurrentRuns(1);
+    const a = await engine.intake({ issueRef: "PAY-42", repo });
+    const b = await engine.intake({ issueRef: "PAY-43", repo });
+    const c = await engine.intake({ issueRef: "PAY-44", repo });
+    await engine.cancel(b.id);
+    expect(bugs.get(b.id).stage).toBe("cancelled");
+    await engine.cancel(a.id);                                 // frees the slot: c (not b) starts
+    await until(() => fake.calls.length === 2, 2000);
+    expect(fake.calls[1].prompt).toContain("PAY-44"); expect(bugs.get(c.id).queuedAt).toBeNull();
+  });
+  it("a restart leaves queued tasks queued, and the next engine resumes them", async () => {
+    engine.setMaxConcurrentRuns(1);
+    await engine.intake({ issueRef: "PAY-42", repo });
+    const b = await engine.intake({ issueRef: "PAY-43", repo });
+    await recoverStuckBugTasks(bugs);
+    expect(bugs.get(b.id)).toMatchObject({ stage: "analyzing", queuedAt: expect.any(String) });
+    const before = fake.calls.length;
+    const engine2 = new BugFixEngine({ ...(engine as any).deps });
+    engine2.setMaxConcurrentRuns(4);
+    engine2.attach();
+    await until(() => fake.calls.length > before, 2000);
+    expect(fake.calls.at(-1)!.prompt).toContain("PAY-43");
   });
 });
 

@@ -52,7 +52,7 @@ function snapshot(agents: Agent[], bugTasks: BugTask[] = []): GridState { return
 function bugTask(id: string, stage: BugTask["stage"], error: string | null = null, outcome: BugTask["outcome"] = null): BugTask {
   return {
     id, issue: { key: "PAY-42", title: "Boom", url: "u", status: "Open", priority: "High", description: "d", acceptanceCriteria: [] },
-    trackerProject: "PAY", sourceRepo: "/r", worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", baseRef: "origin/main", ticketCommits: [], verdict: null, report: null, plannedTests: [], testsInDiff: null, testOverride: null, conflict: null, conflictCheckError: null,
+    trackerProject: "PAY", sourceRepo: "/r", worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", baseRef: "origin/main", ticketCommits: [], verdict: null, report: null, plannedTests: [], testsInDiff: null, testOverride: null, conflict: null, conflictCheckError: null, queuedAt: null,
     agentId: "bugfix@w", stage, gate: null, mergePolicy: "ask", mergeMethod: "squash", approvedHead: null,
     outcome, checksRoundHead: null, pr: null, prCheckedAt: null, costUsd: 0, history: [], error, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     feedbackRounds: 0, assumptions: [], assumptionsProblem: null, assumptionsToken: null,

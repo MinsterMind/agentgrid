@@ -5,7 +5,8 @@ import { describeJsonParseError } from "./json-parse-error.js";
 
 export interface TrackerConfig { preset: string; toolPrefix: string; hints?: string }
 export interface ForgeConfig { preset: "github" | "gitlab" | "bitbucket" | "custom"; username?: string; getPr?: string; merge?: string; map?: Record<string, string> }
-export interface Integrations { tracker?: TrackerConfig; forge?: ForgeConfig; projectRepos: Record<string, string> }
+/** `maxConcurrentRuns`: how many bug-fix agent runs may happen at once (default 4, 1–32). */
+export interface Integrations { tracker?: TrackerConfig; forge?: ForgeConfig; projectRepos: Record<string, string>; maxConcurrentRuns?: number }
 
 /** Which forge a git remote belongs to; null means "we can't poll it" (the flow still works, manually). */
 export function detectForge(remoteUrl: string | null): "github" | "gitlab" | "bitbucket" | null {

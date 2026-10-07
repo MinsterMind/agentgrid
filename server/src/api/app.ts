@@ -403,6 +403,7 @@ export function createApp(deps: AppDeps) {
    *  `TrackerConfig` may be added without the same argument. */
   const redactIntegrations = (cfg: Integrations) => ({
     projectRepos: cfg.projectRepos,
+    ...(cfg.maxConcurrentRuns !== undefined ? { maxConcurrentRuns: cfg.maxConcurrentRuns } : {}),
     ...(cfg.forge ? { forge: cfg.forge } : {}),
     ...(cfg.tracker ? { tracker: {
       preset: cfg.tracker.preset,
@@ -489,7 +490,12 @@ export function createApp(deps: AppDeps) {
     // Only the two known top-level fields are accepted; anything else in the body is
     // deliberately dropped rather than persisted (same "pick the fields you accept"
     // convention POST /api/agents already uses), not silently merged onto disk.
-    const patch: { tracker?: unknown; forge?: unknown } = {};
+    const patch: { tracker?: unknown; forge?: unknown; maxConcurrentRuns?: number } = {};
+    if (body.maxConcurrentRuns !== undefined) {
+      const n = body.maxConcurrentRuns;
+      if (!Number.isInteger(n) || n < 1 || n > 32) throw new BadRequest("maxConcurrentRuns must be a whole number from 1 to 32");
+      patch.maxConcurrentRuns = n;
+    }
     if (body.tracker !== undefined) {
       const tracker = body.tracker;
       if (!tracker || typeof tracker !== "object" || Array.isArray(tracker)) {
@@ -534,6 +540,7 @@ export function createApp(deps: AppDeps) {
     }
     const saved = await integrationsStore().write(patch as never);
     deps.onConfigSaved?.(saved);
+    if (patch.maxConcurrentRuns !== undefined) wired?.engine.setMaxConcurrentRuns(patch.maxConcurrentRuns);
     await tryWire();
     res.json(redactIntegrations(saved));
   }));
