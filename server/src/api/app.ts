@@ -22,6 +22,7 @@ import type { TrackerCache } from "../bugfix/trackerCache.js";
 import { MOMENTS } from "../bugfix/trackerSync.js";
 import { validateStageModels, type StageModels } from "../bugfix/models.js";
 import type { BatchStarter } from "../bugfix/batch.js";
+import type { FakeForge } from "../fake/forge.js";
 import type { Importer } from "../bugfix/importer.js";
 import type { ForgeAdapter } from "../bugfix/forge/types.js";
 import { discoverMcpServers } from "../bugfix/mcp-discovery.js";
@@ -80,6 +81,8 @@ export interface AppDeps {
   hookToken?: () => string | null;
   /** Fake mode only: POST /api/fake/permission raises a terminal permission request (the real one comes from the hook). */
   fakePermissions?: boolean;
+  /** Fake mode only: POST /api/fake/forge/events scripts reviewer comments on the fake forge's PRs (e2e). */
+  fakeForge?: FakeForge;
   /** The agent that owns a Claude Code session (adopted, or ran it), or null. */
   agentForSession?: (sessionId: string) => string | null;
 }
@@ -215,6 +218,12 @@ export function createApp(deps: AppDeps) {
     const d = await decision;
     if (!res.writableEnded && !res.destroyed) res.json({ decision: d });
   }));
+  if (deps.fakeForge) {
+    const f = deps.fakeForge;
+    app.post("/api/fake/forge/events", wrap(async (req, res) => {
+      f.setEvents(Array.isArray(req.body?.events) ? req.body.events : []); f.touch(); res.json({ ok: true });
+    }));
+  }
   if (deps.fakePermissions && deps.permissions) {
     const broker = deps.permissions.broker;
     app.post("/api/fake/permission", wrap(async (req, res) => {

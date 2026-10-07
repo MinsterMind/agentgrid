@@ -191,6 +191,11 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   // in a real deployment's environment would otherwise throw here and stop the server booting.
   const fakePrScript = fake ? (opts.fakePrScript ?? parseFakePrScript(process.env.AGENTGRID_FAKE_PR_SCRIPT)) : undefined;
   const fakeForgeHandle = fake ? fakeForge(fakePrScript ?? []) : null;
+  // The repo's open PRs, for an import to find (e2e): a JSON array of PrInfo.
+  if (fakeForgeHandle && process.env.AGENTGRID_FAKE_OPEN_PRS) {
+    try { fakeForgeHandle.setOpenPrs(JSON.parse(process.env.AGENTGRID_FAKE_OPEN_PRS)); }
+    catch (err) { throw new Error(`AGENTGRID_FAKE_OPEN_PRS is not valid JSON: ${(err as Error).message}`); }
+  }
 
   let wiredBugFix: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider; trackerCache?: TrackerCache; batches?: BatchStarter; importer?: Importer } | undefined;
   let wiredWatcher: PrWatcher | null = null;
@@ -259,7 +264,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const agentPrs = new AgentPrWatcher({ store, forge: () => fakeForgeHandle ?? makeForge(lastCfg.forge) });
   agentPrs.start();
 
-  const app = createApp({ store, manager, permissions: { broker: permissionBroker, rules }, ...(fake ? { fakePermissions: true } : {}), hookToken: () => hookToken, agentForSession, submitToTerminal: (sid, text) => ptys.submit(sid, text), transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }),
+  const app = createApp({ store, manager, permissions: { broker: permissionBroker, rules }, ...(fake ? { fakePermissions: true } : {}), ...(fakeForgeHandle ? { fakeForge: fakeForgeHandle } : {}), hookToken: () => hookToken, agentForSession, submitToTerminal: (sid, text) => ptys.submit(sid, text), transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }),
     openTerminal, runInTerminal, staticDir, browseRoot: opts.browseRoot ?? process.env.AGENTGRID_BROWSE_ROOT, ...(fakeSessions ? { sessions: fakeSessions } : {}),
     integrations,
     roleResolves: () => { try { store.getRole("bugfix"); return true; } catch { return false; } },

@@ -29,6 +29,8 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 
 test("a merge elsewhere makes this PR conflict: the card says so, and Resolve rebases it for review", async ({ page, request }) => {
   test.setTimeout(120_000);
+  // This walks the conflict gate and its Resolve button: auto-resolve (on by default since 0.14) is turned off.
+  await request.put(`${BASE}/api/integrations`, { data: { autoResolveConflicts: false } });
   const repo = execFileSync("sh", [path.resolve("e2e/fixture-repo.sh")], { encoding: "utf8" }).trim();
   const task = await (await request.post(`${BASE}/api/bugtasks`, { data: { issueRef: "FAKE-3", repo } })).json();
   await page.goto(`${BASE}/#/bugs/${task.id}`);
