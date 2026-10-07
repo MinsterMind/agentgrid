@@ -420,3 +420,23 @@ describe("BugScreen — picking several bugs", () => {
     expect(screen.getByTestId("bulk-start")).toBeInTheDocument();
   });
 });
+
+describe("BugScreen — a start-many run stays on screen", () => {
+  // Found by the bulk e2e: as each picked bug started it stopped being "not started", left the
+  // selection, and the progress panel vanished mid-run.
+  it("keeps the panel (with its progress) after the picked bugs start, until Done", async () => {
+    const MINE = [{ key: "PAY-1", title: "One", url: "u", status: "Open", priority: "High" }];
+    myIssues.mockResolvedValue(L(MINE));
+    const { rerender } = render(<BugScreen state={stateWith([]) as never} selectedId={null} onSelect={vi.fn()} onSelectTicket={vi.fn()} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={vi.fn()} />);
+    await userEvent.click(await screen.findByLabelText("Select PAY-1"));
+    await userEvent.type(screen.getByLabelText("Repo for PAY"), "/r/pay");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start 1 fix" })).not.toBeDisabled());
+    await userEvent.click(screen.getByRole("button", { name: "Start 1 fix" }));
+    const started = { ...stateWith([task("analyzing", { issue: { ...ISSUE, key: "PAY-1", title: "One" } })]),
+      batches: { b1: { batchId: "b1", total: 1, done: 1, finished: true, started: [{ key: "PAY-1", taskId: "bt1" }], skipped: [], failed: [] } } };
+    rerender(<BugScreen state={started as never} selectedId={null} onSelect={vi.fn()} onSelectTicket={vi.fn()} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={vi.fn()} />);
+    expect(screen.getByTestId("bulk-start")).toHaveTextContent("Started 1 of 1");
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByTestId("bulk-start")).toBeNull();
+  });
+});

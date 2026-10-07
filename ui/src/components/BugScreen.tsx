@@ -122,6 +122,9 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const startable = rows.filter(r => !r.task && r.assigned);
   const pickedRows = startable.filter(r => picked.has(r.key));
+  // Once a run starts, its bugs stop being "not started" — keep the panel on what was sent, until Done.
+  const [running, setRunning] = useState<IssueSummary[] | null>(null);
+  const bulkShown = running ?? (pickedRows.length ? pickedRows.map(r => ({ key: r.key, title: r.title, url: "", status: "", priority: r.priority ?? "" })) : null);
   const toggle = (key: string) => setPicked(x => { const n = new Set(x); if (n.has(key)) n.delete(key); else n.add(key); return n; });
   const [resolving, setResolving] = useState(false);
   const resolveAll = () => { setResolving(true); void api.resolveConflicts().catch(() => {}).finally(() => setResolving(false)); };
@@ -184,7 +187,7 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
             const sel = isShown(r);
             const head = i === firstUnassigned ? <li role="presentation" className="group">Not assigned to you or closed</li> : null;
             if (!r.task) return [head, (
-              <li key={r.key} role="option" aria-selected={sel} tabIndex={sel ? 0 : -1} className="bugrow" data-status="todo"
+              <li key={r.key} role="option" aria-selected={sel} tabIndex={sel ? 0 : -1} className={`bugrow ${r.assigned ? "pickable" : ""}`} data-status="todo"
                 onClick={() => open(r)} onKeyDown={e => { if (e.key === "Enter") open(r); }}>
                 {r.assigned && <input type="checkbox" className="pick" aria-label={`Select ${r.key}`} checked={picked.has(r.key)}
                   onClick={e => e.stopPropagation()} onChange={() => toggle(r.key)} />}
@@ -208,8 +211,8 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
         </ul>
         <div className="lfoot"><kbd>↑</kbd> <kbd>↓</kbd> move · <kbd>⏎</kbd> open</div>
       </aside>
-      {pickedRows.length > 0
-        ? <BulkStart selected={pickedRows.map(r => ({ key: r.key, title: r.title, url: "", status: "", priority: r.priority ?? "" }))} batches={state.batches ?? {}} />
+      {bulkShown
+        ? <BulkStart selected={bulkShown} batches={state.batches ?? {}} onStarted={() => setRunning(r => r ?? bulkShown)} onClose={() => { setRunning(null); setPicked(new Set()); }} />
         : task || (shown && !ticket && !selectedTicket)
         ? <BugDetail key={(task ?? shown)!.id} task={(task ?? shown)!} state={state} now={now} onBugChanged={onBugChanged} onTranscript={onTranscript} onOpenSettings={onOpenSettings} onDecide={onDecide} />
         : (ticket ?? selectedTicket) ? <TicketDetail key={ticket ?? selectedTicket!} ticketKey={(ticket ?? selectedTicket)!} onStarted={onStarted} /> : null}

@@ -13,7 +13,9 @@ const CHUNK = 500;
  * server starts them — each repo fetched once, tickets read 20 at a time — and reports each ticket:
  * started, skipped because it may already be fixed (Start anyway), or failed (Retry).
  */
-export function BulkStart({ selected, batches }: { selected: IssueSummary[]; batches: Record<string, BatchState> }) {
+export function BulkStart({ selected, batches, onStarted, onClose }: { selected: IssueSummary[]; batches: Record<string, BatchState>;
+  /** The run began: the parent keeps this selection on screen though its bugs stop being "not started". */ onStarted?: () => void;
+  /** Done looking at the results. */ onClose?: () => void }) {
   const projects = useMemo(() => [...new Set(selected.map(i => projectOf(i.key)))].sort(), [selected]);
   const [groups, setGroups] = useState<Record<string, Group>>({});
   const [ids, setIds] = useState<string[]>([]);
@@ -56,6 +58,7 @@ export function BulkStart({ selected, batches }: { selected: IssueSummary[]; bat
       const items = itemsFor(keys); const started: string[] = [];
       for (let i = 0; i < items.length; i += CHUNK) started.push((await api.startBatch(items.slice(i, i + CHUNK), anyway)).batchId);
       setIds(x => [...new Set([...x, ...started])]);
+      onStarted?.();
     } catch (e) { setErr((e as Error).message); }
     finally { setBusy(false); }
   };
@@ -107,7 +110,8 @@ export function BulkStart({ selected, batches }: { selected: IssueSummary[]; bat
 
       {ids.length > 0 && (
         <section className="panel" aria-label="Progress">
-          <div className="now-line"><b>Started {started.length} of {total || n}</b>{done < total && <> · {done} of {total} handled</>}</div>
+          <div className="row"><div className="now-line"><b>Started {started.length} of {total || n}</b>{done < total && <> · {done} of {total} handled</>}</div>
+            {onClose && <button className="btn sm" style={{ marginLeft: "auto" }} onClick={onClose}>Done</button>}</div>
           <div className="bar"><span style={{ width: `${total ? Math.round((done / total) * 100) : 0}%` }} /></div>
           {started.length > 0 && <p className="oktext"><CheckCircle2 /> {started.map(s => s.key).join(", ")}</p>}
         </section>

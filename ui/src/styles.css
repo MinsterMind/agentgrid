@@ -440,7 +440,8 @@ textarea.input { resize:none; }
 
 /* Start many */
 .buglist .pick-row { margin:6px 10px; gap:6px; }
-.bugrow input.pick { margin-right:6px; accent-color: var(--accent); }
+.bugrow.pickable { position:relative; padding-left:34px; }
+.bugrow input.pick { position:absolute; left:12px; top:14px; margin:0; accent-color: var(--accent); }
 .bugdetail.bulk .panel { margin-top:12px; }
 .bulk-keys { margin:4px 0 8px 18px; font-size:13px; } .bulk-keys li { margin:2px 0; }
 .bugdetail.bulk .bar { height:6px; border-radius:3px; background:var(--surface-raised); overflow:hidden; margin:8px 0; }
