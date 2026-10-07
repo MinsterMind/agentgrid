@@ -512,11 +512,11 @@ describe("reviewer comments (spec 2026-10-09 §5)", () => {
   const ev = (over: Partial<ReviewEvent>): ReviewEvent => ({ kind: "comment", state: "", author: "rev", isBot: false, isSelf: false, body: "please rename", at: "2026-10-09T10:00:00Z", ...over });
   /** One poll of a task resting on its PR. `moved`: the PR's view changed since it was stored (so the watcher reads it);
    *  otherwise the listing says nothing changed. */
-  async function pollOnce(o: { events: ReviewEvent[]; now: number; quietMs: number; stage?: BugTask["stage"]; pendingSince?: string; moved?: boolean; listed?: boolean }) {
+  async function pollOnce(o: { events: ReviewEvent[]; now: number; quietMs: number; stage?: BugTask["stage"]; pendingSince?: string; moved?: boolean; listed?: boolean; decision?: string }) {
     const { bugs, id } = await monitoringTask();
     await bugs.patch(id, { stage: o.stage ?? "monitoring", commentsSince: "2026-10-09T09:00:00Z", ...(o.pendingSince ? { commentsPendingSince: o.pendingSince } : {}) });
     const stored = bugs.get(id).pr!;
-    const view = o.moved === false ? stored : { ...stored, lastSeenEventAt: "2026-10-09T10:05:00Z" };
+    const view = { ...(o.moved === false ? stored : { ...stored, lastSeenEventAt: "2026-10-09T10:05:00Z" }), ...(o.decision ? { reviewDecision: o.decision } : {}) };
     const sinces: string[] = [];
     const forge: ForgeAdapter = { ...forgeWith([{ found: view }]),
       listReviewEvents: async (_r, _n, since) => { sinces.push(since); return o.events.filter(e => e.at > since); },
@@ -551,6 +551,14 @@ describe("reviewer comments (spec 2026-10-09 §5)", () => {
   it("a round falls due on a PR whose listed view hasn't moved", async () => {
     const { found } = await pollOnce({ moved: false, listed: true, pendingSince: "2026-10-09T10:00:00Z", events: [ev({})], now: Date.parse("2026-10-09T10:11:00Z"), quietMs: 600_000 });
     expect(found[0]?.event).toMatchObject({ type: "review-changes-requested" });
+  });
+  it("a lingering changes-requested decision doesn't skip the quiet period for follow-up comments (final review I10)", async () => {
+    const { found } = await pollOnce({ decision: "CHANGES_REQUESTED", events: [ev({})], now: Date.parse("2026-10-09T10:05:00Z"), quietMs: 600_000 });
+    expect(found[0]).toMatchObject({ event: null, commentsPending: "2026-10-09T10:00:00Z" });
+  });
+  it("a new changes-requested review still starts a round at once", async () => {
+    const { found } = await pollOnce({ decision: "CHANGES_REQUESTED", events: [ev({ kind: "review", state: "CHANGES_REQUESTED", body: "no" })], now: Date.parse("2026-10-09T10:01:00Z"), quietMs: 600_000 });
+    expect(found[0].event).toMatchObject({ type: "review-changes-requested" });
   });
   it("comments are left alone while the task is at the merge gate", async () => {
     const { found, sinces } = await pollOnce({ stage: "approved", events: [ev({})], now: Date.parse("2026-10-09T11:00:00Z"), quietMs: 0 });

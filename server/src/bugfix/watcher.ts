@@ -246,7 +246,10 @@ export class PrWatcher {
     const human = (e: ReviewEvent) => e.kind !== "check" && !e.isBot && !e.isSelf;
     if (pr.reviewDecision === "CHANGES_REQUESTED" && task.stage === "monitoring") {
       const theirs = (await forge.listReviewEvents(task.sourceRepo, pr.number, since)).filter(human);
-      if (theirs.length) return { event: { type: "review-changes-requested", comments: describeComments(theirs) || `changes were requested on ${pr.url}`, source: "forge", upTo: theirs.at(-1)!.at }, commentsPending: null };
+      // GitHub keeps the decision until a re-review: only a new changes-requested review skips the quiet period; follow-up
+      // comments under a lingering decision wait like any other.
+      if (theirs.some(e => e.kind === "review" && e.state === "CHANGES_REQUESTED"))
+        return { event: { type: "review-changes-requested", comments: describeComments(theirs) || `changes were requested on ${pr.url}`, source: "forge", upTo: theirs.at(-1)!.at }, commentsPending: null };
     }
     if (pr.reviewDecision === "APPROVED") return { event: { type: "review-approved" } };
     // At the merge gate or in a conflict, comments wait: `commentsSince` stays put, so they're read once the task rests again.
