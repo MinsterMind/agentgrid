@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { realQuery } from "../runner/sdk.js";
+import { stripForgeSecrets } from "../env.js";
 import { ISSUE_KEY, assertIssueKey } from "./git.js";
 import type { TrackerConfig } from "./integrations.js";
 import type { IssueSummary, TrackerIssue } from "./types.js";
@@ -119,7 +120,9 @@ export const defaultJsonRunner: JsonRunner = async ({ prompt, allowedTools, cwd 
   // passed at all. "project" is required alongside "user": a config-defined server otherwise
   // does not load — probed directly, see the task-2 report for the probe transcript.
   for await (const m of realQuery({ prompt, options: { cwd, settingSources: ["user", "project"], model: "claude-haiku-4-5-20251001",
-      effort: "low", maxTurns: 12, allowedTools,
+      // `tools: []` removes every built-in tool (Bash, file writes, web): the session can only use the
+      // tracker's MCP tools — it reads text anyone can write into a ticket. `env` drops forge credentials.
+      effort: "low", maxTurns: 12, allowedTools, tools: [], env: stripForgeSecrets(process.env),
       permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true } as never })) {
     if (m.type === "assistant") for (const b of (m as any).message.content) if (b.type === "text" && b.text.trim()) last = b.text;
     if (m.type === "result" && (m as any).subtype !== "success") throw new Error(`tracker query failed: ${(m as any).subtype}`);
@@ -128,10 +131,36 @@ export const defaultJsonRunner: JsonRunner = async ({ prompt, allowedTools, cwd 
 };
 
 /** Tracker access through whatever MCP the user has configured; prompts come from the preset file. */
+/** A transition name as workflows name them — never a sentence an agent could read as an instruction. */
+const PLAIN_NAME = /^[\w .\-()/&]{1,60}$/;
+
+/**
+ * Every tracker call is a `claude` process with the user's MCP servers: at most 3 at once, across
+ * prefetch, batches and status moves. What a person is waiting on (their list, a ticket they opened,
+ * Settings) goes ahead of background work.
+ */
+class Limiter {
+  private running = 0;
+  private waiting: Array<{ urgent: boolean; go: () => void }> = [];
+  constructor(private max: number) {}
+  async run<T>(urgent: boolean, fn: () => Promise<T>): Promise<T> {
+    if (this.running >= this.max) await new Promise<void>(go => {
+      const i = urgent ? this.waiting.findIndex(w => !w.urgent) : -1;
+      this.waiting.splice(i === -1 ? this.waiting.length : i, 0, { urgent, go });
+    });
+    else this.running++;
+    try { return await fn(); }
+    finally { const next = this.waiting.shift(); if (next) next.go(); else this.running--; }
+  }
+}
+
 export function mcpTracker(cfg: TrackerConfig, presetsDir: string, run: JsonRunner = defaultJsonRunner): TrackerProvider {
-  const ask = async (name: string, vars: Record<string, string>) =>
-    run({ prompt: await section(presetsDir, cfg.preset, name, { hints: cfg.hints ?? "", ...vars }),
-          allowedTools: [cfg.toolPrefix], cwd: process.cwd() });
+  const limiter = new Limiter(3);
+  const URGENT = new Set(["listMyIssues", "fetchIssue", "listTransitions"]);
+  const ask = async (name: string, vars: Record<string, string>) => {
+    const prompt = await section(presetsDir, cfg.preset, name, { hints: cfg.hints ?? "", ...vars });
+    return limiter.run(URGENT.has(name), () => run({ prompt, allowedTools: [cfg.toolPrefix], cwd: process.cwd() }));
+  };
   // Which optional operations this preset offers — a section per operation (spec 2026-10-08 §3.2, §4.1).
   let sections = new Set<string>();
   try { sections = new Set(readFileSync(path.join(presetsDir, "tracker", `${cfg.preset}.md`), "utf8").split(/^## /m).slice(1).map(b => b.split("\n")[0].trim())); }
@@ -142,6 +171,9 @@ export function mcpTracker(cfg: TrackerConfig, presetsDir: string, run: JsonRunn
     async comment(key: string, text: string) { await ask("comment", { key, text }); },
     ...(sections.has("fetchIssues") ? { async fetchIssues(keys: string[]) { return parseIssues(await ask("fetchIssues", { keys: keys.map(assertIssueKey).join(", ") }), keys); } } : {}),
     ...(sections.has("listTransitions") ? { async listTransitions(key: string) { return parseTransitions(await ask("listTransitions", { key: assertIssueKey(key) })); } } : {}),
-    ...(sections.has("transition") ? { async transition(key: string, name: string) { return parseTransitionResult(await ask("transition", { key: assertIssueKey(key), transition: name.replace(/["\n]/g, " ").slice(0, 100) })); } } : {}),
+    ...(sections.has("transition") ? { async transition(key: string, name: string): Promise<TransitionResult> {
+      if (!PLAIN_NAME.test(name)) return { ok: false, error: `"${name.slice(0, 60)}" is not a plain transition name — pick it again in Settings → Ticket statuses` };
+      return parseTransitionResult(await ask("transition", { key: assertIssueKey(key), transition: name }));
+    } } : {}),
   };
 }
