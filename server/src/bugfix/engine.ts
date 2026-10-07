@@ -10,6 +10,7 @@ import { GitOps, branchName, worktreePath, type DiffResult } from "./git.js";
 import { testFilesIn } from "./tests.js";
 import { RunQueue } from "./queue.js";
 import type { TrackerCache } from "./trackerCache.js";
+import type { Moment } from "./trackerSync.js";
 import { IntegrationsStore } from "./integrations.js";
 import type { ForgeAdapter } from "./forge/index.js";
 import type { TrackerProvider } from "./tracker.js";
@@ -241,6 +242,7 @@ export class BugFixEngine {
       branch, baseBranch, baseRef, ticketCommits, agentId: agent.id,
       mergePolicy: input.mergePolicy ?? "ask", mergeMethod: input.mergeMethod ?? "squash",
     });
+    this.sync?.moment(task.id, "started");
     return this.advance(task.id, { type: "stage-done" });
   }
 
@@ -406,6 +408,10 @@ export class BugFixEngine {
    * a stale "couldn't reach the forge" note clears. Nothing here touches stage, so it needs no
    * place in `advance()`'s chain.
    */
+  private sync: { moment(taskId: string, m: Moment): void } | null = null;
+  /** Moves the ticket on the tracker at each workflow moment (spec 2026-10-08 §4.3). */
+  setTrackerSync(s: { moment(taskId: string, m: Moment): void } | null): void { this.sync = s; }
+
   private conflictNudge: ((repo: string) => void) | null = null;
   /** Called with a repo when one of its PRs merges: the ConflictWatcher re-checks its siblings at once. */
   setConflictNudge(fn: ((repo: string) => void) | null): void { this.conflictNudge = fn; }
@@ -482,7 +488,7 @@ export class BugFixEngine {
     if (pr.state === "CLOSED") {
       return bugs.patch(taskId, { error: `Pull request #${n} for ${task.branch} was opened outside AgentGrid and then closed without merging. Retry to open a new one, or cancel the fix.` });
     }
-    const announce = () => tracker.comment(task.issue.key, `Fix in progress — pull request: ${pr.url}`).catch(() => {});
+    const announce = () => { this.sync?.moment(taskId, "prOpened"); return tracker.comment(task.issue.key, `Fix in progress — pull request: ${pr.url}`).catch(() => {}); };
     let head: string | null = null;
     try { head = await git.revParse(task.worktree); } catch { /* worktree gone: compare against the PR alone */ }
     // An adapter that cannot report the PR's head leaves only the worktree to go on.
@@ -535,6 +541,10 @@ export class BugFixEngine {
         : { files, base: event.base ?? current.baseBranch, detectedAt: new Date().toISOString(), returnTo: current.stage === "approved" ? "approved" : "monitoring" } });
     }
     let task = await this.deps.bugs.apply(taskId, t);
+    // How it ended, for the ticket's status: merged, closed without merging, or no change needed.
+    if (task.stage === "done" && current.stage !== "done" && task.outcome) {
+      this.sync?.moment(taskId, task.outcome === "merged" ? "merged" : task.outcome === "closed" ? "closed" : "noChange");
+    }
     // A merge moves the base: every sibling PR in this repo may conflict now — check them right away.
     if (event.type === "pr-merged") this.conflictNudge?.(task.sourceRepo);
     // Kept through the rebase and its review (the diff gate shows what conflicted); forgotten once that
@@ -729,6 +739,7 @@ export class BugFixEngine {
     }
     if (created.found.state !== "OPEN") throw new Error(`pull request #${created.found.number} is ${created.found.state.toLowerCase()}, not open`);
     await bugs.patchPr(task.id, created.found, new Date().toISOString());
+    this.sync?.moment(task.id, "prOpened");
     await tracker.comment(task.issue.key, `Fix in progress — pull request: ${created.found.url}`).catch(() => {});
   }
 

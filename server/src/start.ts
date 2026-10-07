@@ -23,6 +23,7 @@ import { makeForge } from "./bugfix/forge/index.js";
 import { AgentPrWatcher } from "./agentpr.js";
 import { ConflictWatcher } from "./bugfix/conflicts.js";
 import { TrackerCache } from "./bugfix/trackerCache.js";
+import { TrackerSync } from "./bugfix/trackerSync.js";
 import { mcpTracker, type TrackerProvider } from "./bugfix/tracker.js";
 import { BugFixEngine, recoverStuckBugTasks } from "./bugfix/engine.js";
 import { PrWatcher } from "./bugfix/watcher.js";
@@ -212,6 +213,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     wiredCache.on("event", e => store.emit("event", e));
     const trackerCache = wiredCache;
     const engine = new BugFixEngine({ store, bugs: bugStore, manager, git: new GitOps(), integrations, tracker, forge, presetsDir, trackerCache });
+    // Tickets move through the user's workflow as the fix goes on (spec 2026-10-08 §4).
+    engine.setTrackerSync(new TrackerSync({ tracker, bugs: bugStore, statusMap: async () => (await integrations.read()).statusMap }));
     engine.attach();
     wiredWatcher?.stop();
     wiredWatcher = forge

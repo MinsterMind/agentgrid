@@ -75,6 +75,8 @@ export interface BugTask {
   /** The instructions a queued stage will run with (a request-changes note, reviewer comments) — kept on
    *  the task while it waits, so a restart can't start it without them. Null otherwise. */
   queuedNote: { text: string; trusted: boolean } | null;
+  /** The last status move on the tracker that failed (shown on the card); cleared by the next success. */
+  trackerSyncError: string | null;
   agentId: string;
   stage: BugStage;
   gate: { kind: GateKind; openedAt: string; reason?: "feedback" | "rebase" | "external" } | null;
