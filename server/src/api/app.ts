@@ -22,6 +22,7 @@ import type { TrackerCache } from "../bugfix/trackerCache.js";
 import { MOMENTS } from "../bugfix/trackerSync.js";
 import { validateStageModels, type StageModels } from "../bugfix/models.js";
 import type { BatchStarter } from "../bugfix/batch.js";
+import type { Importer } from "../bugfix/importer.js";
 import type { ForgeAdapter } from "../bugfix/forge/types.js";
 import { discoverMcpServers } from "../bugfix/mcp-discovery.js";
 import { buildSetupReport } from "../bugfix/setup.js";
@@ -30,7 +31,7 @@ export interface AppDeps {
   store: Store;
   manager: Manager;
   /** Bug-fix workflow; absent when the feature is not configured (routes answer 501). */
-  bugs?: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider; trackerCache?: TrackerCache; batches?: BatchStarter };
+  bugs?: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider; trackerCache?: TrackerCache; batches?: BatchStarter; importer?: Importer };
   /** The config store, needed with or without an engine: an unconfigured machine must still
    *  be able to read and write its own integrations.json. */
   integrations?: IntegrationsStore;
@@ -466,6 +467,28 @@ export function createApp(deps: AppDeps) {
     const st = bugs().batches?.get(req.params.batchId as string);
     if (!st) throw new NotFound(`batch ${req.params.batchId}`);
     res.json(st);
+  }));
+  /** Pick up tickets already in progress (spec 2026-10-09 §3): 202 with an import id; progress arrives as `import` events. */
+  app.post("/api/bugtasks/import", wrap(async (req, res) => {
+    const b = bugs();
+    if (!b.importer) throw Object.assign(new Error("importing isn't available"), { status: 501 });
+    const keys = req.body?.keys; const repo = req.body?.repo;
+    if (!Array.isArray(keys) || keys.length === 0 || keys.some((k: unknown) => typeof k !== "string" || !/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(k.trim()))) throw new BadRequest("keys must list ticket keys like PAY-42");
+    if (keys.length > 500) throw new BadRequest("at most 500 tickets per import — send the rest in another");
+    if (typeof repo !== "string" || !path.isAbsolute(repo)) throw new BadRequest("an absolute repo path is required");
+    res.status(202).json({ importId: b.importer.start(keys.map((k: string) => k.trim()), repo) });
+  }));
+  app.get("/api/bugtasks/import/:importId", wrap(async (req, res) => {
+    const st = bugs().importer?.get(req.params.importId as string);
+    if (!st) throw new NotFound(`import ${req.params.importId}`);
+    res.json(st);
+  }));
+  app.post("/api/bugtasks/import/:importId/choose", wrap(async (req, res) => {
+    const { key, prNumber } = req.body ?? {};
+    if (typeof key !== "string" || !Number.isInteger(prNumber)) throw new BadRequest("say which ticket and which pull request number");
+    const imp = bugs().importer;
+    if (!imp) throw new NotFound(`import ${req.params.importId}`);
+    res.json(await imp.choose(req.params.importId as string, key, prNumber));
   }));
   app.get("/api/bugfix/spend", wrap(async (_req, res) => res.json(bugs().engine.spend())));
   app.post("/api/bugtasks/resolve-conflicts", wrap(async (_req, res) => res.json({ ids: await bugs().engine.resolveConflicts() })));

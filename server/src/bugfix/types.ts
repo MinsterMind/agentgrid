@@ -85,6 +85,8 @@ export interface BugTask {
   commentsPendingSince: string | null;
   /** Why comment rounds may be imperfect — e.g. the user's own comments couldn't be told apart. */
   commentsNote: string | null;
+  /** Picked up from work already in progress elsewhere (spec 2026-10-09 §3). */
+  imported: boolean;
   /** The last status move on the tracker that failed (shown on the card); cleared by the next success. */
   trackerSyncError: string | null;
   agentId: string;

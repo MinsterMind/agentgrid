@@ -2473,3 +2473,49 @@ describe("comment bookkeeping (spec 2026-10-09 §5)", () => {
     expect(bugs.get("bt1")).toMatchObject({ stage: "monitoring", commentsPendingSince: null });
   });
 });
+
+describe("importTask (spec 2026-10-09 §3.3)", () => {
+  const openPr = { number: 12, url: "https://x/pr/12", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: "abc1234", lastSeenEventAt: "t", headBranch: "feature/PAY-42-x", baseBranch: "develop", title: "PAY-42" };
+  beforeEach(() => { gitFake.git.checkoutWorktree = async (r, key, b) => { gitFake.calls.push(`checkout ${b}`); const d = path.join(r, ".worktrees", `bugfix-${key}`); await mkdir(d, { recursive: true }); return d; }; });
+  it("an open PR: the PR's own branch, its base, watching it at once", async () => {
+    const t = await engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: openPr } });
+    expect(t).toMatchObject({ stage: "monitoring", branch: "feature/PAY-42-x", baseBranch: "develop", baseRef: "origin/develop", approvedHead: "abc1234", imported: true, pr: { number: 12 } });
+    expect(typeof t.commentsSince).toBe("string");
+    expect(gitFake.calls).toContain("checkout feature/PAY-42-x");
+    expect(fake.calls).toHaveLength(0);              // no agent run
+    expect(await bugs.readArtifact(t.id, "ticket.md")).toContain("PAY-42");
+  });
+  it("a branch with no PR: its diff at the diff gate, then the normal Open PR path", async () => {
+    gitState.head = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"; gitState.commits = 1;
+    const t = await engine.importTask({ issue: ISSUE, repo, found: { kind: "branch", branch: "bugfix/PAY-42" } });
+    expect(t).toMatchObject({ stage: "diff-review", gate: { kind: "diff" }, approvedHead: gitState.head });
+    await engine.approve(t.id);
+    expect(bugs.get(t.id).stage).toBe("opening-pr");
+  });
+  it("merged: done, outcome merged, no worktree", async () => {
+    const t = await engine.importTask({ issue: ISSUE, repo, found: { kind: "merged", pr: { ...openPr, state: "MERGED" } } });
+    expect(t).toMatchObject({ stage: "done", outcome: "merged", imported: true });
+    expect(gitFake.calls.some(c => c.startsWith("checkout"))).toBe(false);
+  });
+  it("refuses a PR whose head is its base, or an unsafe branch", async () => {
+    await expect(engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: { ...openPr, headBranch: "develop" } } })).rejects.toThrow(/base branch/);
+    await expect(engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: { ...openPr, headBranch: "-x" } } })).rejects.toThrow(/unsafe branch/);
+    expect(gitFake.calls.some(c => c.startsWith("checkout"))).toBe(false);
+  });
+  it("refuses while a leftover worktree for the ticket is still there", async () => {
+    gitFake.git.worktreeRegistered = async () => true;
+    await expect(engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: openPr } })).rejects.toThrow(/worktree remove --force/);
+  });
+  it("a push for an imported task goes to the PR's own branch", async () => {
+    const pushes: string[] = [];
+    gitFake.git.push = async (_d, b) => { pushes.push(b); };
+    gitState.commits = 1;
+    const t = await engine.importTask({ issue: ISSUE, repo, found: { kind: "branch", branch: "feature/PAY-42-x" } });
+    gitFake.git.currentBranch = async () => "feature/PAY-42-x";
+    await engine.approve(t.id);                       // → opening-pr
+    await writeFile(path.join(bugs.dir(t.id), "pr-body.md"), "body");
+    await finishStage();                              // → creating-pr → push
+    await until(() => pushes.length > 0, 2000);
+    expect(pushes).toEqual(["feature/PAY-42-x"]);
+  });
+});

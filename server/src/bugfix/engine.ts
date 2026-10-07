@@ -6,7 +6,7 @@ import type { Store } from "../store/store.js";
 import type { Manager } from "../runner/manager.js";
 import type { Assignment } from "../types.js";
 import { BugTaskStore } from "./store.js";
-import { GitOps, branchName, worktreePath, type DiffResult } from "./git.js";
+import { GitOps, branchName, worktreePath, safeBranch, assertIssueKey, type DiffResult } from "./git.js";
 import { testFilesIn } from "./tests.js";
 import { RunQueue } from "./queue.js";
 import type { TrackerCache } from "./trackerCache.js";
@@ -265,24 +265,7 @@ export class BugFixEngine {
     // the user a command that itself fails, reconstructing the exact wedge this check
     // exists to close. Stat the directory directly so each shape gets a remediation that
     // actually works.
-    const leftoverDir = worktreePath(input.repo, issue.key);
-    const [worktreeRegistered, dirExists, branchLeftover] = await Promise.all([
-      git.worktreeRegistered(input.repo, leftoverDir),
-      stat(leftoverDir).then(() => true, () => false),
-      git.branchExists(input.repo, branch),
-    ]);
-    if (worktreeRegistered || dirExists || branchLeftover) {
-      const steps: string[] = [];
-      if (worktreeRegistered) steps.push(`git -C ${input.repo} worktree remove --force ${leftoverDir}`);
-      else if (dirExists) steps.push(`rm -rf ${leftoverDir}`);
-      if (branchLeftover) steps.push(`git -C ${input.repo} branch -D ${branch}`);
-      const dirNote = !worktreeRegistered && dirExists ? " (present on disk but not registered with git)" : "";
-      throw new Conflict(
-        `a worktree and/or branch for ${issue.key} already exist from an earlier run — worktree ${leftoverDir}${dirNote}, branch ${branch}. ` +
-        `Nothing is removed automatically (the worktree may hold unpushed work). To clear ${steps.length > 1 ? "them" : "it"} and try again, run:\n` +
-        steps.map(s => `  ${s}`).join("\n")
-      );
-    }
+    await this.assertNoLeftover(input.repo, issue.key, branch, true);
 
     const worktree = await git.createWorktree(input.repo, branch, baseRef);
     const agent = await store.createAgent({ role: this.role, repo: worktree, displayName: issue.key });
@@ -298,6 +281,80 @@ export class BugFixEngine {
     await bugs.writeArtifact(task.id, "ticket.md", ticketMarkdown(issue));
     this.sync?.moment(task.id, "started");
     return this.advance(task.id, { type: "stage-done" });
+  }
+
+  /**
+   * A ticket already in progress elsewhere, picked up where it is (spec 2026-10-09 §3.3). Never runs an agent itself:
+   *   - an open PR: checked out on the PR's own branch and watched at once (what is on it was reviewed outside);
+   *   - a pushed branch with no PR: its diff at the diff gate, then the normal Open PR path;
+   *   - merged: recorded as done.
+   */
+  async importTask(input: { issue: TrackerIssue; repo: string; found: { kind: "pr"; pr: PrInfo } | { kind: "branch"; branch: string } | { kind: "merged"; pr: PrInfo } }): Promise<BugTask> {
+    const { git, bugs, store, integrations, forge } = this.deps;
+    if (!forge) throw new Conflict("no forge configured — this workflow needs one to open and verify pull requests");
+    const { issue, repo, found } = input;
+    const key = assertIssueKey(issue.key);
+    const branch = safeBranch(found.kind === "branch" ? found.branch : found.pr.headBranch ?? branchName(key));
+    const baseBranch = (found.kind !== "branch" && found.pr.baseBranch) || await git.integrationBranch(repo);
+    if (branch === baseBranch) throw new Conflict(`refusing to work on the base branch (${baseBranch})`);
+    const project = key.split("-")[0] ?? key;
+    const now = new Date().toISOString();
+    let worktree = worktreePath(repo, key);
+    if (found.kind !== "merged") { await this.assertNoLeftover(repo, key, branch, false); worktree = await git.checkoutWorktree(repo, key, branch); }
+    const agent = await store.createAgent({ role: this.role, repo: worktree, displayName: key });
+    await integrations.rememberRepo(project, repo);
+    this.deps.trackerCache?.invalidate(key);
+    let task = await bugs.create({ issue, trackerProject: project, sourceRepo: repo, worktree, branch, baseBranch, baseRef: `origin/${baseBranch}`,
+      ticketCommits: [], agentId: agent.id, mergePolicy: "ask", mergeMethod: "squash" });
+    await bugs.writeArtifact(task.id, "ticket.md", ticketMarkdown(issue));
+    if (found.kind === "merged") {
+      await bugs.patchPr(task.id, found.pr, now);
+      await bugs.patch(task.id, { imported: true });
+      task = await bugs.apply(task.id, { stage: "done", outcome: "merged", run: null, gate: null, note: `Imported: already merged in PR #${found.pr.number}`, error: null });
+      await this.settleTerminal(task);
+      this.sync?.moment(task.id, "merged");
+      return task;
+    }
+    if (found.kind === "pr") {
+      await bugs.patchPr(task.id, found.pr, now);
+      // Comments made before the import aren't news: rounds start from the next one.
+      await bugs.patch(task.id, { approvedHead: found.pr.headSha ?? await git.revParse(worktree), commentsSince: now, imported: true });
+      task = await bugs.apply(task.id, { stage: "monitoring", run: null, gate: null, note: `Imported: PR #${found.pr.number} on ${branch}, already open`, error: null });
+      this.sync?.moment(task.id, "prOpened");
+      return task;
+    }
+    const head = await git.revParse(worktree);
+    const diff = await git.diff(worktree, `origin/${baseBranch}`);
+    await bugs.patch(task.id, { approvedHead: head, imported: true, testsInDiff: testFilesIn(diff.files.map(f => f.path)) });
+    await bugs.writeArtifact(task.id, "diff.patch", diff.patch);
+    await bugs.writeArtifact(task.id, "diffstat.json", JSON.stringify({ files: diff.files, additions: diff.additions, deletions: diff.deletions }, null, 2));
+    task = await bugs.apply(task.id, { stage: "diff-review", run: null, gate: { kind: "diff", openedAt: now }, note: `Imported: branch ${branch}, no pull request yet — review its diff`, error: null });
+    this.sync?.moment(task.id, "started");
+    return task;
+  }
+
+  /** A worktree (and, for a new fix, a branch) left over from an earlier run for this ticket: refuse, saying exactly what
+   *  to run — nothing is removed automatically. An import checks out a branch that exists by definition, so it skips the branch. */
+  private async assertNoLeftover(repo: string, key: string, branch: string, checkBranch: boolean): Promise<void> {
+    const { git } = this.deps;
+    const leftoverDir = worktreePath(repo, key);
+    const [worktreeRegistered, dirExists, branchLeftover] = await Promise.all([
+      git.worktreeRegistered(repo, leftoverDir),
+      stat(leftoverDir).then(() => true, () => false),
+      checkBranch ? git.branchExists(repo, branch) : Promise.resolve(false),
+    ]);
+    if (worktreeRegistered || dirExists || branchLeftover) {
+      const steps: string[] = [];
+      if (worktreeRegistered) steps.push(`git -C ${repo} worktree remove --force ${leftoverDir}`);
+      else if (dirExists) steps.push(`rm -rf ${leftoverDir}`);
+      if (branchLeftover) steps.push(`git -C ${repo} branch -D ${branch}`);
+      const dirNote = !worktreeRegistered && dirExists ? " (present on disk but not registered with git)" : "";
+      throw new Conflict(
+        `a worktree and/or branch for ${key} already exist from an earlier run — worktree ${leftoverDir}${dirNote}, branch ${branch}. ` +
+        `Nothing is removed automatically (the worktree may hold unpushed work). To clear ${steps.length > 1 ? "them" : "it"} and try again, run:\n` +
+        steps.map(s => `  ${s}`).join("\n")
+      );
+    }
   }
 
   /** `expect`: the gate the human was looking at. A conflict can move a task out of "approved" on its

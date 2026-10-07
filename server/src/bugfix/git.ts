@@ -12,6 +12,13 @@ export const assertIssueKey = (key: string): string => {
   return key;
 };
 
+/** A branch name from a forge, fit to hand to git: nothing option-like, range-like, or that git refuses as a ref. */
+export function safeBranch(name: string): string {
+  if (!/^[A-Za-z0-9._/-]{1,200}$/.test(name) || name.startsWith("-") || name.includes("..") || name.endsWith(".lock") || name.endsWith("/") || name.includes("//"))
+    throw new Error(`unsafe branch name: ${name.slice(0, 80)}`);
+  return name;
+}
+
 export const branchName = (issueKey: string) => `bugfix/${assertIssueKey(issueKey)}`;
 export const worktreePath = (repo: string, issueKey: string) => path.join(repo, ".worktrees", `bugfix-${assertIssueKey(issueKey)}`);
 
@@ -124,6 +131,15 @@ export class GitOps {
   async createWorktree(repo: string, branch: string, startPoint: string): Promise<string> {
     const dir = worktreePath(repo, branch.replace(/^bugfix\//, ""));
     await this.run(repo, ["worktree", "add", "--no-track", "-b", branch, dir, startPoint]);
+    return dir;
+  }
+
+  /** A worktree on an existing remote branch — an imported PR's own branch — at the ticket's usual path (spec 2026-10-09 §3.3).
+   *  `-B` puts the local branch exactly at origin's tip; `--no-track` as in `createWorktree`. */
+  async checkoutWorktree(repo: string, issueKey: string, branch: string): Promise<string> {
+    const dir = worktreePath(repo, issueKey);
+    const b = safeBranch(branch);
+    await this.run(repo, ["worktree", "add", "--no-track", "-B", b, dir, `origin/${b}`]);
     return dir;
   }
 

@@ -25,6 +25,7 @@ import { ConflictWatcher } from "./bugfix/conflicts.js";
 import { TrackerCache } from "./bugfix/trackerCache.js";
 import { TrackerSync } from "./bugfix/trackerSync.js";
 import { BatchStarter } from "./bugfix/batch.js";
+import { Importer } from "./bugfix/importer.js";
 import { mcpTracker, type TrackerProvider } from "./bugfix/tracker.js";
 import { BugFixEngine, recoverStuckBugTasks } from "./bugfix/engine.js";
 import { PrWatcher } from "./bugfix/watcher.js";
@@ -191,7 +192,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const fakePrScript = fake ? (opts.fakePrScript ?? parseFakePrScript(process.env.AGENTGRID_FAKE_PR_SCRIPT)) : undefined;
   const fakeForgeHandle = fake ? fakeForge(fakePrScript ?? []) : null;
 
-  let wiredBugFix: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider; trackerCache?: TrackerCache; batches?: BatchStarter } | undefined;
+  let wiredBugFix: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider; trackerCache?: TrackerCache; batches?: BatchStarter; importer?: Importer } | undefined;
   let wiredWatcher: PrWatcher | null = null;
   let wiredConflicts: ConflictWatcher | null = null;
   let wiredCache: TrackerCache | null = null;
@@ -244,7 +245,11 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     const batches = new BatchStarter({ engine, git: new GitOps(), tracker, cache: trackerCache,
       activeTaskFor: key => bugStore.list().find(t => t.issue.key.toUpperCase() === key && !["done", "cancelled", "failed"].includes(t.stage))?.id ?? null });
     batches.on("event", e => store.emit("event", e));
-    wiredBugFix = { engine, store: bugStore, integrations, tracker, trackerCache, batches };
+    // Tickets already in progress, picked up where they are (spec 2026-10-09 §3).
+    const importer = new Importer({ engine, git: new GitOps(), forge, tracker, cache: trackerCache,
+      activeTaskFor: key => bugStore.list().find(t => t.issue.key.toUpperCase() === key && !["done", "cancelled", "failed"].includes(t.stage))?.id ?? null });
+    importer.on("event", e => store.emit("event", e));
+    wiredBugFix = { engine, store: bugStore, integrations, tracker, trackerCache, batches, importer };
     return wiredBugFix;
   };
 

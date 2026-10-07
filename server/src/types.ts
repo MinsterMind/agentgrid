@@ -86,12 +86,23 @@ export type GridEvent =
   | { type: "permission-settled"; id: string }
   | { type: "tracker-issues"; list: IssueList }
   | { type: "tracker-issue"; issue: TrackerIssue }
-  | { type: "batch"; state: BatchState };
+  | { type: "batch"; state: BatchState }
+  | { type: "import"; state: ImportState };
 
 /** A "start many" run (spec 2026-10-08 §5.2): where it is, and what happened to each ticket. */
 export interface BatchState {
   batchId: string; total: number; done: number;
   started: Array<{ key: string; taskId: string }>;
+  skipped: Array<{ key: string; message: string }>;
+  failed: Array<{ key: string; message: string }>;
+  finished: boolean;
+}
+
+/** An import of tickets already in progress (spec 2026-10-09 §3): each key imported, waiting for a choice of PR, skipped, or failed. */
+export interface ImportState {
+  importId: string; total: number; done: number;
+  imported: Array<{ key: string; taskId: string; stage: string }>;
+  choose: Array<{ key: string; candidates: Array<{ number: number; title: string; branch: string; url: string }> }>;
   skipped: Array<{ key: string; message: string }>;
   failed: Array<{ key: string; message: string }>;
   finished: boolean;

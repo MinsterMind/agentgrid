@@ -44,8 +44,17 @@ beforeEach(async () => {
   calls = [];
   app = createApp({ store, manager: new Manager(store, { queryFn: makeFakeQuery().queryFn }),
     bugs: { engine: fakeEngine(bugs, calls) as never, store: bugs, integrations: new IntegrationsStore(home),
-            tracker: { listMyIssues: async () => [{ key: "PAY-42", title: "Boom", url: "u", status: "Open", priority: "High" }], fetchIssue: async () => ISSUE, comment: async () => {} } } });
+            tracker: { listMyIssues: async () => [{ key: "PAY-42", title: "Boom", url: "u", status: "Open", priority: "High" }], fetchIssue: async () => ISSUE, comment: async () => {} },
+            importer: fakeImporter(calls) as never } });
 });
+
+/** A stand-in importer: records the import, knows one import id. */
+const fakeImporter = (calls: string[]) => {
+  const st = { importId: "i1", total: 1, done: 0, imported: [], choose: [], skipped: [], failed: [], finished: false };
+  return { start: (keys: string[], repo: string) => { calls.push(`import ${keys.join(",")} ${repo}`); return "i1"; },
+    get: (id: string) => (id === "i1" ? st : null),
+    choose: async (id: string, key: string, n: number) => { calls.push(`choose ${id} ${key} ${n}`); return st; } };
+};
 
 describe("bug task routes", () => {
   it("creates a task and lists it, and exposes it in /api/state", async () => {
@@ -164,6 +173,19 @@ describe("bug task routes", () => {
     expect((await request(app).get("/api/bugfix/spend").expect(200)).body).toEqual({ today: 1.5, limit: null });
     await request(app).put("/api/integrations").send({ dailyBudgetUsd: 25 }).expect(200);
     expect(calls).toContain("budget 25");
+  });
+
+  it("import: checks the keys and the repo, then starts in the background", async () => {
+    await request(app).post("/api/bugtasks/import").send({ keys: [], repo: "/r" }).expect(400);
+    await request(app).post("/api/bugtasks/import").send({ keys: Array.from({ length: 501 }, (_, i) => `PAY-${i + 1}`), repo: "/r" }).expect(400);
+    await request(app).post("/api/bugtasks/import").send({ keys: ["PAY-1"], repo: "relative" }).expect(400);
+    await request(app).post("/api/bugtasks/import").send({ keys: ["not a key"], repo: "/r" }).expect(400);
+    expect((await request(app).post("/api/bugtasks/import").send({ keys: ["PAY-1"], repo: "/r" }).expect(202)).body).toEqual({ importId: "i1" });
+    expect(calls).toContain("import PAY-1 /r");
+    expect((await request(app).get("/api/bugtasks/import/i1").expect(200)).body).toMatchObject({ importId: "i1" });
+    await request(app).get("/api/bugtasks/import/nope").expect(404);
+    expect((await request(app).post("/api/bugtasks/import/i1/choose").send({ key: "PAY-1", prNumber: 5 }).expect(200)).body).toMatchObject({ importId: "i1" });
+    await request(app).post("/api/bugtasks/import/i1/choose").send({ key: "PAY-1" }).expect(400);
   });
 
   it("Resolve all approves every bug waiting at the conflict gate", async () => {

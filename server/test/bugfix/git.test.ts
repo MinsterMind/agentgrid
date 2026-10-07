@@ -3,7 +3,7 @@ import { mkdtemp, writeFile, appendFile, rm } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { GitOps, worktreePath, branchName } from "../../src/bugfix/git.js";
+import { GitOps, worktreePath, branchName, safeBranch } from "../../src/bugfix/git.js";
 import { sh, makeRepo, gitflowClone } from "../helpers/gitRepos.js";
 
 const run = (cmd: string, args: string[], opts?: { cwd?: string }): Promise<{ stdout: string; stderr: string; code: number }> =>
@@ -381,5 +381,25 @@ describe("GitOps — conflicts without a forge", () => {
     expect(await git.conflictFiles(clone, "origin/develop", "origin/nope")).toBeNull();
     expect(await git.remoteTip(clone, "develop")).toBe((await sh(seed, ["rev-parse", "develop"])).trim());
     expect(await git.remoteTip(clone, "nope")).toBeNull();
+  });
+});
+
+describe("importing a branch already in progress (spec 2026-10-09 §3.3)", () => {
+  it("checks a worktree out on an existing remote branch, at the ticket's usual path", async () => {
+    const { clone } = await gitflowClone();
+    await sh(clone, ["checkout", "-q", "-b", "feature/PAY-42-x"]);
+    await writeFile(path.join(clone, "f.txt"), "fix\n"); await sh(clone, ["add", "."]); await sh(clone, ["commit", "-qm", "PAY-42: fix"]);
+    await sh(clone, ["push", "-q", "origin", "feature/PAY-42-x"]);
+    await sh(clone, ["checkout", "-q", "main"]); await sh(clone, ["branch", "-q", "-D", "feature/PAY-42-x"]);
+    const g = new GitOps();
+    await g.fetch(clone);
+    const dir = await g.checkoutWorktree(clone, "PAY-42", "feature/PAY-42-x");
+    expect(dir).toBe(worktreePath(clone, "PAY-42"));
+    expect(await g.currentBranch(dir)).toBe("feature/PAY-42-x");
+    expect((await sh(dir, ["log", "-1", "--format=%s"])).trim()).toBe("PAY-42: fix");
+  });
+  it("refuses unsafe branch names", () => {
+    for (const b of ["-x", "a..b", "a b", "", "x".repeat(201), "a.lock", "a/"]) expect(() => safeBranch(b)).toThrow(/unsafe branch/);
+    expect(safeBranch("feature/PAY-42_x.1")).toBe("feature/PAY-42_x.1");
   });
 });
