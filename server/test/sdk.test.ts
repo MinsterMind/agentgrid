@@ -23,6 +23,16 @@ describe("buildOptions", () => {
   });
 });
 
+describe("buildOptions overrides (spec 2026-10-09 §6.2)", () => {
+  it("applies per-run overrides over the role, and still resumes when asked", () => {
+    const canUseTool = async () => ({ behavior: "allow" as const });
+    const o = buildOptions(role, { ...agent, resumeSessionId: "s1" }, { canUseTool, abortController: new AbortController(),
+      overrides: { model: "claude-sonnet-5-5", effort: "medium", maxTurns: 60, maxBudgetUsd: 2 } });
+    expect(o).toMatchObject({ model: "claude-sonnet-5-5", effort: "medium", maxTurns: 60, maxBudgetUsd: 2, resume: "s1" });
+    expect((o.agents as Record<string, { model?: string }>).reviewer.model).toBe("claude-sonnet-5-5");
+  });
+});
+
 describe("buildOptions env", () => {
   it("strips forge credentials from the env handed to the agent process", () => {
     const ac = new AbortController(); const canUseTool = async () => ({ behavior: "allow" as const });
