@@ -53,7 +53,8 @@ function fakeGit(state: { commits: number; ticketCommits?: string[]; uncommitted
   g.currentBranch = async () => "bugfix/PAY-42";
   g.revParse = async () => state.head ?? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   g.commitsAhead = async (_dir, base) => { calls.push(`ahead of ${base}`); return state.commitsAhead ?? state.commits; };
-  g.diff = async () => ({ patch: "diff --git a/a b/a\n+x\n", files: [{ path: "a", additions: 1, deletions: 0 }], additions: 1, deletions: 0 });
+  // Carries a (zero-line) test file so a diff gate isn't blocked for want of a regression test.
+  g.diff = async () => ({ patch: "diff --git a/a b/a\n+x\n", files: [{ path: "a", additions: 1, deletions: 0 }, { path: "a.test.ts", additions: 0, deletions: 0 }], additions: 1, deletions: 0 });
   g.worktreeRegistered = async () => false;
   g.branchExists = async () => false;
   g.rebaseState = async () => state.rebaseState ?? { inProgress: false, conflicted: [] };
@@ -235,6 +236,44 @@ describe("regression tests in the plan", () => {
   });
 });
 
+describe("a change with no regression test", () => {
+  async function atDiffGate(files: string[]) {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "Verdict: change needed\n## Regression tests\n- t\n");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    await engine.approve(t.id);
+    gitState.commits = 1;
+    gitFake.git.diff = async () => ({ patch: "p", files: files.map(path => ({ path, additions: 1, deletions: 0 })), additions: 1, deletions: 0 });
+    await finishStage(); await until(() => bugs.get(t.id).stage === "diff-review");
+    return t;
+  }
+  it("records the diff's test files; with none, approving needs a reason", async () => {
+    const t = await atDiffGate(["src/cart.ts"]);
+    expect(bugs.get(t.id).testsInDiff).toEqual([]);
+    await expect(engine.approve(t.id)).rejects.toThrow(/no regression test/);
+    await expect(engine.overrideTests(t.id, "  ")).rejects.toThrow(/reason|why/);
+    const done = await engine.overrideTests(t.id, "config-only change, covered by e2e");
+    expect(done.stage).toBe("opening-pr");
+    expect(bugs.get(t.id).testOverride).toMatchObject({ reason: "config-only change, covered by e2e", head: "a".repeat(40) });
+    expect(bugs.get(t.id).history.some(h => /Approved without a regression test: config-only/.test(h.note))).toBe(true);
+  });
+  it("a change with a test file approves as before", async () => {
+    const t = await atDiffGate(["src/cart.ts", "src/cart.test.ts"]);
+    expect(bugs.get(t.id).testsInDiff).toEqual(["src/cart.test.ts"]);
+    expect((await engine.approve(t.id)).stage).toBe("opening-pr");
+  });
+  // Review Focus 4
+  it("an override counts only for the head it was given at", async () => {
+    const t = await atDiffGate(["src/cart.ts"]);
+    await bugs.patch(t.id, { testOverride: { reason: "r", at: "", head: "b".repeat(40) } });
+    await expect(engine.approve(t.id)).rejects.toThrow(/no regression test/);
+  });
+  it("overriding is only for the diff gate", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await expect(engine.overrideTests(t.id, "x")).rejects.toThrow(/diff/);
+  });
+});
+
 describe("no change needed", () => {
   it("the plan's verdict is read, and the human can close the task at the plan gate", async () => {
     const t = await engine.intake({ issueRef: "PAY-42", repo });
@@ -315,7 +354,7 @@ describe("stage progression", () => {
     await engine.retry(t.id);
     await finishStage(); await until(() => bugs.get(t.id).stage === "diff-review");
     expect(await bugs.readArtifact(t.id, "diff.patch")).toContain("diff --git");
-    expect(JSON.parse((await bugs.readArtifact(t.id, "diffstat.json"))!)).toMatchObject({ additions: 1, files: [{ path: "a" }] });
+    expect(JSON.parse((await bugs.readArtifact(t.id, "diffstat.json"))!)).toMatchObject({ additions: 1, files: [{ path: "a" }, { path: "a.test.ts" }] });
     expect((await engine.diffFor(t.id)).files[0].path).toBe("a");
   });
 

@@ -438,6 +438,11 @@ export function createApp(deps: AppDeps) {
     if (mergeMethod !== undefined && !MERGE_METHODS.includes(mergeMethod)) throw new BadRequest(`mergeMethod must be one of ${MERGE_METHODS.join(", ")}`);
     res.status(201).json(await bugs().engine.intake({ issueRef: issueRef.trim(), repo, mergePolicy, mergeMethod, ...(baseBranch ? { baseBranch } : {}), ...(startAnyway === true ? { startAnyway: true } : {}) }));
   }));
+  app.post("/api/bugtasks/:id/override-tests", wrap(async (req, res) => {
+    const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+    if (!reason) throw new BadRequest("say why there is no regression test");
+    res.json(await bugs().engine.overrideTests(req.params.id as string, reason));
+  }));
   app.post("/api/bugtasks/:id/close-no-change", wrap(async (req, res) => res.json(await bugs().engine.closeNoChange(req.params.id as string))));
   // `mergeMethod` is honoured only at the merge gate (`engine.mergeTask` checks the task is
   // actually "approved" before persisting it) — passing it anywhere else is simply ignored by

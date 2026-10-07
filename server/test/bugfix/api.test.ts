@@ -20,6 +20,7 @@ let app: ReturnType<typeof createApp>; let bugs: BugTaskStore; let calls: string
 const fakeEngine = (bugs: BugTaskStore, calls: string[]) => ({
   preflight: async (repo: string) => { calls.push(`preflight ${repo}`); return { ok: true, problems: [] }; },
   closeNoChange: async (id: string) => { calls.push(`no-change ${id}`); return bugs.get(id); },
+  overrideTests: async (id: string, reason: string) => { calls.push(`override ${id} ${reason}`); return bugs.get(id); },
   intake: async (input: { issueRef: string; repo: string; baseBranch?: string; startAnyway?: boolean }) => { calls.push(`intake ${input.issueRef}${input.baseBranch ? ` base=${input.baseBranch}` : ""}${input.startAnyway ? " anyway" : ""}`);
     if (input.issueRef === "PAY-1") throw Object.assign(new Error("PAY-1 may already be fixed"), { status: 409, code: "already-on-base" });
     return bugs.create({ issue: ISSUE, trackerProject: "PAY", sourceRepo: input.repo, worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", baseRef: "origin/main", ticketCommits: [], agentId: "bugfix@w", mergePolicy: "ask", mergeMethod: "squash" }); },
@@ -65,6 +66,13 @@ describe("bug task routes", () => {
     expect((await request(app).get("/api/bugfix/issues/PAY-42").expect(200)).body).toMatchObject({ key: "PAY-42", title: "Boom" });
     await request(app).get("/api/bugfix/issues/..%2Fx").expect(400);
     await request(app).get("/api/bugfix/issues/PAY 42").expect(400);
+  });
+
+  it("approving a diff without a test needs a reason", async () => {
+    await request(app).post("/api/bugtasks").send({ issueRef: "PAY-42", repo: "/r" });
+    await request(app).post("/api/bugtasks/bt1/override-tests").send({}).expect(400);
+    await request(app).post("/api/bugtasks/bt1/override-tests").send({ reason: "docs only" }).expect(200);
+    expect(calls).toContain("override bt1 docs only");
   });
 
   it("serves the plan markdown and the computed diff", async () => {

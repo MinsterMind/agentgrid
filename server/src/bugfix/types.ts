@@ -60,6 +60,10 @@ export interface BugTask {
   report: string | null;
   /** The plan's "Regression tests" items — what stops this bug coming back. Records before 0.12.0 normalise to []. */
   plannedTests: string[];
+  /** Test files in the diff the human is reviewing (null for records before 0.12.0, which never block). */
+  testsInDiff: string[] | null;
+  /** "Approve without a regression test", with the reason — valid only for the head it was given at. */
+  testOverride: { reason: string; at: string; head: string } | null;
   agentId: string;
   stage: BugStage;
   gate: { kind: GateKind; openedAt: string; reason?: "feedback" | "rebase" | "external" } | null;

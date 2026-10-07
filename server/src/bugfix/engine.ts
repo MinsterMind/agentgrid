@@ -1,12 +1,13 @@
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { stat } from "node:fs/promises";
-import { Conflict, NotFound } from "../store/store.js";
+import { BadRequest, Conflict, NotFound } from "../store/store.js";
 import type { Store } from "../store/store.js";
 import type { Manager } from "../runner/manager.js";
 import type { Assignment } from "../types.js";
 import { BugTaskStore } from "./store.js";
 import { GitOps, branchName, worktreePath, type DiffResult } from "./git.js";
+import { testFilesIn } from "./tests.js";
 import { IntegrationsStore } from "./integrations.js";
 import type { ForgeAdapter } from "./forge/index.js";
 import type { TrackerProvider } from "./tracker.js";
@@ -227,7 +228,26 @@ export class BugFixEngine {
     return this.advance(task.id, { type: "stage-done" });
   }
 
-  approve(taskId: string): Promise<BugTask> { return this.advance(taskId, { type: "approve" }); }
+  async approve(taskId: string): Promise<BugTask> {
+    const t = this.deps.bugs.get(taskId);
+    // A fix without a regression test can come back unnoticed: approving one takes a stated reason,
+    // given for this very diff (see overrideTests). Records from before testsInDiff never block.
+    if (t.stage === "diff-review" && Array.isArray(t.testsInDiff) && t.testsInDiff.length === 0 && t.testOverride?.head !== t.approvedHead) {
+      throw new Conflict("no regression test in this change — approve with a reason to override");
+    }
+    return this.advance(taskId, { type: "approve" });
+  }
+  /** Approve the diff although it adds no test, saying why — kept on the task and in its history. */
+  async overrideTests(taskId: string, reason: string): Promise<BugTask> {
+    const why = reason.trim();
+    if (!why) throw new BadRequest("say why there is no regression test");
+    const t = this.deps.bugs.get(taskId);
+    if (t.stage !== "diff-review") throw new Conflict(`a missing regression test is overridden at the diff gate (is ${t.stage})`);
+    const at = new Date().toISOString();
+    await this.deps.bugs.patch(taskId, { testOverride: { reason: why, at, head: t.approvedHead ?? "" },
+      history: [...t.history, { stage: t.stage, at, note: `Approved without a regression test: ${why}` }] });
+    return this.approve(taskId);
+  }
   /** At the plan gate: the plan found nothing to change (e.g. already fixed) and the human agrees. */
   async closeNoChange(taskId: string): Promise<BugTask> {
     const task = this.deps.bugs.get(taskId);
@@ -869,6 +889,7 @@ export class BugFixEngine {
       await bugs.patch(task.id, { approvedHead: await git.revParse(task.worktree) });
       await bugs.writeArtifact(task.id, "diff.patch", diff.patch);
       await bugs.writeArtifact(task.id, "diffstat.json", JSON.stringify({ files: diff.files, additions: diff.additions, deletions: diff.deletions }, null, 2));
+      await bugs.patch(task.id, { testsInDiff: testFilesIn(diff.files.map(f => f.path)) });
       return;
     }
     if (task.stage === "review-feedback") {
@@ -886,6 +907,7 @@ export class BugFixEngine {
       await bugs.patch(task.id, { approvedHead: head });
       await bugs.writeArtifact(task.id, "diff.patch", diff.patch);
       await bugs.writeArtifact(task.id, "diffstat.json", JSON.stringify({ files: diff.files, additions: diff.additions, deletions: diff.deletions }, null, 2));
+      await bugs.patch(task.id, { testsInDiff: testFilesIn(diff.files.map(f => f.path)) });
       return;
     }
     if (task.stage === "rebase") {
@@ -907,6 +929,7 @@ export class BugFixEngine {
       await bugs.patch(task.id, { approvedHead: await git.revParse(task.worktree) });
       await bugs.writeArtifact(task.id, "diff.patch", diff.patch);
       await bugs.writeArtifact(task.id, "diffstat.json", JSON.stringify({ files: diff.files, additions: diff.additions, deletions: diff.deletions }, null, 2));
+      await bugs.patch(task.id, { testsInDiff: testFilesIn(diff.files.map(f => f.path)) });
       return;
     }
     if (task.stage === "opening-pr") {
