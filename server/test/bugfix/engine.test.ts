@@ -2352,3 +2352,23 @@ describe("a failed check steps up the model (spec 2026-10-09 §6.3)", () => {
     expect(seenOverrides.at(-1)).toMatchObject({ model: "claude-opus-5" });
   });
 });
+
+describe("hand-off files on disk (spec 2026-10-09 §6.1)", () => {
+  it("writes ticket.md at intake", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    expect(await bugs.readArtifact(t.id, "ticket.md")).toContain("PAY-42");
+  });
+  it("a task from before 0.14 gets its ticket.md before its next stage", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await rm(path.join(bugs.dir(t.id), "ticket.md"));
+    await writeFile(path.join(bugs.dir(t.id), "plan.md"), "# plan\n");
+    await finishStage(); await engine.approve(t.id);
+    expect(await bugs.readArtifact(t.id, "ticket.md")).toContain("PAY-42");
+  });
+  it("writes the round's comments to feedback-<n>.md and names it in the prompt", async () => {
+    const h = await onMonitoringTask();
+    await engine.onPrFinding({ taskId: "bt1", pr: h.gitState.pr, event: { type: "review-changes-requested", comments: "rename it", source: "forge" } });
+    expect(await bugs.readArtifact("bt1", "feedback-1.md")).toContain("rename it");
+    expect(fake.calls.at(-1)!.prompt).toContain("feedback-1.md");
+  });
+});
