@@ -990,10 +990,15 @@ describe("a feedback round", () => {
     const { engine, bugs, fake, gitState } = await onMonitoringTask();
     gitState.prHead = "aaa"; gitState.head = "aaa";                      // nothing new
     await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "review-changes-requested", comments: "fix it" } });
-    await finishStage(fake);
+    // The round retries once on a stronger model by itself (spec 2026-10-09 §6.3); the second failure fails it.
+    const n = fake.calls.length;
+    fake.emit(success("done")); fake.end();
+    await until(() => fake.calls.length > n, 2000);
+    fake.emit(success("done")); fake.end();
+    await until(() => bugs.get("bt1").stage === "failed", 2000);
     const t = bugs.get("bt1");
     expect(t.stage).toBe("failed");
-    expect(t.error).toMatch(/no new commits/i);
+    expect(t.error).toMatch(/no new commits.*retried on .*no new commits/is);
   });
 
   it("stops dispatching after the cap and reports it instead", async () => {
@@ -1410,7 +1415,11 @@ describe("a rebase round", () => {
     await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "conflicting" } });
     await engine.approve("bt1");
     gitState.rebaseState = { inProgress: true, conflicted: ["src/a.ts"] };
-    await finishStage(fake);
+    const n = fake.calls.length;
+    fake.emit(success("done")); fake.end();
+    await until(() => fake.calls.length > n, 2000);                       // the automatic retry, a model up
+    fake.emit(success("done")); fake.end();
+    await until(() => bugs.get("bt1").stage === "failed", 2000);
     const t = bugs.get("bt1");
     expect(t.stage).toBe("failed");
     expect(t.error).toMatch(/rebase is not finished|conflict/i);
