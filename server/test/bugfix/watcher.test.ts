@@ -507,3 +507,54 @@ describe("PrWatcher — one listing call per repo (spec 2026-10-07 §6)", () => 
     expect(calls.list).toBe(1); expect(calls.get.sort()).toEqual([1, 2, 3]);
   });
 });
+
+describe("reviewer comments (spec 2026-10-09 §5)", () => {
+  const ev = (over: Partial<ReviewEvent>): ReviewEvent => ({ kind: "comment", state: "", author: "rev", isBot: false, isSelf: false, body: "please rename", at: "2026-10-09T10:00:00Z", ...over });
+  /** One poll of a task resting on its PR. `moved`: the PR's view changed since it was stored (so the watcher reads it);
+   *  otherwise the listing says nothing changed. */
+  async function pollOnce(o: { events: ReviewEvent[]; now: number; quietMs: number; stage?: BugTask["stage"]; pendingSince?: string; moved?: boolean; listed?: boolean }) {
+    const { bugs, id } = await monitoringTask();
+    await bugs.patch(id, { stage: o.stage ?? "monitoring", commentsSince: "2026-10-09T09:00:00Z", ...(o.pendingSince ? { commentsPendingSince: o.pendingSince } : {}) });
+    const stored = bugs.get(id).pr!;
+    const view = o.moved === false ? stored : { ...stored, lastSeenEventAt: "2026-10-09T10:05:00Z" };
+    const sinces: string[] = [];
+    const forge: ForgeAdapter = { ...forgeWith([{ found: view }]),
+      listReviewEvents: async (_r, _n, since) => { sinces.push(since); return o.events.filter(e => e.at > since); },
+      ...(o.listed ? { listOpenPrs: async () => ({ prs: [view] }) } : {}) };
+    const { found, onFinding } = collect();
+    await new PrWatcher({ bugs, forge, onFinding, now: () => o.now, quietMs: () => o.quietMs, jitter: ms => ms }).poll();
+    return { found, sinces };
+  }
+  it("a reviewer's comment starts a round once the quiet period has passed", async () => {
+    const { found, sinces } = await pollOnce({ events: [ev({})], now: Date.parse("2026-10-09T10:11:00Z"), quietMs: 600_000 });
+    expect(sinces[0]).toBe("2026-10-09T09:00:00Z");         // since the last round, not the PR's last seen event
+    expect(found[0].event).toMatchObject({ type: "review-changes-requested", source: "forge", upTo: "2026-10-09T10:00:00Z" });
+    expect((found[0].event as { comments: string }).comments).toContain("please rename");
+  });
+  it("inside the quiet period: no round, the newest comment's time is reported", async () => {
+    const { found } = await pollOnce({ events: [ev({})], now: Date.parse("2026-10-09T10:05:00Z"), quietMs: 600_000 });
+    expect(found[0]).toMatchObject({ event: null, commentsPending: "2026-10-09T10:00:00Z" });
+  });
+  it("my comments and bots' comments don't count", async () => {
+    const { found } = await pollOnce({ events: [ev({ isSelf: true }), ev({ isBot: true })], now: Date.parse("2026-10-09T11:00:00Z"), quietMs: 0 });
+    expect(found[0]?.event ?? null).toBeNull();
+  });
+  it("several comments make one round with all of them", async () => {
+    const { found } = await pollOnce({ events: [ev({ body: "one" }), ev({ body: "two", at: "2026-10-09T10:02:00Z" })], now: Date.parse("2026-10-09T10:30:00Z"), quietMs: 600_000 });
+    expect((found[0].event as { comments: string }).comments).toMatch(/one[\s\S]*two/);
+    expect((found[0].event as { upTo: string }).upTo).toBe("2026-10-09T10:02:00Z");
+  });
+  it("a newer comment during the wait restarts it", async () => {
+    const { found } = await pollOnce({ events: [ev({ body: "one" }), ev({ body: "two", at: "2026-10-09T10:09:00Z" })], now: Date.parse("2026-10-09T10:11:00Z"), quietMs: 600_000 });
+    expect(found[0]).toMatchObject({ event: null, commentsPending: "2026-10-09T10:09:00Z" });
+  });
+  it("a round falls due on a PR whose listed view hasn't moved", async () => {
+    const { found } = await pollOnce({ moved: false, listed: true, pendingSince: "2026-10-09T10:00:00Z", events: [ev({})], now: Date.parse("2026-10-09T10:11:00Z"), quietMs: 600_000 });
+    expect(found[0]?.event).toMatchObject({ type: "review-changes-requested" });
+  });
+  it("comments are left alone while the task is at the merge gate", async () => {
+    const { found, sinces } = await pollOnce({ stage: "approved", events: [ev({})], now: Date.parse("2026-10-09T11:00:00Z"), quietMs: 0 });
+    expect(found[0]?.event?.type).not.toBe("review-changes-requested");
+    expect(sinces).toEqual([]);
+  });
+});

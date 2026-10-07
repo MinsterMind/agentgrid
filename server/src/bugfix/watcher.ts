@@ -18,6 +18,10 @@ export interface PrFinding {
   /** A PR found for the branch of a task that FAILED while pushing or opening one — i.e. opened
    *  outside AgentGrid. The engine decides what that means; `event` is null. */
   external?: true;
+  /** The newest reviewer comment waiting out the quiet period; null: none waits (spec 2026-10-09 §5). Absent: not looked at. */
+  commentsPending?: string | null;
+  /** Why the user's own comments couldn't be told apart from reviewers'. */
+  selfUnknown?: string;
 }
 
 /** Stages that fail BEFORE a pull request exists — the only failures after which someone may
@@ -45,6 +49,8 @@ export interface WatcherDeps {
   ceilingMs?: number;
   jitter?: (ms: number) => number;
   warnAfterFailures?: number;
+  /** How long reviewers must be quiet before their comments start a round (default 10 minutes). */
+  quietMs?: () => number;
 }
 
 interface Backoff { dueAt: number; intervalMs: number; failures: number; warned: boolean }
@@ -90,6 +96,7 @@ export class PrWatcher {
   private ceilingMs: number;
   private jitter: (ms: number) => number;
   private warnAfter: number;
+  private quietMs: () => number;
 
   constructor(private deps: WatcherDeps) {
     this.now = deps.now ?? (() => Date.now());
@@ -97,6 +104,7 @@ export class PrWatcher {
     this.ceilingMs = deps.ceilingMs ?? 300_000;
     this.jitter = deps.jitter ?? (ms => ms + Math.floor(Math.random() * ms * 0.1));
     this.warnAfter = deps.warnAfterFailures ?? 3;
+    this.quietMs = deps.quietMs ?? (() => 600_000);
   }
 
   start(intervalMs = 1_000): void {
@@ -164,7 +172,7 @@ export class PrWatcher {
           await this.tick(t, b, forge);
           continue;
         }
-        if (listedSame(now, t.pr!)) { await this.deps.onChecked?.(t.id, new Date(this.now()).toISOString()); continue; }
+        if (listedSame(now, t.pr!) && !this.commentsDue(t)) { await this.deps.onChecked?.(t.id, new Date(this.now()).toISOString()); continue; }
         // The repo backs off only when reads find nothing new — a listing that merely looks different must not pin it.
         if (await this.tick(t, per(t), forge)) changed = true;
       }
@@ -204,68 +212,52 @@ export class PrWatcher {
     // a bot commenting on every CI run, say — must not by itself hold the interval at base:
     // that field alone says "something happened", not "something that matters happened".
     const stateChanged = statesDiffer(pr, prev);
-    const anyChange = pr.lastSeenEventAt !== prev.lastSeenEventAt || stateChanged;
+    // A comment round whose quiet period has run out is due even on a PR that looks unchanged.
+    const anyChange = pr.lastSeenEventAt !== prev.lastSeenEventAt || stateChanged || this.commentsDue(task);
     if (!anyChange) { this.schedule(task.id, b, false); await this.deps.onChecked?.(task.id, checkedAt); return false; }
 
-    const event = await this.decide(task, pr, forge);
+    const d = await this.decide(task, pr, forge);
+    const event = d.event;
     // Reset to base only when the tick produced an event, or the change was to a state field.
     // A bot-driven timestamp bump with no event and no state change still gets reported —
     // the card needs the latest `lastSeenEventAt` — but the backoff keeps growing regardless.
     this.schedule(task.id, b, event !== null || stateChanged);
-    await this.deps.onFinding({ taskId: task.id, pr, event, checkedAt });
+    await this.deps.onFinding({ taskId: task.id, pr, event, checkedAt,
+      ...(d.commentsPending !== undefined ? { commentsPending: d.commentsPending } : {}), ...(d.selfUnknown ? { selfUnknown: d.selfUnknown } : {}) });
     return event !== null || stateChanged;
   }
 
-  /** Order matters: a conflicting PR cannot be merged, so conflict outranks an approval. */
-  private async decide(task: BugTask, pr: PrInfo, forge: ForgeAdapter): Promise<BugEvent | null> {
-    if (pr.state === "MERGED") return { type: "pr-merged" };
-    if (pr.state === "CLOSED") return { type: "pr-closed" };
-    if (pr.mergeable === "CONFLICTING") return { type: "conflicting" };
+  /** Comments waited out the quiet period: read the PR again even if nothing about it moved. */
+  private commentsDue(t: BugTask): boolean {
+    return t.stage === "monitoring" && !!t.commentsPendingSince && this.now() - Date.parse(t.commentsPendingSince) >= this.quietMs();
+  }
+
+  /** Order matters: a conflicting PR cannot be merged, so conflict outranks an approval. A reviewer's comment starts a
+   *  round once reviewers have been quiet for a while — all the comments in one round (spec 2026-10-09 §5). */
+  private async decide(task: BugTask, pr: PrInfo, forge: ForgeAdapter): Promise<{ event: BugEvent | null; commentsPending?: string | null; selfUnknown?: string }> {
+    if (pr.state === "MERGED") return { event: { type: "pr-merged" } };
+    if (pr.state === "CLOSED") return { event: { type: "pr-closed" } };
+    if (pr.mergeable === "CONFLICTING") return { event: { type: "conflicting" } };
     if (pr.checks === "FAILURE") {
-      // A red build stands until CI runs again, so "still FAILURE" is not evidence this failure is
-      // unanswered — the same shape as the standing CHANGES_REQUESTED below. Here the head IS the
-      // evidence: a fix for failing checks always moves it, so a failure at a head a round was
-      // already dispatched at is old news. Note what this deliberately does NOT do: dedupe on
-      // "checks moved TO failure", which would never dispatch at all for a PR that reaches
-      // `monitoring` already red (the stored view is FAILURE from the first look).
-      //
-      // No head on either side means no evidence either way — dispatch, the same fallback
-      // `doPush` takes for an adapter that doesn't report `headSha`.
       const answered = Boolean(pr.headSha && task.checksRoundHead && pr.headSha === task.checksRoundHead);
-      // Suppressed means "this red build is old news", not "this tick is old news": fall through
-      // rather than returning, so a new human review arriving on the same tick is still seen. The
-      // finding advances the `lastSeenEventAt` high-water mark either way, so a review dropped here
-      // would be dropped for good.
-      if (!answered) return { type: "checks-failed", checks: `checks are failing on ${pr.url}`, headSha: pr.headSha ?? null };
+      if (!answered) return { event: { type: "checks-failed", checks: `checks are failing on ${pr.url}`, headSha: pr.headSha ?? null } };
     }
-    if (pr.reviewDecision === "CHANGES_REQUESTED") {
-      // GitHub holds `reviewDecision === "CHANGES_REQUESTED"` until a reviewer re-reviews, so
-      // the decision by itself says nothing about whether THIS review has been answered. After
-      // the server pushes round 1 the view still reads CHANGES_REQUESTED, and `statesDiffer`
-      // only dedupes on "did a watched field move" — so any later change (a bot comment bumping
-      // `lastSeenEventAt`, or the CI our own push re-triggered moving PENDING -> SUCCESS) would
-      // re-fire a round with no real feedback in it, which `verify()` then fails for having no
-      // new commits. The evidence a round needs is a NEW human voice on the PR since the view we
-      // already have: at least one non-bot review or comment strictly after `lastSeenEventAt`.
-      //
-      // Deliberately NOT also suppressing while `pr.headSha` still equals the head the last
-      // round pushed: a genuine re-review arrives without the head moving at all, so that
-      // condition (alone, or conjoined with this one) would suppress exactly the case that must
-      // still fire. This test is sufficient on its own, needs no new durable state, and is
-      // decided by data the adapter already returns.
-      const events = await forge.listReviewEvents(task.sourceRepo, pr.number, task.pr!.lastSeenEventAt);
-      // The evidence is the event, not its rendered text: a reviewer may request changes with
-      // an empty body, and that is still a new round.
-      // `kind: "check"` is a human voice only by accident of attribution: `ReviewEvent.kind`
-      // declares it (spec §6) and spec §4.4 is explicit that CI must wake the agent through the
-      // status rollup, never through an event. An adapter that ever attributed one to a person
-      // would otherwise fire a round whose feedback reads " (failure): unit tests".
-      if (!events.some(e => e.kind !== "check" && !e.isBot)) return null;
-      const comments = describeComments(events);
-      return { type: "review-changes-requested", comments: comments || `changes were requested on ${pr.url}`, source: "forge" };
+    const since = task.commentsSince ?? task.pr!.lastSeenEventAt;
+    const human = (e: ReviewEvent) => e.kind !== "check" && !e.isBot && !e.isSelf;
+    if (pr.reviewDecision === "CHANGES_REQUESTED" && task.stage === "monitoring") {
+      const theirs = (await forge.listReviewEvents(task.sourceRepo, pr.number, since)).filter(human);
+      if (theirs.length) return { event: { type: "review-changes-requested", comments: describeComments(theirs) || `changes were requested on ${pr.url}`, source: "forge", upTo: theirs.at(-1)!.at }, commentsPending: null };
     }
-    if (pr.reviewDecision === "APPROVED") return { type: "review-approved" };
-    return null;                       // a comment, a pending check: the card updates, nothing runs
+    if (pr.reviewDecision === "APPROVED") return { event: { type: "review-approved" } };
+    // At the merge gate or in a conflict, comments wait: `commentsSince` stays put, so they're read once the task rests again.
+    if (task.stage !== "monitoring") return { event: null };
+    const who = forge.whoami ? await forge.whoami(task.sourceRepo).catch((e: Error) => ({ unavailable: e.message })) : null;
+    const selfUnknown = who && "unavailable" in who ? { selfUnknown: who.unavailable } : {};
+    const theirs = (await forge.listReviewEvents(task.sourceRepo, pr.number, since)).filter(e => human(e) && e.body.trim());
+    if (!theirs.length) return { event: null, commentsPending: null, ...selfUnknown };
+    const newest = theirs.at(-1)!.at;
+    if (this.now() - Date.parse(newest) < this.quietMs()) return { event: null, commentsPending: newest, ...selfUnknown };
+    return { event: { type: "review-changes-requested", comments: describeComments(theirs), source: "forge", upTo: newest }, commentsPending: null, ...selfUnknown };
   }
 
   private schedule(id: string, b: Backoff, changed: boolean): void {

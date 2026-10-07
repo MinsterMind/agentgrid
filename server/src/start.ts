@@ -195,6 +195,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   let wiredWatcher: PrWatcher | null = null;
   let wiredConflicts: ConflictWatcher | null = null;
   let wiredCache: TrackerCache | null = null;
+  let quietTimer: NodeJS.Timeout | null = null;
   let lastCfg = cfg;
 
   /**
@@ -220,8 +221,14 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     engine.attach();
     wiredBugFix?.engine.detach();
     wiredWatcher?.stop();
+    // How long reviewers must be quiet before their comments start a round (spec 2026-10-09 §5), re-read every 30 s.
+    let quietMs = 600_000;
+    const readQuiet = () => integrations.read().then(c => { quietMs = (c.commentQuietMinutes ?? 10) * 60_000; }).catch(() => {});
+    await readQuiet();
+    if (quietTimer) clearInterval(quietTimer);
+    quietTimer = setInterval(() => void readQuiet(), 30_000); quietTimer.unref();
     wiredWatcher = forge
-      ? new PrWatcher({ bugs: bugStore, forge, onFinding: f => engine.onPrFinding(f).catch(err => log(`bugfix: watcher finding failed: ${(err as Error).message}`)),
+      ? new PrWatcher({ bugs: bugStore, forge, quietMs: () => quietMs, onFinding: f => engine.onPrFinding(f).catch(err => log(`bugfix: watcher finding failed: ${(err as Error).message}`)),
           onChecked: (id, at) => engine.onPrChecked(id, at).catch(err => log(`bugfix: recording the poll failed: ${(err as Error).message}`)),
           ...(fake ? { baseMs: 200, ceilingMs: 1_000 } : {}) })
       : null;

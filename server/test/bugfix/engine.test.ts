@@ -2449,3 +2449,27 @@ describe("conflicts resolve themselves (spec 2026-10-09 §4)", () => {
     expect(bugs.get("bt1").stage).toBe("conflict");
   });
 });
+
+describe("comment bookkeeping (spec 2026-10-09 §5)", () => {
+  it("a comment round moves commentsSince past the comments it answered and clears the waiting mark", async () => {
+    const h = await onMonitoringTask();
+    await bugs.patch("bt1", { commentsPendingSince: "2026-10-09T10:00:00Z" });
+    await engine.onPrFinding({ taskId: "bt1", pr: h.gitState.pr, event: { type: "review-changes-requested", comments: "x", source: "forge", upTo: "2026-10-09T10:00:00Z" } });
+    expect(bugs.get("bt1")).toMatchObject({ stage: "review-feedback", commentsSince: "2026-10-09T10:00:00Z", commentsPendingSince: null });
+  });
+  it("records a waiting comment, and says so when it can't tell which comments are yours", async () => {
+    const h = await onMonitoringTask();
+    await engine.onPrFinding({ taskId: "bt1", pr: h.gitState.pr, event: null, commentsPending: "2026-10-09T10:00:00Z", selfUnknown: "gh api user failed" });
+    expect(bugs.get("bt1")).toMatchObject({ commentsPendingSince: "2026-10-09T10:00:00Z", commentsNote: "Couldn't tell which comments are yours: gh api user failed" });
+  });
+  it("the PR AgentGrid opens counts comments only from its opening", async () => {
+    await onMonitoringTask();
+    expect(typeof bugs.get("bt1").commentsSince).toBe("string");
+  });
+  it("at the round limit, the waiting mark is cleared so the watcher stops re-reading", async () => {
+    const h = await onMonitoringTask();
+    await bugs.patch("bt1", { feedbackRounds: FEEDBACK_ROUND_CAP, commentsPendingSince: "2026-10-09T10:00:00Z" });
+    await engine.onPrFinding({ taskId: "bt1", pr: h.gitState.pr, event: { type: "review-changes-requested", comments: "x", source: "forge", upTo: "2026-10-09T10:00:00Z" } });
+    expect(bugs.get("bt1")).toMatchObject({ stage: "monitoring", commentsPendingSince: null });
+  });
+});

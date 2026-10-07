@@ -79,6 +79,12 @@ export interface BugTask {
   queuedNote: { text: string; trusted: boolean } | null;
   /** Why a queued task is held rather than waiting for a slot — the daily spending limit (spec 2026-10-09 §6.4). */
   queuedReason: string | null;
+  /** Reviewer comments up to here have had their round (spec 2026-10-09 §5). Null: since the PR's last seen event. */
+  commentsSince: string | null;
+  /** The newest reviewer comment still waiting out the quiet period; null when none waits. */
+  commentsPendingSince: string | null;
+  /** Why comment rounds may be imperfect — e.g. the user's own comments couldn't be told apart. */
+  commentsNote: string | null;
   /** The last status move on the tracker that failed (shown on the card); cleared by the next success. */
   trackerSyncError: string | null;
   agentId: string;
@@ -163,7 +169,7 @@ export type BugEvent =
    *  "operator" is the human at the console typing into this app. The watcher only ever
    *  produces "forge"; `addressComments` produces either, depending on whether the human
    *  supplied the text themselves. */
-  | { type: "review-changes-requested"; comments: string; source: "forge" | "operator" }
+  | { type: "review-changes-requested"; comments: string; source: "forge" | "operator"; upTo?: string }
   /** `headSha` is the PR head the failing build ran against, and the engine records it as
    *  `BugTask.checksRoundHead` when it dispatches the round — that is what stops the same red
    *  build being answered twice. Null when the adapter does not report a head. */

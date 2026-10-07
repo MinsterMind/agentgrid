@@ -448,9 +448,15 @@ export class BugFixEngine {
     // race it exists to lose safely.
     if (f.pr) await this.deps.bugs.patchPr(task.id, f.pr, f.checkedAt ?? new Date().toISOString());
     await this.clearUnreachable(task.id);
+    // Reviewer comments waiting out the quiet period, and whether the user's own could be told apart (spec 2026-10-09 §5).
+    if (f.commentsPending !== undefined && this.deps.bugs.get(task.id).commentsPendingSince !== f.commentsPending) await this.deps.bugs.patch(task.id, { commentsPendingSince: f.commentsPending });
+    if (f.selfUnknown || f.commentsPending !== undefined) {
+      const note = f.selfUnknown ? `Couldn't tell which comments are yours: ${f.selfUnknown}` : null;
+      if (this.deps.bugs.get(task.id).commentsNote !== note) await this.deps.bugs.patch(task.id, { commentsNote: note });
+    }
     if (!f.event) return;
     if (REVIEW_FEEDBACK_EVENTS.has(f.event.type) && task.feedbackRounds >= FEEDBACK_ROUND_CAP) {
-      await this.deps.bugs.patch(task.id, { error: `this task has hit ${task.feedbackRounds} feedback rounds; AgentGrid has stopped dispatching after ${FEEDBACK_ROUND_CAP} feedback rounds — use "Ask the agent to address these" to continue` });
+      await this.deps.bugs.patch(task.id, { commentsPendingSince: null, error: `this task has hit ${task.feedbackRounds} feedback rounds; AgentGrid has stopped dispatching after ${FEEDBACK_ROUND_CAP} feedback rounds — use "Ask the agent to address these" to continue` });
       return;
     }
     await this.advance(task.id, await this.withAutoResolve(f.event));
@@ -595,6 +601,8 @@ export class BugFixEngine {
     // already answered from a new one (see `BugTask.checksRoundHead`). Written only now, after
     // `nextStage` accepted the transition — a refused event must leave nothing behind.
     if (event.type === "checks-failed") await this.deps.bugs.patch(taskId, { checksRoundHead: event.headSha });
+    // The comments this round answers are handled: the next round counts only newer ones.
+    if (event.type === "review-changes-requested" && event.upTo) await this.deps.bugs.patch(taskId, { commentsSince: event.upTo, commentsPendingSince: null });
     // What conflicts, and where to return if it clears: written only once nextStage accepted the finding.
     if (event.type === "conflicting") {
       const files = event.files ?? current.conflict?.files ?? [];
@@ -828,7 +836,10 @@ export class BugFixEngine {
       throw new Error("unavailable" in created ? created.unavailable : "the forge did not return a pull request");
     }
     if (created.found.state !== "OPEN") throw new Error(`pull request #${created.found.number} is ${created.found.state.toLowerCase()}, not open`);
-    await bugs.patchPr(task.id, created.found, new Date().toISOString());
+    const openedAt = new Date().toISOString();
+    await bugs.patchPr(task.id, created.found, openedAt);
+    // Reviewer comments count from here (spec 2026-10-09 §5).
+    await bugs.patch(task.id, { commentsSince: openedAt });
     this.sync?.moment(task.id, "prOpened");
     await tracker.comment(task.issue.key, `Fix in progress — pull request: ${created.found.url}`).catch(() => {});
   }
