@@ -465,6 +465,41 @@ describe("PrWatcher — one listing call per repo (spec 2026-10-07 §6)", () => 
     expect(calls).toEqual({ list: 1, get: [3] });
     expect(found.map(x => x.event)).toEqual([{ type: "pr-merged" }]);
   });
+  // Final review #2: GitHub's updatedAt needn't move when CI finishes — compare what the listing carries.
+  it("a build that goes red is noticed even when updatedAt didn't move", async () => {
+    const bugs = await threeTasks();
+    const { found, onFinding } = collect();
+    const red = { lastSeenEventAt: "t1", headSha: "h1", checks: "FAILURE" };
+    const { f, calls } = forge(() => ({ prs: listing({ 1: red }) }), n => ({ found: pr({ number: n, ...red }) }));
+    await new PrWatcher({ bugs, forge: f, onFinding }).poll();
+    expect(calls.get).toEqual([1]);
+    expect(found.map(x => x.event?.type)).toEqual(["checks-failed"]);
+  });
+  it("what a listing doesn't carry (checks, mergeable on Bitbucket) isn't a change — unless checks were still running", async () => {
+    const bugs = await threeTasks();
+    await bugs.patch(bugs.list()[2].id, { pr: pr({ number: 3, lastSeenEventAt: "t3", headSha: "h3", checks: "PENDING" }) });
+    const { f, calls } = forge(() => ({ prs: listing({ 1: { checks: null, mergeable: null }, 2: { checks: null, mergeable: null }, 3: { checks: null, mergeable: null } }) }),
+      n => ({ found: pr({ number: n, lastSeenEventAt: `t${n}`, headSha: `h${n}`, checks: "PENDING" }) }));
+    await new PrWatcher({ bugs, forge: f, onFinding: () => {} }).poll();
+    expect(calls.get).toEqual([3]);                    // only the PR whose CI we were waiting on
+  });
+  // Final review #3
+  it("a read that finds nothing new lets the repo's polling slow down", async () => {
+    const bugs = await threeTasks();
+    let t = 0;
+    const { f, calls } = forge(() => ({ prs: listing({ 2: { reviewDecision: "APPROVED" } }) }), n => ({ found: pr({ number: n, lastSeenEventAt: `t${n}`, headSha: `h${n}` }) }));
+    const w = new PrWatcher({ bugs, forge: f, onFinding: () => {}, now: () => t, jitter: ms => ms, baseMs: 1000, ceilingMs: 8000 });
+    await w.poll(); t = 1000; await w.poll(); t = 2000; await w.poll();
+    expect(calls.list).toBe(2);                         // due at 0 and 1000, then not until 3000 — it backed off
+  });
+  it("a PR the listing doesn't show is read on its own schedule, not every sweep", async () => {
+    const bugs = await threeTasks();
+    let t = 0;
+    const { f, calls } = forge(() => ({ prs: listing({}, [3]) }), n => ({ found: pr({ number: n, lastSeenEventAt: `t${n}`, headSha: `h${n}` }) }));
+    const w = new PrWatcher({ bugs, forge: f, onFinding: () => {}, now: () => t, jitter: ms => ms, baseMs: 1000, ceilingMs: 8000 });
+    await w.poll(); t = 1000; await w.poll(); t = 2000; await w.poll(); t = 2500; await w.poll();
+    expect(calls.get).toEqual([3, 3]);                  // at 0 and 1000, then its own backoff (next due at 3000)
+  });
   it("a listing that fails falls back to reading each PR", async () => {
     const bugs = await threeTasks();
     const { f, calls } = forge(() => ({ unavailable: "rate limited" }), n => ({ found: pr({ number: n, lastSeenEventAt: `t${n}`, headSha: `h${n}` }) }));

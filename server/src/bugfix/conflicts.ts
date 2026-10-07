@@ -44,10 +44,23 @@ export class ConflictWatcher {
         if (!RESTING.includes(t.stage) || !t.pr) continue;
         byRepo.set(t.sourceRepo, [...(byRepo.get(t.sourceRepo) ?? []), t]);
       }
+      if (!byRepo.size) return;
+      // `merge-tree --write-tree` needs git 2.38+. Older git would fail every check silently — say so instead.
+      this.gitProblem ??= await this.checkGit();
+      if (this.gitProblem) { for (const tasks of byRepo.values()) for (const t of tasks) await this.deps.onProblem?.(t.id, this.gitProblem); return; }
       for (const [repo, tasks] of byRepo) await this.checkRepo(repo, tasks);
     } finally {
       this.running = false;
     }
+  }
+
+  private gitProblem: string | null | undefined;
+  private async checkGit(): Promise<string | null> {
+    const v = await this.deps.git.gitVersion();
+    if (!v) return "Couldn't check for conflicts: git could not be run";
+    const [major, minor] = v;
+    return major > 2 || (major === 2 && minor >= 38) ? null
+      : `Conflict checks need git 2.38 or newer (this machine has ${v.join(".")}); the forge's own conflict flag still works`;
   }
 
   private async checkRepo(repo: string, tasks: BugTask[]): Promise<void> {

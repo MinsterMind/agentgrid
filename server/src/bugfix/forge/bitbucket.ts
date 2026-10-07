@@ -331,7 +331,7 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
       const slug = await resolveRepo(repoDir);
       if (!slug.ok) return { unavailable: slug.reason };
       const q = 'source.branch.name ~ "bugfix/" AND state="OPEN"';
-      let path: string | null = `/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests?pagelen=50&q=${encodeURIComponent(q)}`;
+      let path: string | null = `/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests?pagelen=50&fields=${encodeURIComponent("+values.participants")}&q=${encodeURIComponent(q)}`;
       const prs: PrInfo[] = [];
       for (let page = 0; path && page < 50; page++) {
         const r = await api(path);

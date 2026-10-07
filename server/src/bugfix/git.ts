@@ -83,6 +83,13 @@ export class GitOps {
     return out.split("\n").map(l => l.trim()).filter(Boolean);
   }
 
+  /** git's version as [major, minor, patch], or null when git can't be run. */
+  async gitVersion(): Promise<[number, number, number] | null> {
+    const out = await this.run(process.cwd(), ["--version"]).catch(() => "");
+    const m = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3] ?? 0)] : null;
+  }
+
   /** The tip of `branch` on origin, read with `git ls-remote` — one cheap call, no forge quota.
    *  Null when origin has no such branch or can't be reached. */
   async remoteTip(repo: string, branch: string): Promise<string | null> {

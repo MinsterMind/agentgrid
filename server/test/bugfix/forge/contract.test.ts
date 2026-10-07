@@ -144,7 +144,8 @@ describe("listOpenPrs — one call per repo, not per PR (spec 2026-10-07 §6)", 
     const r = await f.listOpenPrs!("/repo") as { prs: Array<{ number: number }> };
     expect(r.prs.map(p => p.number)).toEqual([1, 2]);
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatch(/^gh pr list --state open --author @me --limit 1000 --json /);
+    // ~1000 bug PRs plus the user's own: room enough that a bug PR isn't cut off
+    expect(calls[0]).toMatch(/^gh pr list --state open --author @me --limit 3000 --json /);
     expect(await githubAdapter(async () => ({ stdout: "", stderr: "gh: not logged in", code: 1 })).listOpenPrs!("/repo")).toEqual({ unavailable: "gh: not logged in" });
   });
 
@@ -164,6 +165,7 @@ describe("listOpenPrs — one call per repo, not per PR (spec 2026-10-07 §6)", 
     expect(r.prs.map(p => p.number)).toEqual([1, 2, 3]);
     expect(calls).toHaveLength(2);
     expect(calls[0]).toContain('source.branch.name ~ "bugfix/"'); expect(calls[0]).toContain('state="OPEN"');
+    expect(calls[0]).toContain("fields=+values.participants");      // the review decision comes from participants
     expect(r.prs[0]).toMatchObject({ checks: null, mergeable: null });     // not in a listing: read per PR when it changed
   });
 });

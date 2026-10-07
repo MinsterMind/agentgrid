@@ -114,4 +114,17 @@ describe("ConflictWatcher", () => {
     await w.tick();
     expect(problems.filter(([id]) => id === idOf("B")).at(-1)?.[1]).toBeNull();
   });
+
+  // Final review #5: merge-tree --write-tree needs git 2.38+; older git used to fail silently.
+  it("on git older than 2.38 it says so on every card and checks nothing", async () => {
+    (git as any).run = async (_c: string, args: string[]) => { if (args[0] === "--version") return "git version 2.34.1\n"; throw new Error("unexpected"); };
+    await mergeIntoDevelop("bugfix/A");
+    await watcher().tick();
+    expect(findings).toEqual([]);
+    expect(problems.map(([, m]) => m)).toEqual([expect.stringMatching(/need git 2\.38 or newer.*2\.34\.1/), expect.stringMatching(/2\.38/)]);
+  });
+  it("reads the git version", async () => {
+    expect(await new GitOps(async () => "git version 2.50.1 (Apple Git-155)\n").gitVersion()).toEqual([2, 50, 1]);
+    expect(await new GitOps(async () => { throw new Error("no git"); }).gitVersion()).toBeNull();
+  });
 });
