@@ -20,7 +20,7 @@ import { nextStage } from "./stages.js";
 import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask, type GateKind, type PrInfo, type TrackerIssue } from "./types.js";
 import { describeComments, PR_STAGES, type PrFinding } from "./watcher.js";
 import { parseRemote } from "./forge/bitbucket.js";
-import { stageRun, MODEL_STAGES, type ModelStage } from "./models.js";
+import { stageRun, stepUp, MODEL_STAGES, type ModelStage } from "./models.js";
 import type { RunOverrides } from "../runner/runner.js";
 import type { MergeMethod } from "./forge/types.js";
 
@@ -30,6 +30,11 @@ export const FEEDBACK_ROUND_CAP = 5;
 /** Agent stages that make decisions a human may want to overturn, and so report assumptions.
  *  Not `opening-pr`: it writes a PR body for a change the human has already approved. */
 export const ASSUMPTION_STAGES: BugStage[] = ["analyzing", "implementing", "review-feedback", "rebase"];
+
+/** Stages that retry once on their own, a model up, when their check fails: cheap, and a weak model is the likely cause (spec 2026-10-09 §6.3). */
+export const AUTO_RETRY_STAGES: BugStage[] = ["opening-pr", "review-feedback", "rebase"];
+/** Run endings that mean the model ran out of room — a stronger model is the remedy, as for a failed check. */
+const STEP_UP_ERRORS = new Set(["error_max_turns", "error_max_budget_usd"]);
 
 /** Prefix of the "the forge could not be read" note. One constant because three places have to
  *  agree on it: the write, the clear once a poll succeeds again, and the card that renders it. */
@@ -129,6 +134,10 @@ export class BugFixEngine {
   private dispatchAssumptions = new Map<string, { token: string; stage: BugStage; round: number }>();
   /** The model each task's current dispatch was given — logged with the run's cost when it finishes. */
   private dispatchModel = new Map<string, string>();
+  /** Task id → the first failure's message, while its one automatic retry runs. */
+  private autoRetried = new Map<string, string>();
+  /** The note the current dispatch rendered — kept so an automatic retry of a feedback round still has the comments. */
+  private lastNote = new Map<string, StageNote>();
 
   constructor(deps: EngineDeps) { this.deps = deps; this.role = deps.role ?? "bugfix"; }
 
@@ -636,6 +645,7 @@ export class BugFixEngine {
       this.dispatchAssumptions.delete(task.id);
     }
     const prompt = await renderStagePrompt(stage, task, { ...ctx, assumptionsPath }, this.deps.presetsDir);
+    if (ctx.note) this.lastNote.set(task.id, ctx.note); else this.lastNote.delete(task.id);
     this.pendingNote.delete(task.id);
 
     const agent = store.getAgent(task.agentId);
@@ -922,7 +932,10 @@ export class BugFixEngine {
     await manager.ack(task.agentId).catch(() => {});
 
     if (a.state === "failed") {
-      await this.advance(task.id, { type: "stage-failed", reason: a.error ?? "the agent's run failed" });
+      const reason = a.error ?? "the agent's run failed";
+      if (a.error && STEP_UP_ERRORS.has(a.error)) { await this.failCheck(task.id, task.stage, model, reason); return; }
+      this.autoRetried.delete(task.id);
+      await this.advance(task.id, { type: "stage-failed", reason });
       return;
     }
     // Nothing committed and nothing changed: the change step found there was nothing to do (the fix
@@ -938,10 +951,35 @@ export class BugFixEngine {
     try {
       await this.verify(bugs.get(task.id));
     } catch (err) {
-      await this.advance(task.id, { type: "stage-failed", reason: (err as Error).message });
+      await this.failCheck(task.id, task.stage, model, (err as Error).message);
       return;
     }
+    this.autoRetried.delete(task.id);
     await this.advance(task.id, { type: "stage-done" });
+  }
+
+  /** The stage's check failed: remember a stronger model for it, then fail — or, for a cheap stage's first failure, retry at once
+   *  on that model (spec 2026-10-09 §6.3). A second failure fails the task once, naming both. */
+  private async failCheck(taskId: string, stage: BugStage, model: string, reason: string): Promise<void> {
+    const up = model ? stepUp(model) : null;
+    if (up && (MODEL_STAGES as string[]).includes(stage)) {
+      const t = this.deps.bugs.get(taskId);
+      await this.deps.bugs.patch(taskId, { stageModel: { ...t.stageModel, [stage]: up } });
+    }
+    const first = this.autoRetried.get(taskId);
+    if (first !== undefined) {
+      this.autoRetried.delete(taskId);
+      await this.advance(taskId, { type: "stage-failed", reason: `${first} — retried on ${model || "a stronger model"}: ${reason}` });
+      return;
+    }
+    await this.advance(taskId, { type: "stage-failed", reason });
+    if (!up || !AUTO_RETRY_STAGES.includes(stage)) return;
+    // Set only now: failing the task above settled it as terminal, which clears this map.
+    this.autoRetried.set(taskId, reason);
+    const note = this.lastNote.get(taskId);
+    if (note) this.pendingNote.set(taskId, note);
+    // Straight to the stage, not `retry()`: that first looks for a PR opened by hand, and nobody has acted between these two runs.
+    await this.advance(taskId, { type: "retry" }).catch(() => { this.autoRetried.delete(taskId); });
   }
 
   /** Read what this dispatch's agent said it assumed. Never throws: assumptions are reporting,
@@ -1083,6 +1121,7 @@ export class BugFixEngine {
   private async settleTerminal(task: BugTask): Promise<void> {
     if (!TERMINAL_STAGES.includes(task.stage)) return;
     this.currentDispatch.delete(task.id);
+    this.autoRetried.delete(task.id);
     this.releaseRun(task.id);
     // Best-effort, deliberately guarded: the task's transition into a terminal stage has
     // already landed and persisted by the time this runs, so a failure here (`stopAgent`'s

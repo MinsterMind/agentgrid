@@ -2287,3 +2287,59 @@ describe("short sessions and a model per stage (spec 2026-10-09 §6)", () => {
     expect(seenOverrides[0]).toMatchObject({ model: "claude-haiku-4-5-20251001", maxTurns: 7 });
   });
 });
+
+describe("a failed check steps up the model (spec 2026-10-09 §6.3)", () => {
+  /** End the current run without waiting for the stage to move: an automatic retry lands it back where it was. */
+  const endRun = () => { fake.emit(success("done")); fake.end(); };
+  const toPrStage = async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await writeFile(path.join(bugs.dir(t.id), "plan.md"), "# plan\n");
+    await finishStage(); await engine.approve(t.id);
+    gitState.commits = 1; await finishStage();           // implementing → diff gate
+    await engine.approve(t.id);                          // → opening-pr on Haiku
+    return t;
+  };
+  it("opening-pr that writes no PR body retries once on Sonnet by itself", async () => {
+    const t = await toPrStage();
+    expect(seenOverrides.at(-1)).toMatchObject({ model: "claude-haiku-4-5-20251001" });
+    endRun();                                            // no pr-body.md → verify fails
+    await until(() => seenOverrides.length >= 4, 2000);
+    expect(seenOverrides.at(-1)).toMatchObject({ model: "claude-sonnet-5-5" });
+    expect(bugs.get(t.id)).toMatchObject({ stage: "opening-pr", stageModel: { "opening-pr": "claude-sonnet-5-5" } });
+  });
+  it("a second failure fails the task once, naming both errors", async () => {
+    const t = await toPrStage();
+    endRun();
+    await until(() => seenOverrides.length >= 4, 2000);
+    endRun();
+    await until(() => bugs.get(t.id).stage === "failed", 2000);
+    expect(bugs.get(t.id).error).toMatch(/pr-body\.md.*retried on claude-sonnet-5-5.*pr-body\.md/s);
+    await new Promise(r => setTimeout(r, 50));
+    expect(seenOverrides).toHaveLength(4);               // never a third run
+  });
+  it("a failed change step doesn't retry by itself, but Retry runs it one model up", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await writeFile(path.join(bugs.dir(t.id), "plan.md"), "# plan\n");
+    await finishStage(); await engine.approve(t.id);
+    gitState.commits = 0; gitState.uncommitted = ["a.ts"];
+    await finishStage();
+    expect(bugs.get(t.id).stage).toBe("failed");
+    expect(bugs.get(t.id).stageModel.implementing).toBe("claude-opus-5");
+    await engine.retry(t.id);
+    expect(seenOverrides.at(-1)).toMatchObject({ model: "claude-opus-5" });
+  });
+  it("a run cancelled by the user is not a reason to step up", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await engine.cancel(t.id);
+    expect(bugs.get(t.id).stageModel).toEqual({});
+  });
+  it("an auto-retried feedback round still carries the reviewers' comments", async () => {
+    const h = await onMonitoringTask();
+    await engine.onPrFinding({ taskId: "bt1", pr: h.gitState.pr, event: { type: "review-changes-requested", comments: "please rename widget", source: "forge" } });
+    const before = fake.calls.length;
+    endRun();                                            // head unchanged → "no new commits" → retry on Opus
+    await until(() => fake.calls.length > before, 2000);
+    expect(fake.calls.at(-1)!.prompt).toContain("please rename widget");
+    expect(seenOverrides.at(-1)).toMatchObject({ model: "claude-opus-5" });
+  });
+});
