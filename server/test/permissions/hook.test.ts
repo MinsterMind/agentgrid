@@ -64,7 +64,7 @@ describe("POST /api/hooks/permission", () => {
 });
 
 // These start real `node` processes, which can take seconds each when the whole suite runs in parallel.
-describe("permission-hook.mjs", { timeout: 60_000 }, () => {
+describe("permission-hook.mjs", { timeout: 120_000 }, () => {
   const hook = path.resolve("presets/hooks/permission-hook.mjs");
   const runHook = (env: Record<string, string>, stdin: string) => new Promise<{ out: string; code: number }>(res => {
     const c = execFile(process.execPath, [hook], { env: { ...process.env, ...env } }, (err, out) => res({ out: String(out), code: err ? (err as any).code ?? 1 : 0 }));
@@ -80,9 +80,13 @@ describe("permission-hook.mjs", { timeout: 60_000 }, () => {
     expect(JSON.parse(r.out)).toEqual({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "deny", message: "no" } } });
   });
   it("prints nothing and exits 0 when AgentGrid can't be reached, or has no decision", async () => {
-    expect(await runHook({ AGENTGRID_URL: "http://127.0.0.1:1", AGENTGRID_HOOK_TOKEN: "k" }, JSON.stringify(body))).toEqual({ out: "", code: 0 });
-    expect(await runHook({}, JSON.stringify(body))).toEqual({ out: "", code: 0 });
-    expect(await runHook({ AGENTGRID_URL: "http://127.0.0.1:1", AGENTGRID_HOOK_TOKEN: "k" }, "not json")).toEqual({ out: "", code: 0 });
+    // Concurrently: under the full suite's load each `node` start was measured at 5–33s.
+    const results = await Promise.all([
+      runHook({ AGENTGRID_URL: "http://127.0.0.1:1", AGENTGRID_HOOK_TOKEN: "k" }, JSON.stringify(body)),
+      runHook({}, JSON.stringify(body)),
+      runHook({ AGENTGRID_URL: "http://127.0.0.1:1", AGENTGRID_HOOK_TOKEN: "k" }, "not json"),
+    ]);
+    for (const r of results) expect(r).toEqual({ out: "", code: 0 });
   });
 });
 
