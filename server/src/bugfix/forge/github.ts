@@ -170,16 +170,21 @@ export function githubAdapter(run: Runner): ForgeAdapter {
       // actually changed and changes were requested.
       // Inline review comments (on lines of the diff) are a third REST list (spec 2026-10-09 §5).
       const [reviewsR, commentsR, inlineR, who] = await Promise.all([
-        run("gh", ["api", `repos/{owner}/{repo}/pulls/${number}/reviews`], repoDir),
-        run("gh", ["api", `repos/{owner}/{repo}/issues/${number}/comments`], repoDir),
-        run("gh", ["api", `repos/{owner}/{repo}/pulls/${number}/comments`], repoDir),
+        run("gh", ["api", "--paginate", "--jq", ".[]", `repos/{owner}/{repo}/pulls/${number}/reviews`], repoDir),
+        run("gh", ["api", "--paginate", "--jq", ".[]", `repos/{owner}/{repo}/issues/${number}/comments`], repoDir),
+        run("gh", ["api", "--paginate", "--jq", ".[]", `repos/{owner}/{repo}/pulls/${number}/comments`], repoDir),
         whoami(repoDir),
       ]);
       const login = "login" in who ? who.login : "";
       const parseArray = (r: { stdout: string; code: number }): any[] => {
         if (r.code !== 0) return [];
-        try { const v = JSON.parse(r.stdout || "[]"); return Array.isArray(v) ? v : []; }
-        catch { return []; }
+        // `--paginate --jq '.[]'`: every page, one JSON object per line (a bare array is still accepted).
+        const out: any[] = [];
+        for (const line of (r.stdout || "").split("\n")) {
+          const l = line.trim(); if (!l) continue;
+          try { const v = JSON.parse(l); if (Array.isArray(v)) out.push(...v); else if (v && typeof v === "object") out.push(v); } catch { /* skip a broken line */ }
+        }
+        return out;
       };
       // REST's `user.type === "Bot"` is the real signal (dependabot, github-actions, ...);
       // the `[bot]` login suffix is kept only as corroboration/fallback. What neither field

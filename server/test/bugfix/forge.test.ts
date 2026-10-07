@@ -325,3 +325,18 @@ describe("final review: merged search is whole-word (I6)", () => {
     expect(await gh.findMergedPr!("/r", "PAY-41")).toMatchObject({ number: 9 });
   });
 });
+
+describe("final review: every page of comments (I12)", () => {
+  it("asks gh for every page and reads the one-per-line answer", async () => {
+    const seen: string[][] = [];
+    const gh = githubAdapter(async (_c, args) => {
+      seen.push(args);
+      if (args[1] === "user") return { code: 0, stdout: "me\n" };
+      if (args.some(a => a.includes("/issues/5/comments"))) return { code: 0, stdout: [1, 2, 31].map(i => JSON.stringify({ user: { login: "rev", type: "User" }, body: `c${i}`, created_at: `2026-10-09T10:${String(i).padStart(2, "0")}:00Z` })).join("\n") };
+      return { code: 0, stdout: "" };
+    });
+    const ev = await gh.listReviewEvents("/r", 5, "2026-10-09T00:00:00Z");
+    expect(ev.map(e => e.body)).toEqual(["c1", "c2", "c31"]);
+    expect(seen.filter(a => a[1] !== "user").every(a => a.includes("--paginate"))).toBe(true);
+  });
+});
