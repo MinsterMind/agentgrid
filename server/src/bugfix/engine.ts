@@ -158,6 +158,7 @@ export class BugFixEngine {
     const day = now.toDateString();
     let sum = 0;
     for (const t of this.deps.bugs.list()) for (const r of t.runs ?? []) if (new Date(r.at).toDateString() === day) sum += r.costUsd;
+    sum += this.deps.bugs.spentByRemovedOn(day);   // dismissed tasks still spent it
     return Number(sum.toFixed(4));
   }
   spend(): { today: number; limit: number | null } { return { today: this.spentToday(), limit: this.dailyBudget }; }

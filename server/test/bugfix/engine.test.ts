@@ -2611,3 +2611,16 @@ describe("final review: the Address comments button and the watcher agree (I9)",
     void h;
   });
 });
+
+describe("final review: dismissing a task keeps today's spend (I11)", () => {
+  it("counts what a dismissed task spent today, also after a restart", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.patch(t.id, { runs: [{ stage: "analyzing", model: "m", costUsd: 5, at: new Date().toISOString(), ok: true }] });
+    await engine.cancel(t.id);
+    await engine.dismiss(t.id);
+    expect(engine.spentToday()).toBeCloseTo(5);
+    const again = new BugTaskStore(home); await again.init();
+    const e2 = new BugFixEngine({ ...(engine as any).deps, bugs: again });
+    expect(e2.spentToday()).toBeCloseTo(5);
+  });
+});

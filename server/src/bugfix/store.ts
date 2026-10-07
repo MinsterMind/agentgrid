@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { mkdir, readdir, readFile, writeFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { NotFound } from "../store/store.js";
 import { TERMINAL_STAGES, type Assumption, type BugTask, type PrInfo, type TrackerIssue, type Transition } from "./types.js";
 
@@ -44,8 +45,14 @@ export class BugTaskStore extends EventEmitter {
   private root: string;
   constructor(home: string) { super(); this.root = path.join(home, "bugtasks"); }
 
+  /** What removed (dismissed) tasks spent, per local day — so dismissing doesn't lift the daily limit (spec 2026-10-09 §6.4). */
+  private removedSpend: Record<string, number> = {};
+  private get spendFile() { return path.join(this.root, "..", "bug-spend.json"); }
+  spentByRemovedOn(day: string): number { return this.removedSpend[day] ?? 0; }
+
   async init(): Promise<void> {
     await mkdir(this.root, { recursive: true });
+    try { this.removedSpend = JSON.parse(await readFile(this.spendFile, "utf8")) ?? {}; } catch { this.removedSpend = {}; }
     for (const f of (await readdir(this.root)).filter(f => f.endsWith(".json"))) {
       const t = JSON.parse(await readFile(path.join(this.root, f), "utf8")) as BugTask;
       // Records written before this field existed load without it — normalise here, the one
@@ -205,6 +212,14 @@ export class BugTaskStore extends EventEmitter {
   async remove(id: string): Promise<void> {
     this.get(id);   // throws NotFound for an unknown or malformed id, before queueing behind the chain
     return withWriteChain(this.file(id), async () => {
+      const gone = this.tasks.get(id);
+      if (gone?.runs?.length) {
+        const keep = new Date(Date.now() - 2 * 86_400_000).toDateString();   // only recent days matter
+        for (const r of gone.runs) { const day = new Date(r.at).toDateString(); this.removedSpend[day] = Number(((this.removedSpend[day] ?? 0) + r.costUsd).toFixed(4)); }
+        for (const d of Object.keys(this.removedSpend)) if (new Date(d) < new Date(keep)) delete this.removedSpend[d];
+        const tmp = `${this.spendFile}.${process.pid}.${randomUUID()}.tmp`;   // removes of different tasks may write at once
+        await writeFile(tmp, JSON.stringify(this.removedSpend)); await rename(tmp, this.spendFile);
+      }
       await rm(this.file(id), { force: true });
       await rm(this.dir(id), { recursive: true, force: true });
       this.tasks.delete(id);
