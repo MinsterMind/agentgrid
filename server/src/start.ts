@@ -24,6 +24,7 @@ import { AgentPrWatcher } from "./agentpr.js";
 import { ConflictWatcher } from "./bugfix/conflicts.js";
 import { TrackerCache } from "./bugfix/trackerCache.js";
 import { TrackerSync } from "./bugfix/trackerSync.js";
+import { BatchStarter } from "./bugfix/batch.js";
 import { mcpTracker, type TrackerProvider } from "./bugfix/tracker.js";
 import { BugFixEngine, recoverStuckBugTasks } from "./bugfix/engine.js";
 import { PrWatcher } from "./bugfix/watcher.js";
@@ -190,7 +191,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const fakePrScript = fake ? (opts.fakePrScript ?? parseFakePrScript(process.env.AGENTGRID_FAKE_PR_SCRIPT)) : undefined;
   const fakeForgeHandle = fake ? fakeForge(fakePrScript ?? []) : null;
 
-  let wiredBugFix: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider; trackerCache?: TrackerCache } | undefined;
+  let wiredBugFix: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider; trackerCache?: TrackerCache; batches?: BatchStarter } | undefined;
   let wiredWatcher: PrWatcher | null = null;
   let wiredConflicts: ConflictWatcher | null = null;
   let wiredCache: TrackerCache | null = null;
@@ -231,7 +232,9 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       intervalMs: fake ? 500 : 60_000 });
     engine.setConflictNudge(repo => wiredConflicts?.nudge(repo));
     wiredConflicts.start();
-    wiredBugFix = { engine, store: bugStore, integrations, tracker, trackerCache };
+    const batches = new BatchStarter({ engine, git: new GitOps(), tracker, cache: trackerCache });
+    batches.on("event", e => store.emit("event", e));
+    wiredBugFix = { engine, store: bugStore, integrations, tracker, trackerCache, batches };
     return wiredBugFix;
   };
 

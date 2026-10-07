@@ -17,7 +17,7 @@ import type { TrackerProvider } from "./tracker.js";
 import { renderStagePrompt, type StageNote } from "./prompts.js";
 import { parseAssumptions } from "./assumptions.js";
 import { nextStage } from "./stages.js";
-import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask, type GateKind, type PrInfo } from "./types.js";
+import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask, type GateKind, type PrInfo, type TrackerIssue } from "./types.js";
 import { describeComments, PR_STAGES, type PrFinding } from "./watcher.js";
 import { parseRemote } from "./forge/bitbucket.js";
 import type { MergeMethod } from "./forge/types.js";
@@ -168,7 +168,8 @@ export class BugFixEngine {
 
   /** `baseBranch`: the branch to cut from and target (default: origin's integration branch).
    *  `startAnyway`: start even though commits on the base already name the ticket. */
-  async intake(input: { issueRef: string; repo: string; mergePolicy?: "ask" | "auto"; mergeMethod?: "squash" | "merge" | "rebase"; baseBranch?: string; startAnyway?: boolean }): Promise<BugTask> {
+  /** `issue` / `fetched`: what a batch already did for this ticket — read it from the tracker, fetched its repo — so it isn't repeated per ticket. */
+  async intake(input: { issueRef: string; repo: string; mergePolicy?: "ask" | "auto"; mergeMethod?: "squash" | "merge" | "rebase"; baseBranch?: string; startAnyway?: boolean; issue?: TrackerIssue; fetched?: boolean }): Promise<BugTask> {
     const { git, bugs, store, tracker, integrations, forge } = this.deps;
     // Without a pollable forge, `opening-pr` can never be verified (see `verify`), so a
     // gitlab/custom repo would otherwise burn two agent stages and a human gate before
@@ -177,11 +178,11 @@ export class BugFixEngine {
     if (!forge) throw new Conflict("no forge configured — this workflow needs one to open and verify pull requests");
     if (!(await git.hasRemote(input.repo))) throw new Conflict("this repo has no `origin` remote");
 
-    const issue = await tracker.fetchIssue(input.issueRef);
+    const issue = input.issue ?? await tracker.fetchIssue(input.issueRef);
     const branch = branchName(issue.key);
     // Cut from origin's tip after a fetch — never a local branch, which goes stale or, in a gitflow
     // repo, can sit at the first commit with no code in it (PULSEAI-414).
-    await git.fetch(input.repo).catch((err: Error) => { throw new Conflict(`could not fetch from origin: ${err.message}`); });
+    if (!input.fetched) await git.fetch(input.repo).catch((err: Error) => { throw new Conflict(`could not fetch from origin: ${err.message}`); });
     const picked = input.baseBranch?.trim();
     if (picked && !(await git.remoteBranches(input.repo)).includes(picked)) throw new Conflict(`origin has no branch "${picked}"`);
     const baseBranch = picked || await git.integrationBranch(input.repo);

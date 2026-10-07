@@ -12,6 +12,7 @@ import { makeFakeQuery } from "../helpers/fakeQuery.js";
 import { until } from "../helpers/until.js";
 import { createBugFixTestApp } from "./realEngineApp.js";
 import { TrackerCache } from "../../src/bugfix/trackerCache.js";
+import { BatchStarter } from "../../src/bugfix/batch.js";
 import type { BugTask, TrackerIssue } from "../../src/bugfix/types.js";
 
 const ISSUE: TrackerIssue = { key: "PAY-42", title: "Boom", url: "https://x/PAY-42", status: "Open", priority: "High", description: "d", acceptanceCriteria: [] };
@@ -175,6 +176,21 @@ describe("bug task routes", () => {
     await request(app).put("/api/integrations").send({ statusMap: { PAY: { started: "Start Progress" } } }).expect(400);
     await request(app).put("/api/integrations").send({ statusMap: ok }).expect(200);
     expect((await request(app).get("/api/integrations")).body.statusMap).toEqual(ok);
+  });
+
+  it("start many: validates the list, runs it in the background, and reports where it is", async () => {
+    const store = new Store(home, path.resolve("roles")); await store.init();
+    const tracker = { listMyIssues: async () => [], fetchIssue: async (k: string) => ({ ...ISSUE, key: k }), comment: async () => {} };
+    const engine = fakeEngine(bugs, calls);
+    const batches = new BatchStarter({ engine: engine as never, git: { fetch: async () => {} } as never, tracker, cache: null });
+    const a = createApp({ store, manager: new Manager(store, { queryFn: makeFakeQuery().queryFn }), bugs: { engine: engine as never, store: bugs, integrations: new IntegrationsStore(home), tracker, batches } });
+    await request(a).post("/api/bugtasks/batch").send({ items: [] }).expect(400);
+    await request(a).post("/api/bugtasks/batch").send({ items: Array.from({ length: 501 }, (_, i) => ({ issueRef: `PAY-${i + 1}`, repo: "/r" })) }).expect(400);
+    await request(a).post("/api/bugtasks/batch").send({ items: [{ issueRef: "PAY-1", repo: "relative/r" }] }).expect(400);
+    const r = await request(a).post("/api/bugtasks/batch").send({ items: [{ issueRef: "PAY-42", repo: "/r" }] }).expect(202);
+    for (let i = 0; i < 200 && !(await request(a).get(`/api/bugtasks/batch/${r.body.batchId}`)).body.finished; i++) await new Promise(res => setTimeout(res, 5));
+    expect((await request(a).get(`/api/bugtasks/batch/${r.body.batchId}`)).body).toMatchObject({ total: 1, done: 1, started: [{ key: "PAY-42" }] });
+    await request(a).get("/api/bugtasks/batch/nope").expect(404);
   });
 
   it("returns a single bug task by id", async () => {

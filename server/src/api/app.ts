@@ -20,6 +20,7 @@ import type { IntegrationsStore, Integrations } from "../bugfix/integrations.js"
 import type { TrackerProvider } from "../bugfix/tracker.js";
 import type { TrackerCache } from "../bugfix/trackerCache.js";
 import { MOMENTS } from "../bugfix/trackerSync.js";
+import type { BatchStarter } from "../bugfix/batch.js";
 import type { ForgeAdapter } from "../bugfix/forge/types.js";
 import { discoverMcpServers } from "../bugfix/mcp-discovery.js";
 import { buildSetupReport } from "../bugfix/setup.js";
@@ -28,7 +29,7 @@ export interface AppDeps {
   store: Store;
   manager: Manager;
   /** Bug-fix workflow; absent when the feature is not configured (routes answer 501). */
-  bugs?: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider; trackerCache?: TrackerCache };
+  bugs?: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider; trackerCache?: TrackerCache; batches?: BatchStarter };
   /** The config store, needed with or without an engine: an unconfigured machine must still
    *  be able to read and write its own integrations.json. */
   integrations?: IntegrationsStore;
@@ -441,6 +442,25 @@ export function createApp(deps: AppDeps) {
     if (mergePolicy !== undefined && !MERGE_POLICIES.includes(mergePolicy)) throw new BadRequest(`mergePolicy must be one of ${MERGE_POLICIES.join(", ")}`);
     if (mergeMethod !== undefined && !MERGE_METHODS.includes(mergeMethod)) throw new BadRequest(`mergeMethod must be one of ${MERGE_METHODS.join(", ")}`);
     res.status(201).json(await bugs().engine.intake({ issueRef: issueRef.trim(), repo, mergePolicy, mergeMethod, ...(baseBranch ? { baseBranch } : {}), ...(startAnyway === true ? { startAnyway: true } : {}) }));
+  }));
+  /** Start many tickets at once (spec 2026-10-08 §5.2): 202 with a batch id; progress arrives as `batch` events. */
+  app.post("/api/bugtasks/batch", wrap(async (req, res) => {
+    const b = bugs();
+    if (!b.batches) throw Object.assign(new Error("starting many isn't available"), { status: 501 });
+    const items = req.body?.items;
+    if (!Array.isArray(items) || items.length === 0) throw new BadRequest("items must list the tickets to start");
+    if (items.length > 500) throw new BadRequest("at most 500 tickets per request — send the rest in another");
+    for (const it of items) {
+      if (!it || typeof it.issueRef !== "string" || !it.issueRef.trim() || typeof it.repo !== "string" || !path.isAbsolute(it.repo)) throw new BadRequest("each item needs an issueRef and an absolute repo path");
+      if (it.baseBranch !== undefined && (typeof it.baseBranch !== "string" || !/^[A-Za-z0-9._/-]{1,200}$/.test(it.baseBranch))) throw new BadRequest("baseBranch must be a branch name");
+    }
+    const anyway = Array.isArray(req.body?.startAnyway) ? req.body.startAnyway.filter((k: unknown) => typeof k === "string") : [];
+    res.status(202).json({ batchId: b.batches.start(items.map((it: { issueRef: string; repo: string; baseBranch?: string }) => ({ issueRef: it.issueRef.trim(), repo: it.repo, ...(it.baseBranch ? { baseBranch: it.baseBranch } : {}) })), anyway) });
+  }));
+  app.get("/api/bugtasks/batch/:batchId", wrap(async (req, res) => {
+    const st = bugs().batches?.get(req.params.batchId as string);
+    if (!st) throw new NotFound(`batch ${req.params.batchId}`);
+    res.json(st);
   }));
   app.post("/api/bugtasks/resolve-conflicts", wrap(async (_req, res) => res.json({ ids: await bugs().engine.resolveConflicts() })));
   app.post("/api/bugtasks/:id/override-tests", wrap(async (req, res) => {

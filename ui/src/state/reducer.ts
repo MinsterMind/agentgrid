@@ -28,6 +28,7 @@ export function reducer(s: UiState, a: Action): UiState {
       if (e.type === "assignment") return { ...s, assignments: { ...s.assignments, [e.assignment.id]: e.assignment } };
       if (e.type === "agent-removed") return { ...s, agents: s.agents.filter(x => x.id !== e.id), selectedId: s.selectedId === e.id ? null : s.selectedId };
       if (e.type === "bugtask") return { ...s, bugTasks: { ...s.bugTasks, [e.task.id]: e.task } };
+      if (e.type === "batch") return s;   // Task 7 keeps these
       if (e.type === "tracker-issues") return { ...s, tracker: e.list };
       if (e.type === "tracker-issue") return s;   // a ticket's details: TicketDetail reads them through the API (cached server-side)
       if (e.type === "permission") return { ...s, permissions: { ...s.permissions, [e.request.id]: e.request } };

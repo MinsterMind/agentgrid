@@ -85,7 +85,17 @@ export type GridEvent =
   | { type: "permission"; request: PermissionRequest }
   | { type: "permission-settled"; id: string }
   | { type: "tracker-issues"; list: IssueList }
-  | { type: "tracker-issue"; issue: TrackerIssue };
+  | { type: "tracker-issue"; issue: TrackerIssue }
+  | { type: "batch"; state: BatchState };
+
+/** A "start many" run (spec 2026-10-08 §5.2): where it is, and what happened to each ticket. */
+export interface BatchState {
+  batchId: string; total: number; done: number;
+  started: Array<{ key: string; taskId: string }>;
+  skipped: Array<{ key: string; message: string }>;
+  failed: Array<{ key: string; message: string }>;
+  finished: boolean;
+}
 
 /** My open bugs, as the tracker cache holds them (spec 2026-10-08 §3.3): answered at once, refreshed behind the scenes. */
 export interface IssueList { issues: IssueSummary[]; fetchedAt: string | null; refreshing: boolean; error: string | null }

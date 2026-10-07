@@ -1371,6 +1371,16 @@ describe("the ticket's status follows the work", () => {
   });
 });
 
+describe("intake with what a batch already has", () => {
+  it("uses the ticket it's given and skips the fetch it was told is done", async () => {
+    let read = 0; (engine as any).deps.tracker.fetchIssue = async (ref: string) => { read++; return { ...ISSUE, key: ref }; };
+    const t = await engine.intake({ issueRef: "PAY-42", repo, issue: { ...ISSUE, key: "PAY-42", title: "From the batch" }, fetched: true });
+    expect(t.issue.title).toBe("From the batch");
+    expect(read).toBe(0);
+    expect(gitFake.calls).not.toContain("fetch");
+  });
+});
+
 describe("Resolve all conflicts", () => {
   it("approves only the tasks waiting at the conflict gate", async () => {
     const { engine, bugs } = await onMonitoringTask();
