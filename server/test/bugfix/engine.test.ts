@@ -2203,6 +2203,8 @@ describe("a pull request opened outside AgentGrid", () => {
     expect(t.error).toBeNull();
     expect(t.history.at(-1)!.note).toMatch(/#7.*outside AgentGrid/);
     expect(said).toContainEqual(["PAY-42", expect.stringContaining("https://bb/pr/7")]);
+    // Reviewer comments count from the adoption (final review I4): never from a lastSeenEventAt that later polls move.
+    expect(typeof t.commentsSince).toBe("string");
   });
 
   it("with commits nobody reviewed here, opens the diff gate on what is actually in the PR", async () => {

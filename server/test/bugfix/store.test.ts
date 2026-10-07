@@ -40,6 +40,16 @@ describe("BugTaskStore", () => {
     expect(reloaded.get(t.id).feedbackRounds).toBe(0);
   });
 
+  it("a task whose PR predates 0.14 counts reviewer comments from the PR's last seen event, fixed at load", async () => {
+    const t = await mk();
+    const raw = JSON.parse(await readFile(path.join(home, "bugtasks", `${t.id}.json`), "utf8"));
+    raw.pr = { number: 7, url: "u", state: "OPEN", reviewDecision: null, checks: null, mergeable: null, headSha: null, lastSeenEventAt: "2026-10-01T10:00:00Z" };
+    delete raw.commentsSince;
+    await writeFile(path.join(home, "bugtasks", `${t.id}.json`), JSON.stringify(raw));
+    const reloaded = new BugTaskStore(home); await reloaded.init();
+    expect(reloaded.get(t.id).commentsSince).toBe("2026-10-01T10:00:00Z");
+  });
+
   it("reloads from disk and continues the id counter", async () => {
     await mk();
     const again = new BugTaskStore(home); await again.init();

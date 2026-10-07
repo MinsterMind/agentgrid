@@ -71,7 +71,8 @@ export class BugTaskStore extends EventEmitter {
       t.trackerSyncError ??= null;
       t.runs ??= [];
       t.queuedReason ??= null;
-      t.commentsSince ??= null;
+      // A PR from before 0.14: comments count from its last seen event, fixed now — later polls move lastSeenEventAt.
+      t.commentsSince ??= t.pr?.lastSeenEventAt ?? null;
       t.commentsPendingSince ??= null;
       t.commentsNote ??= null;
       t.imported ??= false;

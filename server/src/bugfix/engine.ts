@@ -620,6 +620,8 @@ export class BugFixEngine {
     if (task.stage !== "failed") return task;
     const n = pr.number;
     await bugs.patchPr(taskId, pr, readAt);
+    // Reviewer comments count from the adoption (spec 2026-10-09 §5).
+    if (!task.commentsSince) await bugs.patch(taskId, { commentsSince: readAt });
     if (pr.state === "CLOSED") {
       return bugs.patch(taskId, { error: `Pull request #${n} for ${task.branch} was opened outside AgentGrid and then closed without merging. Retry to open a new one, or cancel the fix.` });
     }
