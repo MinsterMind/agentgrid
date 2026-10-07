@@ -453,7 +453,7 @@ export class BugFixEngine {
       await this.deps.bugs.patch(task.id, { error: `this task has hit ${task.feedbackRounds} feedback rounds; AgentGrid has stopped dispatching after ${FEEDBACK_ROUND_CAP} feedback rounds — use "Ask the agent to address these" to continue` });
       return;
     }
-    await this.advance(task.id, f.event);
+    await this.advance(task.id, await this.withAutoResolve(f.event));
   }
 
   /**
@@ -470,6 +470,13 @@ export class BugFixEngine {
   /** Called with a repo when one of its PRs merges: the ConflictWatcher re-checks its siblings at once. */
   setConflictNudge(fn: ((repo: string) => void) | null): void { this.conflictNudge = fn; }
 
+  /** A conflict finding, marked to resolve on its own unless the user turned that off (spec 2026-10-09 §4). */
+  private async withAutoResolve(event: BugEvent): Promise<BugEvent> {
+    if (event.type !== "conflicting") return event;
+    const cfg = await this.deps.integrations.read().catch(() => null);
+    return cfg?.autoResolveConflicts === false ? event : { ...event, auto: true };
+  }
+
   /** Why a conflict check couldn't run for this task, or null once one did. */
   async onConflictProblem(taskId: string, message: string | null): Promise<void> {
     const t = this.deps.bugs.get(taskId);
@@ -479,8 +486,9 @@ export class BugFixEngine {
   /** A ConflictWatcher finding. A late one for a task that has moved on (say, Resolve was pressed
    *  meanwhile) is simply out of date: nextStage refuses it, and that is not an error. */
   async onConflictFinding(f: { taskId: string; event: BugEvent }): Promise<void> {
+    const event = await this.withAutoResolve(f.event);
     await this.serial(f.taskId, async () => {
-      try { await this.advanceLocked(f.taskId, f.event); }
+      try { await this.advanceLocked(f.taskId, event); }
       catch (err) { if (!(err instanceof Conflict)) throw err; }
       return this.deps.bugs.get(f.taskId);
     });

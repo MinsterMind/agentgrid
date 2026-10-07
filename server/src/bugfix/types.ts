@@ -168,7 +168,7 @@ export type BugEvent =
   | { type: "checks-failed"; checks: string; headSha: string | null }
   | { type: "review-approved" }
   /** The branch no longer merges cleanly into its base — from the ConflictWatcher (with the files) or the forge's own flag. */
-  | { type: "conflicting"; files?: string[]; base?: string }
+  | { type: "conflicting"; files?: string[]; base?: string; auto?: boolean }
   /** It merges cleanly again (someone rebased by hand, or the base moved on). */
   | { type: "conflict-cleared" }
   | { type: "pr-closed" }

@@ -1222,6 +1222,8 @@ describe("the server pushes an approved feedback diff", () => {
 });
 
 describe("the conflict gate, in the engine", () => {
+  // These exercise the conflict gate itself: auto-resolve (on by default since 0.14) is turned off.
+  beforeEach(async () => { await new IntegrationsStore(home).write({ autoResolveConflicts: false }); });
   it("records what conflicts, resolves on approve with the files in the prompt, and forgets it once rebased", async () => {
     const { engine, bugs, fake, gitState } = await onMonitoringTask();
     await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflicting", files: ["src/a.ts"], base: "develop" } });
@@ -1333,6 +1335,8 @@ describe("at most N bug-fix agents at once", () => {
 });
 
 describe("a click meant for one gate never acts on another", () => {
+  // These exercise the conflict gate itself: auto-resolve (on by default since 0.14) is turned off.
+  beforeEach(async () => { await new IntegrationsStore(home).write({ autoResolveConflicts: false }); });
   // Final review #4: a conflict can move a task out of "approved" on its own; a Merge click that was
   // already on its way must not become "start a rebase".
   it("approve names the gate it was for, and is refused when the task has moved to another", async () => {
@@ -1393,6 +1397,8 @@ describe("intake with what a batch already has", () => {
 });
 
 describe("Resolve all conflicts", () => {
+  // These exercise the conflict gate itself: auto-resolve (on by default since 0.14) is turned off.
+  beforeEach(async () => { await new IntegrationsStore(home).write({ autoResolveConflicts: false }); });
   it("approves only the tasks waiting at the conflict gate", async () => {
     const { engine, bugs } = await onMonitoringTask();
     expect(await engine.resolveConflicts()).toEqual([]);
@@ -1403,6 +1409,8 @@ describe("Resolve all conflicts", () => {
 });
 
 describe("a rebase round", () => {
+  // These exercise the conflict gate itself: auto-resolve (on by default since 0.14) is turned off.
+  beforeEach(async () => { await new IntegrationsStore(home).write({ autoResolveConflicts: false }); });
   it("dispatches rebase on a conflict and opens a diff gate labelled rebase", async () => {
     const { engine, bugs, fake, gitState } = await onMonitoringTask();
     await engine.onPrFinding({ taskId: "bt1", pr: { ...gitState.pr, mergeable: "CONFLICTING" }, event: { type: "conflicting" } });
@@ -2419,5 +2427,25 @@ describe("the daily limit (spec 2026-10-09 §6.4)", () => {
     engine.setDailyBudget(null);
     const t = await engine.intake({ issueRef: "PAY-42", repo });
     expect(bugs.get(t.id).queuedReason).toBeNull();
+  });
+});
+
+describe("conflicts resolve themselves (spec 2026-10-09 §4)", () => {
+  it("with auto-resolve on (the default), a conflict finding starts the rebase and keeps the files", async () => {
+    await onMonitoringTask();
+    await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflicting", files: ["x.ts"], base: "develop" } });
+    expect(bugs.get("bt1")).toMatchObject({ stage: "rebase", conflict: { files: ["x.ts"], returnTo: "monitoring" } });
+    expect(fake.calls.at(-1)!.prompt).toContain("x.ts");
+  });
+  it("the watcher's own conflict finding resolves on its own too", async () => {
+    const h = await onMonitoringTask();
+    await engine.onPrFinding({ taskId: "bt1", pr: h.gitState.pr, event: { type: "conflicting" } });
+    expect(bugs.get("bt1").stage).toBe("rebase");
+  });
+  it("with auto-resolve off, it waits at the conflict gate as in 0.12", async () => {
+    await new IntegrationsStore(home).write({ autoResolveConflicts: false });
+    await onMonitoringTask();
+    await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflicting", files: ["x.ts"], base: "develop" } });
+    expect(bugs.get("bt1").stage).toBe("conflict");
   });
 });

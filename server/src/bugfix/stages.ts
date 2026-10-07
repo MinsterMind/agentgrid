@@ -40,10 +40,14 @@ export function nextStage(task: BugTask, event: BugEvent): Transition {
     case "review-changes-requested": return go("review-feedback", "review-feedback", event.comments);
     case "checks-failed":            return go("review-feedback", "review-feedback", event.checks);
     case "review-approved":          return wait("approved", "merge");
-    // Never a rebase on its own: the conflict waits for the human (spec 2026-10-07 §4.2).
-    case "conflicting":
+    // A rebase on its own only when auto-resolve is on (spec 2026-10-09 §4) — its diff is still reviewed before the push.
+    // Otherwise the conflict waits for the human (spec 2026-10-07 §4.2).
+    case "conflicting": {
       if (task.stage === "conflict") return { stage: "conflict", run: null, gate: task.gate, note: "", error: null };
-      return { ...wait("conflict", "conflict"), note: `Conflicts with ${event.base ?? task.baseBranch}${event.files?.length ? `: ${event.files.join(", ")}` : ""}` };
+      const what = `Conflicts with ${event.base ?? task.baseBranch}${event.files?.length ? `: ${event.files.join(", ")}` : ""}`;
+      if (event.auto) return go("rebase", "rebase", `${what} — resolving`);
+      return { ...wait("conflict", "conflict"), note: what };
+    }
     case "conflict-cleared":
       return task.conflict?.returnTo === "approved" ? { ...wait("approved", "merge"), note: "The conflict cleared" } : go("monitoring", null, "The conflict cleared");
     case "pr-closed":
