@@ -44,7 +44,7 @@ beforeEach(() => { vi.clearAllMocks(); getSetup.mockImplementation(async () => S
 
 import { initial } from "../src/state/reducer";
 
-const stateWith = (tasks: BugTask[]) => ({ ...initial, bugTasks: Object.fromEntries(tasks.map(t => [t.id, t])) });
+const stateWith = (tasks: BugTask[]) => ({ ...initial, loaded: true, bugTasks: Object.fromEntries(tasks.map(t => [t.id, t])) });
 const renderScreen = (tasks: BugTask[], selectedId: string | null = tasks[0]?.id ?? null, extra = {}) => {
   const onSelect = vi.fn();
   render(<BugScreen state={stateWith(tasks) as never} selectedId={selectedId} onSelect={onSelect} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={vi.fn()} {...extra} />);
@@ -353,5 +353,18 @@ describe("BugScreen — conflicts and the queue", () => {
     renderScreen([task("analyzing", { queuedAt: "2026-10-07T10:00:00Z" })]);
     expect(screen.queryByRole("button", { name: /Resolve all/ })).toBeNull();
     expect(screen.getAllByRole("option")[0]).toHaveTextContent("Queued (1 of 1)");
+  });
+});
+
+describe("BugScreen — a link to a bug that hasn't loaded yet", () => {
+  // Found by the conflicts e2e: the tracker list arrived before the task list, and the screen
+  // "fell back" from #/bugs/bt1 to the first assigned ticket — a reload landed on the wrong bug.
+  it("doesn't fall back to another row until the task list has loaded", async () => {
+    myIssues.mockResolvedValue([{ key: "PAY-1", title: "Other", url: "u", status: "Open", priority: "High" }]);
+    const onSelect = vi.fn(); const onSelectTicket = vi.fn();
+    render(<BugScreen state={{ ...initial, loaded: false } as never} selectedId="bt1" onSelect={onSelect} onSelectTicket={onSelectTicket} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={vi.fn()} />);
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+    await new Promise(r => setTimeout(r, 50));                       // the fallback runs in an effect, after the list renders
+    expect(onSelectTicket).not.toHaveBeenCalled(); expect(onSelect).not.toHaveBeenCalled();
   });
 });

@@ -112,11 +112,13 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
   const task = tasks.find(x => x.t.id === selectedId)?.t ?? null;
   const ticket = !task && selectedTicket && rows.some(r => r.key === selectedTicket && !r.task) ? selectedTicket : null;
   // Review Focus 4: a stale or missing selection falls back to the first row, and the URL follows.
+  // Never before the task list has loaded: a link to #/bugs/bt5 would otherwise "fall back" to the
+  // first tracker row the moment the tracker answers first.
   useEffect(() => {
-    if (task || ticket || (selectedTicket && !mine.issues) || !rows.length) return;
+    if (!state.loaded || task || ticket || (selectedTicket && !mine.issues) || !rows.length) return;
     const first = rows[0];
     if (first.task) onSelect(first.task.id, { replace: true }); else onSelectTicket?.(first.key, { replace: true });
-  }, [task, ticket, selectedTicket, rows, mine.issues, onSelect, onSelectTicket]);
+  }, [state.loaded, task, ticket, selectedTicket, rows, mine.issues, onSelect, onSelectTicket]);
   const shown = task ?? (ticket ? null : tasks[0]?.t ?? null);
   // What is on the right: a task (by id — one ticket can have several), or a not-started ticket (by key).
   const shownTicket = !task ? ticket ?? (selectedTicket && !mine.issues ? selectedTicket : null) : null;
