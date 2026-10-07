@@ -121,6 +121,10 @@ export interface BugTask {
    *  before this field existed normalise to null in `BugTaskStore.init`. */
   prCheckedAt: string | null;
   costUsd: number;
+  /** Every agent run for this task: which stage, on which model, what it cost (spec 2026-10-09 §6.5). */
+  runs: Array<{ stage: BugStage; model: string; costUsd: number; at: string; ok: boolean }>;
+  /** A stage that failed its check and was stepped up to a stronger model keeps it (spec 2026-10-09 §6.3). */
+  stageModel: Partial<Record<"analyzing" | "implementing" | "opening-pr" | "review-feedback" | "rebase", string>>;
   history: Array<{ stage: BugStage; at: string; note: string }>;
   error: string | null;
   createdAt: string;

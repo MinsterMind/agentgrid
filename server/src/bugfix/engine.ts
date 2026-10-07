@@ -20,6 +20,8 @@ import { nextStage } from "./stages.js";
 import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask, type GateKind, type PrInfo, type TrackerIssue } from "./types.js";
 import { describeComments, PR_STAGES, type PrFinding } from "./watcher.js";
 import { parseRemote } from "./forge/bitbucket.js";
+import { stageRun, MODEL_STAGES, type ModelStage } from "./models.js";
+import type { RunOverrides } from "../runner/runner.js";
 import type { MergeMethod } from "./forge/types.js";
 
 /** After this many rounds the watcher's findings stop dispatching and only report. A
@@ -125,6 +127,8 @@ export class BugFixEngine {
   /** The assumptions file each task's current dispatch was told to write. In memory, like
    *  `currentDispatch`: a dispatch a restart interrupts is re-run by recovery under a new token. */
   private dispatchAssumptions = new Map<string, { token: string; stage: BugStage; round: number }>();
+  /** The model each task's current dispatch was given — logged with the run's cost when it finishes. */
+  private dispatchModel = new Map<string, string>();
 
   constructor(deps: EngineDeps) { this.deps = deps; this.role = deps.role ?? "bugfix"; }
 
@@ -591,6 +595,13 @@ export class BugFixEngine {
     return task;
   }
 
+  /** This stage's model, effort, turns and cap: settings, then a model this task was stepped up to (spec 2026-10-09 §6.2). */
+  private async runSettings(task: BugTask, stage: BugStage): Promise<RunOverrides | undefined> {
+    if (!(MODEL_STAGES as string[]).includes(stage)) return undefined;
+    const cfg = await this.deps.integrations.read().catch(() => null);
+    return stageRun(stage as ModelStage, cfg?.stageModels, task.stageModel?.[stage as ModelStage]);
+  }
+
   private async runStage(task: BugTask, stage: BugStage): Promise<BugTask> {
     const { bugs, store, manager, forge } = this.deps;
     const dir = bugs.dir(task.id);
@@ -629,7 +640,9 @@ export class BugFixEngine {
 
     const agent = store.getAgent(task.agentId);
     if (agent.state !== "free") await manager.ack(task.agentId).catch(() => {});
-    const assignment = await manager.assign(task.agentId, prompt);
+    // A fresh session every stage (spec 2026-10-09 §6.1): what earlier stages knew reaches this one through files, not history.
+    const overrides = await this.runSettings(bugs.get(task.id), stage);
+    const assignment = await manager.assign(task.agentId, prompt, { fresh: true, ...(overrides ? { overrides } : {}) });
     // Runner.assign() handles a synchronously-throwing queryFn (e.g. no Claude Code
     // executable on PATH) by calling its own finish({state:"failed"}) *before*
     // assign() returns — so the "assignment" event for it fires, and is seen by
@@ -644,6 +657,7 @@ export class BugFixEngine {
     // event for it can possibly have fired yet (see this field's own comment for why
     // that ordering is guaranteed, not just likely).
     this.currentDispatch.set(task.id, assignment.id);
+    if (overrides?.model) this.dispatchModel.set(task.id, overrides.model); else this.dispatchModel.delete(task.id);
     // ...but an assignment can also have died *before* that line, in a window the
     // ordering argument above doesn't cover: `Runner.assign()` sets its own
     // `assignmentId` right after creating the assignment record and then does more
@@ -891,7 +905,11 @@ export class BugFixEngine {
     // This run is over: its slot goes to the next in line while this stage is verified.
     this.releaseRun(task.id);
 
-    await bugs.patch(task.id, { costUsd: Number((task.costUsd + (a.costUsd ?? 0)).toFixed(4)) });
+    const model = this.dispatchModel.get(task.id) ?? "";
+    this.dispatchModel.delete(task.id);
+    const cost = a.costUsd ?? 0;
+    await bugs.patch(task.id, { costUsd: Number((task.costUsd + cost).toFixed(4)),
+      runs: [...(task.runs ?? []), { stage: task.stage, model, costUsd: Number(cost.toFixed(4)), at: new Date().toISOString(), ok: a.state === "done" }] });
     await this.collectAssumptions(task.id);
     // The "assignment" event fires as soon as the assignment record itself is written,
     // but Runner.finish() writes the agent's own state (to this same a.state) in a
@@ -900,9 +918,7 @@ export class BugFixEngine {
     // flip the agent back to "free" only for the still-pending write to clobber it
     // back to "done"/"failed" behind our back. Wait for it to actually land first.
     await this.waitForAgentState(task.agentId, a.state);
-    // Carry the session forward so later stages resume the same conversation.
-    const agent = store.getAgent(task.agentId);
-    if (a.sessionId && !agent.resumeSessionId) await store.updateAgent(task.agentId, { resumeSessionId: a.sessionId });
+    // No session is carried forward: each stage starts fresh (spec 2026-10-09 §6.1).
     await manager.ack(task.agentId).catch(() => {});
 
     if (a.state === "failed") {

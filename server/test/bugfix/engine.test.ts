@@ -84,6 +84,7 @@ const forge = {
 
 let home: string; let repo: string; let store: Store; let bugs: BugTaskStore; let fake: ReturnType<typeof makeFakeQuery>;
 let engine: BugFixEngine; let comments: Array<[string, string]>; let gitFake: ReturnType<typeof fakeGit>;
+let seenOverrides: Array<Record<string, unknown> | undefined>; let seenResume: Array<string | undefined>;
 let gitState: { commits: number; ticketCommits?: string[]; uncommitted?: string[]; head?: string; commitsAhead?: number; rebaseState?: { inProgress: boolean; conflicted: string[] }; removed?: Array<{ repo: string; worktree: string; branch: string }>; removeError?: string; remoteDeleted?: Array<{ dir: string; branch: string }>; deleteRemoteError?: string };
 
 beforeEach(async () => {
@@ -96,13 +97,14 @@ beforeEach(async () => {
   fake = makeFakeQuery();
   gitState = { commits: 0 };
   comments = [];
+  seenOverrides = []; seenResume = [];
   // Reset the shared default forge's mutable merge-tracking state between tests.
   forge.merges = [];
   forge.mergeResult = { ok: true, message: "merged (fake)" };
   forge.state = "OPEN";
   forge.stateAfterMerge = "MERGED";
   engine = new BugFixEngine({
-    store, bugs, manager: new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, a, e) => ({ cwd: a.repo, abortController: e.abortController, canUseTool: e.canUseTool } as Options) }),
+    store, bugs, manager: new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, a, e) => { seenOverrides.push(e.overrides as never); seenResume.push(a.resumeSessionId); return { cwd: a.repo, abortController: e.abortController, canUseTool: e.canUseTool } as Options; } }),
     git: (gitFake = fakeGit(gitState)).git, integrations: new IntegrationsStore(home),
     tracker: { listMyIssues: async () => [], fetchIssue: async (ref: string) => ({ ...ISSUE, key: ref }), comment: async (k, t) => { comments.push([k, t]); } },
     forge, presetsDir: path.resolve("presets"),
@@ -2250,5 +2252,38 @@ describe("preflight", () => {
     const e = new BugFixEngine({ store, bugs, manager: new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, a, x) => ({ cwd: a.repo, abortController: x.abortController, canUseTool: x.canUseTool } as Options) }),
       git: g, integrations: new IntegrationsStore(home), tracker: { listMyIssues: async () => [], fetchIssue: async () => ISSUE, comment: async () => {} }, forge, presetsDir: path.resolve("presets") });
     expect((await e.preflight(repo)).remote).toBeNull();
+  });
+});
+
+describe("short sessions and a model per stage (spec 2026-10-09 §6)", () => {
+  it("each stage starts a fresh session on its own model — the plan on Opus, the change on Sonnet", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await writeFile(path.join(bugs.dir(t.id), "plan.md"), "# plan\n");
+    await finishStage();
+    await engine.approve(t.id);
+    expect(fake.calls).toHaveLength(2);
+    expect(seenOverrides[0]).toMatchObject({ model: "claude-opus-5", maxTurns: 40 });
+    expect(seenOverrides[1]).toMatchObject({ model: "claude-sonnet-5-5", maxTurns: 60 });
+    expect(seenResume).toEqual([undefined, undefined]);
+  });
+  it("an agent left with a resumable session by 0.13 still starts each stage fresh", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await store.updateAgent(t.agentId, { resumeSessionId: "from-0.13" });
+    await writeFile(path.join(bugs.dir(t.id), "plan.md"), "# plan\n");
+    await finishStage();
+    await engine.approve(t.id);
+    expect(seenResume.at(-1)).toBeUndefined();
+    expect(store.getAgent(t.agentId).resumeSessionId).toBe("from-0.13"); // never written over, never used
+  });
+  it("records each run's stage, model and cost", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await writeFile(path.join(bugs.dir(t.id), "plan.md"), "# plan\n");
+    await finishStage();
+    expect(bugs.get(t.id).runs).toEqual([expect.objectContaining({ stage: "analyzing", model: "claude-opus-5", ok: true })]);
+  });
+  it("uses the stage settings saved in integrations", async () => {
+    await new IntegrationsStore(home).write({ stageModels: { analyzing: { model: "claude-haiku-4-5-20251001", maxTurns: 7 } } });
+    await engine.intake({ issueRef: "PAY-42", repo });
+    expect(seenOverrides[0]).toMatchObject({ model: "claude-haiku-4-5-20251001", maxTurns: 7 });
   });
 });
