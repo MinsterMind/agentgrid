@@ -316,3 +316,12 @@ describe("final review: forks", () => {
     expect(await gh.listOpenPrs!("/r", { all: true })).toEqual({ prs: [expect.objectContaining({ crossRepo: true })] });
   });
 });
+
+describe("final review: merged search is whole-word (I6)", () => {
+  it("github skips a merged PR for a longer key", async () => {
+    const gh = githubAdapter(async () => ({ code: 0, stdout: JSON.stringify([
+      { number: 8, url: "u8", state: "MERGED", headRefName: "bugfix/PAY-410", baseRefName: "develop", title: "PAY-410", updatedAt: "t" },
+      { number: 9, url: "u9", state: "MERGED", headRefName: "x", baseRefName: "develop", title: "PAY-41: fix", updatedAt: "t" }]) }));
+    expect(await gh.findMergedPr!("/r", "PAY-41")).toMatchObject({ number: 9 });
+  });
+});

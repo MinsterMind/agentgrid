@@ -1,4 +1,4 @@
-import { assertIssueKey } from "../git.js";
+import { assertIssueKey, matchesKey } from "../git.js";
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
@@ -373,7 +373,8 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
       const q = `state="MERGED" AND (title ~ "${k}" OR source.branch.name ~ "${k}")`;
       const r = await api(`/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests?pagelen=5&sort=-updated_on&state=MERGED&q=${encodeURIComponent(q)}`);
       if (r.kind !== "ok") return null;
-      const pr = (Array.isArray(r.body?.values) ? r.body.values : []).find(looksLikePr);
+      // `~` is a substring match: keep only a PR naming the key as a whole word (PAY-41 is not PAY-410).
+      const pr = (Array.isArray(r.body?.values) ? r.body.values : []).find((x: any) => looksLikePr(x) && (matchesKey(x.source?.branch?.name ?? "", k) || matchesKey(x.title ?? "", k)));
       return pr ? toPrInfo(pr, null, null) : null;
     },
 

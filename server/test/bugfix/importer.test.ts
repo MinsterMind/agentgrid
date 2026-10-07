@@ -82,3 +82,23 @@ describe("Importer (spec 2026-10-09 §3)", () => {
     expect(s.skipped).toEqual([{ key: "PAY-1", message: "PAY-1 may already be fixed" }]);
   });
 });
+
+describe("Importer: final review", () => {
+  it("a branch that was the head of a merged PR is recorded as merged, not reviewed again (I7)", async () => {
+    const { imp, engine } = setup({ branches: ["develop", "bugfix/PAY-1"], merged: { ...pr(9, "bugfix/PAY-1"), state: "MERGED" } });
+    await done(imp, imp.start(["PAY-1"], "/r"));
+    expect(engine.importTask.mock.calls[0][0].found).toMatchObject({ kind: "merged", pr: { number: 9 } });
+  });
+  it("a merged PR that doesn't name the key whole-word is ignored (I6)", async () => {
+    const { imp, engine } = setup({ merged: { ...pr(9, "bugfix/PAY-10", "PAY-10 fix"), state: "MERGED" } });
+    await done(imp, imp.start(["PAY-1"], "/r"));
+    expect(engine.importTask).not.toHaveBeenCalled();
+    expect(engine.intake).toHaveBeenCalled();
+  });
+  it("when open pull requests can't be listed, every key fails with the reason — no fix is started (I8)", async () => {
+    const { imp, engine } = setup({ listing: "unavailable" });
+    const s = await done(imp, imp.start(["PAY-1", "PAY-2"], "/r"));
+    expect(s.failed.map(f => f.message)).toEqual(["couldn't list open pull requests: gh broke", "couldn't list open pull requests: gh broke"]);
+    expect(engine.intake).not.toHaveBeenCalled();
+  });
+});

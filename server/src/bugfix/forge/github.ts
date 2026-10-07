@@ -1,3 +1,4 @@
+import { matchesKey } from "../git.js";
 import type { CreatePrContext, ForgeAdapter, MergeMethod, PrInfo, ReviewEvent, Runner } from "./types.js";
 
 const FIELDS = "number,url,state,isDraft,reviewDecision,mergeable,updatedAt,statusCheckRollup,headRefOid";
@@ -155,7 +156,8 @@ export function githubAdapter(run: Runner): ForgeAdapter {
     async findMergedPr(repoDir: string, key: string) {
       const r = await run("gh", ["pr", "list", "--state", "merged", "--search", `${key} in:title,head`, "--limit", "5", "--json", LIST_FIELDS], repoDir);
       if (r.code !== 0) return null;
-      try { const rows = JSON.parse(r.stdout || "[]"); return Array.isArray(rows) && rows.length && looksLikePr(rows[0]) ? toPrInfo(rows[0]) : null; } catch { return null; }
+      // gh's search is fuzzy: keep only a PR naming the key as a whole word (PAY-41 is not PAY-410).
+      try { const rows = JSON.parse(r.stdout || "[]"); const hit = Array.isArray(rows) ? rows.find((x: any) => looksLikePr(x) && (matchesKey(x.headRefName ?? "", key) || matchesKey(x.title ?? "", key))) : null; return hit ? toPrInfo(hit) : null; } catch { return null; }
     },
 
     async listReviewEvents(repoDir: string, number: number, since: string): Promise<ReviewEvent[]> {

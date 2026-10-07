@@ -19,6 +19,10 @@ export function safeBranch(name: string): string {
   return name;
 }
 
+/** The key as a whole word: PAY-41 is in "feature/PAY-41-x" and "pay-41: fix", never in "PAY-410" or "XPAY-41". */
+export const matchesKey = (text: string, key: string): boolean =>
+  new RegExp(`(^|[^A-Za-z0-9])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^0-9]|$)`, "i").test(text);
+
 export const branchName = (issueKey: string) => `bugfix/${assertIssueKey(issueKey)}`;
 export const worktreePath = (repo: string, issueKey: string) => path.join(repo, ".worktrees", `bugfix-${assertIssueKey(issueKey)}`);
 

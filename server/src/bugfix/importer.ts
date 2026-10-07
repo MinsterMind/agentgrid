@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { randomBytes } from "node:crypto";
 import { fetchIssuesVia, type TrackerProvider } from "./tracker.js";
 import type { BugFixEngine } from "./engine.js";
-import type { GitOps } from "./git.js";
+import { matchesKey, type GitOps } from "./git.js";
 import type { ForgeAdapter } from "./forge/types.js";
 import type { TrackerCache } from "./trackerCache.js";
 import type { PrInfo, TrackerIssue } from "./types.js";
@@ -10,9 +10,7 @@ import type { GridEvent, ImportState } from "../types.js";
 
 export type { ImportState };
 const KEEP = 10;
-const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-/** The key as a whole word: PAY-41 is in "feature/PAY-41-x" and "pay-41: fix", never in "PAY-410" or "XPAY-41". */
-export const matchesKey = (text: string, key: string) => new RegExp(`(^|[^A-Za-z0-9])${esc(key)}([^0-9]|$)`, "i").test(text);
+export { matchesKey };
 
 interface Deps {
   engine: Pick<BugFixEngine, "importTask" | "intake">;
@@ -78,7 +76,8 @@ export class Importer extends EventEmitter {
     catch (err) { for (const k of keys) end({ failed: { key: k, message: `could not fetch from origin: ${(err as Error).message}` } }); return; }
     const listed = this.deps.forge?.listOpenPrs ? await this.deps.forge.listOpenPrs(repo, { all: true }) : { unavailable: "this forge can't list pull requests" };
     const prs = "prs" in listed ? listed.prs.filter(p => p.state === "OPEN") : [];
-    const prProblem = "unavailable" in listed ? listed.unavailable : null;
+    // Without the list, a ticket whose PR matches only by title would start a second fix: fail them all, saying why (spec §7).
+    if ("unavailable" in listed) { for (const k of keys) end({ failed: { key: k, message: `couldn't list open pull requests: ${listed.unavailable}` } }); return; }
     const protect = [...new Set(("prs" in listed ? listed.prs : []).map(p => p.baseBranch).filter((b): b is string => !!b))];
     const base = await this.deps.git.integrationBranch(repo).catch(() => "");
     const branches = (await this.deps.git.remoteBranches(repo)).filter(b => b !== base && b !== "HEAD");
@@ -97,14 +96,16 @@ export class Importer extends EventEmitter {
           st.done++; this.announce(st); continue;
         }
         const branch = open.length ? null : branches.find(b => matchesKey(b, key)) ?? null;
-        const merged = open.length || branch ? null : await this.deps.forge?.findMergedPr?.(repo, key) ?? null;
-        const found = open.length ? { kind: "pr" as const, pr: open[0] } : branch ? { kind: "branch" as const, branch } : merged ? { kind: "merged" as const, pr: merged } : null;
+        const mergedPr = open.length ? null : await this.deps.forge?.findMergedPr?.(repo, key) ?? null;
+        // Whole-word, whatever the forge's search matched; and a branch left over from a merged PR is that merge, not new work.
+        const merged = mergedPr && (matchesKey(mergedPr.headBranch ?? "", key) || matchesKey(mergedPr.title ?? "", key)) && (!branch || mergedPr.headBranch === branch) ? mergedPr : null;
+        const found = open.length ? { kind: "pr" as const, pr: open[0] } : merged ? { kind: "merged" as const, pr: merged } : branch ? { kind: "branch" as const, branch } : null;
         const t = found ? await this.deps.engine.importTask({ issue, repo, found, protect }) : await this.deps.engine.intake({ issueRef: key, repo, issue, fetched: true });
         end({ imported: { key: issue.key, taskId: t.id, stage: t.stage } });
       } catch (err) {
         const e = err as Error & { code?: string };
         if (e.code === "already-on-base") { end({ skipped: { key, message: e.message } }); continue; }
-        end({ failed: { key, message: prProblem ? `${e.message} (open pull requests couldn't be listed: ${prProblem})` : e.message } });
+        end({ failed: { key, message: e.message } });
       }
     }
   }
