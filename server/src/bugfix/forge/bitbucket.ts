@@ -1,3 +1,4 @@
+import { assertIssueKey } from "../git.js";
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
@@ -104,6 +105,9 @@ function toPrInfo(pr: any, checks: string | null, mergeable: PrInfo["mergeable"]
     mergeable,
     headSha: pr.source?.commit?.hash ?? null,
     lastSeenEventAt: pr.updated_on ?? new Date().toISOString(),
+    headBranch: pr.source?.branch?.name ?? null,
+    baseBranch: pr.destination?.branch?.name ?? null,
+    title: typeof pr.title === "string" ? pr.title : null,
   };
 }
 
@@ -264,6 +268,18 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
     return { found: toPrInfo(r.body, checks, mergeable) };
   }
 
+  // Whose comments are the user's own: the token's account, known once, asked again after a failure.
+  let meP: Promise<{ login: string } | { unavailable: string }> | null = null;
+  const whoami = (_repoDir: string) => {
+    meP ??= api("/user").then(r => {
+      const login = r.kind === "ok" ? (r.body?.nickname ?? r.body?.account_id ?? "") : "";
+      if (login) return { login: String(login) };
+      meP = null;
+      return { unavailable: r.kind === "ok" ? "Bitbucket's /user has no nickname" : r.kind === "unavailable" ? r.message : `Bitbucket /user: ${r.kind}` };
+    }, (err: Error) => { meP = null; return { unavailable: err.message }; });
+    return meP;
+  };
+
   return {
     name: "bitbucket",
 
@@ -327,10 +343,11 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
 
     /** Open bugfix/ PRs, 50 per page. A listing carries no checks or conflicts: the watcher reads one PR
      *  in full only when its listed view moved, and conflicts come from local git (conflicts.ts). */
-    async listOpenPrs(repoDir: string) {
+    async listOpenPrs(repoDir: string, opts: { all?: boolean } = {}) {
       const slug = await resolveRepo(repoDir);
       if (!slug.ok) return { unavailable: slug.reason };
-      const q = 'source.branch.name ~ "bugfix/" AND state="OPEN"';
+      // An import looks at every open PR; the watcher only at AgentGrid's own.
+      const q = opts.all ? 'state="OPEN"' : 'source.branch.name ~ "bugfix/" AND state="OPEN"';
       let path: string | null = `/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests?pagelen=50&fields=${encodeURIComponent("+values.participants")}&q=${encodeURIComponent(q)}`;
       const prs: PrInfo[] = [];
       for (let page = 0; path && page < 50; page++) {
@@ -346,9 +363,24 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
       return { prs };
     },
 
+    whoami,
+
+    async findMergedPr(repoDir: string, key: string): Promise<PrInfo | null> {
+      const slug = await resolveRepo(repoDir);
+      if (!slug.ok) return null;
+      const k = assertIssueKey(key); // nothing that could close the query's quotes
+      const q = `state="MERGED" AND (title ~ "${k}" OR source.branch.name ~ "${k}")`;
+      const r = await api(`/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests?pagelen=5&sort=-updated_on&state=MERGED&q=${encodeURIComponent(q)}`);
+      if (r.kind !== "ok") return null;
+      const pr = (Array.isArray(r.body?.values) ? r.body.values : []).find(looksLikePr);
+      return pr ? toPrInfo(pr, null, null) : null;
+    },
+
     async listReviewEvents(repoDir: string, number: number, since: string): Promise<ReviewEvent[]> {
       const slug = await resolveRepo(repoDir);
       if (!slug.ok) return [];
+      const who = await whoami(repoDir);
+      const me = "login" in who ? who.login : "";
       const r = await api(`/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests/${number}/activity`);
       if (r.kind !== "ok") return [];
       const values = Array.isArray(r.body?.values) ? r.body.values : [];
@@ -364,20 +396,21 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
       // "unknown", and the worst case of defaulting to human is a wasted feedback round
       // against the cap — never a bad merge, so this is the correct shared-platform default.
       const isBotAccount = (u: any): boolean => typeof u?.type === "string" && u.type.toLowerCase() === "bot";
+      const isMe = (u: any): boolean => !!me && (u?.nickname === me || u?.account_id === me);
       const out: ReviewEvent[] = [];
       for (const entry of values) {
         if (entry?.comment) {
           const c = entry.comment;
           out.push({ kind: "comment", state: "", author: c.user?.nickname ?? c.user?.display_name ?? "",
-            isBot: isBotAccount(c.user), body: c.content?.raw ?? "", at: c.created_on ?? "" });
+            isBot: isBotAccount(c.user), isSelf: isMe(c.user), body: c.content?.raw ?? "", at: c.created_on ?? "" });
         } else if (entry?.changes_requested) {
           const cr = entry.changes_requested;
           out.push({ kind: "review", state: "CHANGES_REQUESTED", author: cr.user?.nickname ?? cr.user?.display_name ?? "",
-            isBot: isBotAccount(cr.user), body: cr.content?.raw ?? "", at: cr.date ?? "" });
+            isBot: isBotAccount(cr.user), isSelf: isMe(cr.user), body: cr.content?.raw ?? "", at: cr.date ?? "" });
         } else if (entry?.approval) {
           const a = entry.approval;
           out.push({ kind: "review", state: "APPROVED", author: a.user?.nickname ?? a.user?.display_name ?? "",
-            isBot: isBotAccount(a.user), body: a.content?.raw ?? "", at: a.date ?? "" });
+            isBot: isBotAccount(a.user), isSelf: isMe(a.user), body: a.content?.raw ?? "", at: a.date ?? "" });
         }
         // `update`, `merge` and anything else are not review events; dropped.
       }

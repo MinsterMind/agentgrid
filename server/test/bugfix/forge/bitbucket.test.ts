@@ -379,3 +379,28 @@ describe("createPr", () => {
     expect(post).toBe(1);
   });
 });
+
+describe("bitbucket: import and comment support (spec 2026-10-09 §3.4, §5)", () => {
+  const prBody = { id: 3, links: { html: { href: "u3" } }, state: "OPEN", title: "PAY-42 fix", updated_on: "t",
+    source: { branch: { name: "feature/PAY-42-x" }, commit: { hash: "abc" } }, destination: { branch: { name: "develop" } } };
+  it("lists every open PR when asked for all, with branch, base and title", async () => {
+    const { calls, fetchFn } = recorder(async () => new Response(JSON.stringify({ values: [prBody] }), { status: 200 }));
+    const r = await bitbucketAdapter(deps(fetchFn)).listOpenPrs!("/r", { all: true });
+    expect(decodeURIComponent(calls[0].url)).not.toContain("bugfix/");
+    expect(r).toEqual({ prs: [expect.objectContaining({ number: 3, headBranch: "feature/PAY-42-x", baseBranch: "develop", title: "PAY-42 fix" })] });
+    await bitbucketAdapter(deps(fetchFn)).listOpenPrs!("/r");
+    expect(decodeURIComponent(calls[1].url)).toContain("bugfix/");
+  });
+  it("finds a merged PR naming the key", async () => {
+    const { calls, fetchFn } = recorder(async () => new Response(JSON.stringify({ values: [{ ...prBody, state: "MERGED" }] }), { status: 200 }));
+    expect(await bitbucketAdapter(deps(fetchFn)).findMergedPr!("/r", "PAY-42")).toMatchObject({ number: 3, state: "MERGED" });
+    expect(decodeURIComponent(calls[0].url)).toContain('state="MERGED"');
+  });
+  it("whoami is the account's nickname, and its comments are the user's own", async () => {
+    const { fetchFn } = recorder(async url => url.endsWith("/user") ? new Response(JSON.stringify({ nickname: "alice", account_id: "x1" }), { status: 200 }) : json("activity.json"));
+    const bb = bitbucketAdapter(deps(fetchFn));
+    expect(await bb.whoami!("/r")).toEqual({ login: "alice" });
+    const events = await bb.listReviewEvents("/r", 7, "2026-09-29T09:00:00Z");
+    expect(events.map(e => [e.author, e.isSelf])).toEqual([["alice", true], ["carol", false]]);
+  });
+});

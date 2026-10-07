@@ -40,6 +40,8 @@ export interface PrInfo {
   /** `gh`'s `headRefOid` — the server's only proof that a push actually landed on the PR. */
   headSha: string | null;
   lastSeenEventAt: string;
+  /** The PR's own branch, the branch it targets, and its title — from a listing; what an import matches a ticket by (spec 2026-10-09 §3). */
+  headBranch?: string | null; baseBranch?: string | null; title?: string | null;
 }
 
 export interface BugTask {
