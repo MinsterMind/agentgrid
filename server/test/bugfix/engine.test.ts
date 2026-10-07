@@ -2591,3 +2591,23 @@ describe("final review: rounds catch up with the PR and push with an explicit le
     expect(fake.calls.length).toBe(n);
   });
 });
+
+describe("final review: the Address comments button and the watcher agree (I9)", () => {
+  it("reads reviewers' comments since the last round, and moves that point on", async () => {
+    const h = await onMonitoringTask();
+    await bugs.patch("bt1", { commentsSince: "2026-10-09T09:00:00Z", commentsPendingSince: "2026-10-09T10:00:00Z" });
+    const sinces: string[] = [];
+    const saved = forge.listReviewEvents;
+    (forge as any).listReviewEvents = async (_r: string, _n: number, since: string) => { sinces.push(since); return [
+      { kind: "comment", state: "", author: "rev", isBot: false, isSelf: false, body: "rename it", at: "2026-10-09T10:00:00Z" },
+      { kind: "comment", state: "", author: "me", isBot: false, isSelf: true, body: "will do", at: "2026-10-09T10:01:00Z" }]; };
+    try {
+      await engine.addressComments("bt1");
+    } finally { (forge as any).listReviewEvents = saved; }
+    expect(sinces).toEqual(["2026-10-09T09:00:00Z"]);
+    expect(fake.calls.at(-1)!.prompt).toContain("rename it");
+    expect(fake.calls.at(-1)!.prompt).not.toContain("will do");
+    expect(bugs.get("bt1")).toMatchObject({ stage: "review-feedback", commentsSince: "2026-10-09T10:01:00Z", commentsPendingSince: null });
+    void h;
+  });
+});

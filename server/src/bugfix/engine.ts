@@ -464,8 +464,10 @@ export class BugFixEngine {
     const trimmed = text?.trim();
     // The human's own words are the operator speaking; anything read back off the pull request
     // is forge text, whoever asked for it to be fetched.
-    const comments = trimmed || (await this.recentComments(task));
-    return this.advance(taskId, { type: "review-changes-requested", comments, source: trimmed ? "operator" : "forge" });
+    if (trimmed) return this.advance(taskId, { type: "review-changes-requested", comments: trimmed, source: "operator" });
+    const { comments, upTo } = await this.recentComments(task);
+    // Like a watcher round: the comments it answers are handled, so the watcher doesn't start another on them.
+    return this.advance(taskId, { type: "review-changes-requested", comments, source: "forge", ...(upTo ? { upTo } : {}) });
   }
 
   /** Comments the click itself didn't supply: read fresh from the forge since the PR's last
@@ -473,16 +475,19 @@ export class BugFixEngine {
    *  shared `describeComments`) — so a manual round reads no differently from an automatic
    *  one. Falls back to a short, generic note rather than failing the click when the forge
    *  can't be read: a human pressing "address these" is not asking for a network diagnostic. */
-  private async recentComments(task: BugTask): Promise<string> {
+  private async recentComments(task: BugTask): Promise<{ comments: string; upTo?: string }> {
     const { forge } = this.deps;
-    if (!forge || !task.pr) return "see the pull request";
+    if (!forge || !task.pr) return { comments: "see the pull request" };
     try {
-      const events = await forge.listReviewEvents(task.sourceRepo, task.pr.number, task.pr.lastSeenEventAt);
-      return describeComments(events) || "see the pull request";
+      // From the same point the watcher counts from (spec 2026-10-09 §5), never the user's own comments.
+      const events = await forge.listReviewEvents(task.sourceRepo, task.pr.number, task.commentsSince ?? task.pr.lastSeenEventAt);
+      const upTo = events.reduce<string | undefined>((m, e) => (!m || e.at > m ? e.at : m), undefined);
+      return { comments: describeComments(events.filter(e => !e.isSelf)) || "see the pull request", ...(upTo ? { upTo } : {}) };
     } catch {
-      return "see the pull request";
+      return { comments: "see the pull request" };
     }
   }
+
 
   async requestChanges(taskId: string, text: string): Promise<BugTask> {
     if (!text.trim()) throw new Conflict("say what should change");
