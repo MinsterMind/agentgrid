@@ -50,6 +50,9 @@ export interface StartOptions {
   log?: (msg: string) => void;
 }
 
+/** Fake mode only: every status move the fake tracker was asked to make (tests read it). */
+export const fakeTrackerMoves: Array<{ key: string; name: string }> = [];
+
 export interface RunningServer {
   port: number; url: string; home: string;
   /** Fake mode only: the test-only handle on the forge that served this server, so an
@@ -172,6 +175,13 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         status: "Open", priority: "High", description: "A fake ticket used in fake mode.", acceptanceCriteria: ["it stops happening"] };
     },
     comment: async () => {},
+    fetchIssues: async (keys: string[]) => ({ issues: await Promise.all(keys.map(k => fakeTracker.fetchIssue(k))), missing: [] }),
+    listTransitions: async () => [{ id: "11", name: "Start Progress", to: "In Progress" }, { id: "21", name: "Submit for Review", to: "In Review" }, { id: "31", name: "Done", to: "Done" }],
+    transition: async (key: string, name: string) => {
+      const to = { "Start Progress": "In Progress", "Submit for Review": "In Review", Done: "Done" }[name];
+      fakeTrackerMoves.push({ key, name });
+      return to ? { ok: true as const, status: to } : { ok: false as const, error: `no transition named "${name}"` };
+    },
   };
   // Only read the script in fake mode: it is used nowhere else, and a stale malformed value left
   // in a real deployment's environment would otherwise throw here and stop the server booting.
