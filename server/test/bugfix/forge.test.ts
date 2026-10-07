@@ -309,3 +309,10 @@ describe("github: import and comment support (spec 2026-10-09 §3.4, §5)", () =
     expect(await gh.whoami!("/r")).toEqual({ login: "me" });
   });
 });
+
+describe("final review: forks", () => {
+  it("github marks a PR from a fork", async () => {
+    const gh = githubAdapter(async () => ({ code: 0, stdout: JSON.stringify([{ number: 3, url: "u", state: "OPEN", headRefName: "main", baseRefName: "main", title: "PAY-1", isCrossRepository: true, updatedAt: "t" }]) }));
+    expect(await gh.listOpenPrs!("/r", { all: true })).toEqual({ prs: [expect.objectContaining({ crossRepo: true })] });
+  });
+});

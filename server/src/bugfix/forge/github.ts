@@ -3,7 +3,7 @@ import type { CreatePrContext, ForgeAdapter, MergeMethod, PrInfo, ReviewEvent, R
 const FIELDS = "number,url,state,isDraft,reviewDecision,mergeable,updatedAt,statusCheckRollup,headRefOid";
 const PR_FIELDS = FIELDS;
 /** A listing also carries what an import matches a ticket by. */
-const LIST_FIELDS = FIELDS + ",headRefName,baseRefName,title";
+const LIST_FIELDS = FIELDS + ",headRefName,baseRefName,title,isCrossRepository";
 /** gh says "no pull requests found" for a genuinely absent PR; anything else is a broken call. */
 const NOT_FOUND = /no pull requests? found|could not resolve to a pullrequest/i;
 
@@ -55,6 +55,7 @@ function toPrInfo(pr: any): PrInfo {
     ...(pr.headRefName !== undefined ? { headBranch: pr.headRefName ?? null } : {}),
     ...(pr.baseRefName !== undefined ? { baseBranch: pr.baseRefName ?? null } : {}),
     ...(pr.title !== undefined ? { title: pr.title ?? null } : {}),
+    ...(pr.isCrossRepository !== undefined ? { crossRepo: Boolean(pr.isCrossRepository) } : {}),
   };
 }
 

@@ -289,14 +289,23 @@ export class BugFixEngine {
    *   - a pushed branch with no PR: its diff at the diff gate, then the normal Open PR path;
    *   - merged: recorded as done.
    */
-  async importTask(input: { issue: TrackerIssue; repo: string; found: { kind: "pr"; pr: PrInfo } | { kind: "branch"; branch: string } | { kind: "merged"; pr: PrInfo } }): Promise<BugTask> {
+  async importTask(input: { issue: TrackerIssue; repo: string;
+    /** Other branches nobody's fix may be pushed to — e.g. the bases of the repo's other open PRs. */ protect?: string[]; found: { kind: "pr"; pr: PrInfo } | { kind: "branch"; branch: string } | { kind: "merged"; pr: PrInfo } }): Promise<BugTask> {
     const { git, bugs, store, integrations, forge } = this.deps;
     if (!forge) throw new Conflict("no forge configured — this workflow needs one to open and verify pull requests");
     const { issue, repo, found } = input;
     const key = assertIssueKey(issue.key);
     const branch = safeBranch(found.kind === "branch" ? found.branch : found.pr.headBranch ?? branchName(key));
-    const baseBranch = (found.kind !== "branch" && found.pr.baseBranch) || await git.integrationBranch(repo);
+    const baseBranch = safeBranch((found.kind !== "branch" && found.pr.baseBranch) || await git.integrationBranch(repo));
     if (branch === baseBranch) throw new Conflict(`refusing to work on the base branch (${baseBranch})`);
+    if (found.kind !== "branch" && found.pr.crossRepo) throw new Conflict(`pull request #${found.pr.number} comes from a fork — AgentGrid can only push to branches on origin`);
+    // A shared branch — the integration branch, origin's default, another PR's base — is never a fix's branch: a round or a
+    // conflict rebase would push (or force-push) to it. E.g. a release PR develop → main that names the ticket in its title.
+    if (found.kind !== "merged") {
+      const shared = new Set([await git.integrationBranch(repo).catch(() => ""), await git.defaultBranch(repo).catch(() => ""), ...(input.protect ?? [])].filter(Boolean));
+      if (shared.has(branch)) throw new Conflict(`refusing to work on ${branch}: it's a shared branch (an integration branch or another pull request's base), not ${key}'s own`);
+      if (await git.localBranchAhead(repo, branch)) throw new Conflict(`your local branch ${branch} has commits origin doesn't — push them (or delete the branch) first, so importing doesn't reset it`);
+    }
     const project = key.split("-")[0] ?? key;
     const now = new Date().toISOString();
     let worktree = worktreePath(repo, key);
@@ -318,7 +327,8 @@ export class BugFixEngine {
     if (found.kind === "pr") {
       await bugs.patchPr(task.id, found.pr, now);
       // Comments made before the import aren't news: rounds start from the next one.
-      await bugs.patch(task.id, { approvedHead: found.pr.headSha ?? await git.revParse(worktree), commentsSince: now, imported: true });
+      // The full commit the worktree is on — a forge may report a short hash (Bitbucket's are 12 characters).
+      await bugs.patch(task.id, { approvedHead: await git.revParse(worktree), commentsSince: now, imported: true });
       task = await bugs.apply(task.id, { stage: "monitoring", run: null, gate: null, note: `Imported: PR #${found.pr.number} on ${branch}, already open`, error: null });
       this.sync?.moment(task.id, "prOpened");
       return task;

@@ -403,3 +403,17 @@ describe("importing a branch already in progress (spec 2026-10-09 §3.3)", () =>
     expect(safeBranch("feature/PAY-42_x.1")).toBe("feature/PAY-42_x.1");
   });
 });
+
+describe("final review: a local branch ahead of origin", () => {
+  it("is reported, so an import never resets it", async () => {
+    const { clone } = await gitflowClone();
+    await sh(clone, ["checkout", "-q", "-b", "feature/PAY-9"]);
+    await writeFile(path.join(clone, "g.txt"), "1\n"); await sh(clone, ["add", "."]); await sh(clone, ["commit", "-qm", "one"]);
+    await sh(clone, ["push", "-q", "origin", "feature/PAY-9"]);
+    const g = new GitOps();
+    expect(await g.localBranchAhead(clone, "feature/PAY-9")).toBe(false);
+    await writeFile(path.join(clone, "g.txt"), "2\n"); await sh(clone, ["commit", "-qam", "unpushed"]);
+    expect(await g.localBranchAhead(clone, "feature/PAY-9")).toBe(true);
+    expect(await g.localBranchAhead(clone, "no-such-branch")).toBe(false);
+  });
+});

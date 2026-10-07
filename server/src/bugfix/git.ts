@@ -212,6 +212,13 @@ export class GitOps {
     return this.run(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).then(() => true, () => false);
   }
 
+  /** The local branch has commits origin's copy doesn't — resetting it to origin would lose them. False when there is no local branch. */
+  async localBranchAhead(repo: string, branch: string): Promise<boolean> {
+    const exists = await this.run(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).then(() => true, () => false);
+    if (!exists) return false;
+    return this.run(repo, ["merge-base", "--is-ancestor", `refs/heads/${branch}`, `refs/remotes/origin/${branch}`]).then(() => false, () => true);
+  }
+
   /** Whether `dir` is already registered as a worktree of `repo` — `git worktree add`
    *  refuses otherwise, for the same cancelled-task-leftover reason as `branchExists`. */
   async worktreeRegistered(repo: string, dir: string): Promise<boolean> {

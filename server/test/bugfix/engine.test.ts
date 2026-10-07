@@ -2479,7 +2479,7 @@ describe("importTask (spec 2026-10-09 §3.3)", () => {
   beforeEach(() => { gitFake.git.checkoutWorktree = async (r, key, b) => { gitFake.calls.push(`checkout ${b}`); const d = path.join(r, ".worktrees", `bugfix-${key}`); await mkdir(d, { recursive: true }); return d; }; });
   it("an open PR: the PR's own branch, its base, watching it at once", async () => {
     const t = await engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: openPr } });
-    expect(t).toMatchObject({ stage: "monitoring", branch: "feature/PAY-42-x", baseBranch: "develop", baseRef: "origin/develop", approvedHead: "abc1234", imported: true, pr: { number: 12 } });
+    expect(t).toMatchObject({ stage: "monitoring", branch: "feature/PAY-42-x", baseBranch: "develop", baseRef: "origin/develop", approvedHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", imported: true, pr: { number: 12 } });
     expect(typeof t.commentsSince).toBe("string");
     expect(gitFake.calls).toContain("checkout feature/PAY-42-x");
     expect(fake.calls).toHaveLength(0);              // no agent run
@@ -2517,5 +2517,33 @@ describe("importTask (spec 2026-10-09 §3.3)", () => {
     await finishStage();                              // → creating-pr → push
     await until(() => pushes.length > 0, 2000);
     expect(pushes).toEqual(["feature/PAY-42-x"]);
+  });
+});
+
+describe("final review: imports never touch a shared branch or local work", () => {
+  const openPr = { number: 12, url: "https://x/pr/12", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: "abc1234abcd1", lastSeenEventAt: "t", headBranch: "feature/PAY-42-x", baseBranch: "main", title: "PAY-42" };
+  beforeEach(() => { gitFake.git.checkoutWorktree = async (r, key, b) => { gitFake.calls.push(`checkout ${b}`); const d = path.join(r, ".worktrees", `bugfix-${key}`); await mkdir(d, { recursive: true }); return d; }; });
+  it("refuses a PR whose head is the repo's integration or default branch, or another open PR's base", async () => {
+    // A release PR develop → main naming the ticket in its title
+    await expect(engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: { ...openPr, headBranch: "develop" } } })).rejects.toThrow(/refusing to work on develop/);
+    await expect(engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: { ...openPr, headBranch: "main", baseBranch: "release" } } })).rejects.toThrow(/refusing to work on main/);
+    await expect(engine.importTask({ issue: ISSUE, repo, protect: ["staging"], found: { kind: "pr", pr: { ...openPr, headBranch: "staging" } } })).rejects.toThrow(/refusing to work on staging/);
+    expect(gitFake.calls.some(c => c.startsWith("checkout"))).toBe(false);
+  });
+  it("refuses a PR from a fork", async () => {
+    await expect(engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: { ...openPr, crossRepo: true } } })).rejects.toThrow(/fork/);
+  });
+  it("refuses a PR base that isn't a plain branch name", async () => {
+    await expect(engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: { ...openPr, baseBranch: "main;$(x)" } } })).rejects.toThrow(/unsafe branch/);
+  });
+  it("refuses when the local branch has commits origin doesn't", async () => {
+    gitFake.git.localBranchAhead = async () => true;
+    await expect(engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: openPr } })).rejects.toThrow(/local branch feature\/PAY-42-x has commits/);
+    expect(gitFake.calls.some(c => c.startsWith("checkout"))).toBe(false);
+  });
+  it("pins the full commit the worktree is on, never a forge's short hash", async () => {
+    gitState.head = "f".repeat(40);
+    const t = await engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: openPr } });
+    expect(t.approvedHead).toBe("f".repeat(40));
   });
 });

@@ -108,6 +108,7 @@ function toPrInfo(pr: any, checks: string | null, mergeable: PrInfo["mergeable"]
     headBranch: pr.source?.branch?.name ?? null,
     baseBranch: pr.destination?.branch?.name ?? null,
     title: typeof pr.title === "string" ? pr.title : null,
+    ...(pr.source?.repository?.full_name && pr.destination?.repository?.full_name ? { crossRepo: pr.source.repository.full_name !== pr.destination.repository.full_name } : {}),
   };
 }
 

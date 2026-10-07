@@ -30,7 +30,7 @@ interface Deps {
  */
 export class Importer extends EventEmitter {
   private states = new Map<string, ImportState>();
-  private pending = new Map<string, Map<string, { repo: string; issue: TrackerIssue; prs: PrInfo[] }>>();
+  private pending = new Map<string, Map<string, { repo: string; issue: TrackerIssue; prs: PrInfo[]; protect: string[] }>>();
   private repoLocks = new Map<string, Promise<void>>();
   constructor(private deps: Deps) { super(); }
 
@@ -61,7 +61,7 @@ export class Importer extends EventEmitter {
     if (!pr) throw Object.assign(new Error(`#${prNumber} isn't one of ${key}'s candidates`), { status: 400 });
     st.choose = st.choose.filter(c => c.key !== p.issue.key);
     this.pending.get(id)!.delete(key.toUpperCase());
-    try { const t = await this.deps.engine.importTask({ issue: p.issue, repo: p.repo, found: { kind: "pr", pr } }); st.imported.push({ key: p.issue.key, taskId: t.id, stage: t.stage }); }
+    try { const t = await this.deps.engine.importTask({ issue: p.issue, repo: p.repo, found: { kind: "pr", pr }, protect: p.protect }); st.imported.push({ key: p.issue.key, taskId: t.id, stage: t.stage }); }
     catch (err) { st.failed.push({ key: p.issue.key, message: (err as Error).message }); }
     this.announce(st);
     return st;
@@ -79,6 +79,7 @@ export class Importer extends EventEmitter {
     const listed = this.deps.forge?.listOpenPrs ? await this.deps.forge.listOpenPrs(repo, { all: true }) : { unavailable: "this forge can't list pull requests" };
     const prs = "prs" in listed ? listed.prs.filter(p => p.state === "OPEN") : [];
     const prProblem = "unavailable" in listed ? listed.unavailable : null;
+    const protect = [...new Set(("prs" in listed ? listed.prs : []).map(p => p.baseBranch).filter((b): b is string => !!b))];
     const base = await this.deps.git.integrationBranch(repo).catch(() => "");
     const branches = (await this.deps.git.remoteBranches(repo)).filter(b => b !== base && b !== "HEAD");
     const read = this.deps.cache ? await this.deps.cache.issues(keys) : await fetchIssuesVia(this.deps.tracker, keys);
@@ -91,14 +92,14 @@ export class Importer extends EventEmitter {
       try {
         const open = prs.filter(p => matchesKey(p.headBranch ?? "", key) || matchesKey(p.title ?? "", key));
         if (open.length > 1) {
-          this.pending.get(st.importId)?.set(key, { repo, issue, prs: open });
+          this.pending.get(st.importId)?.set(key, { repo, issue, prs: open, protect });
           st.choose.push({ key: issue.key, candidates: open.map(p => ({ number: p.number, title: p.title ?? "", branch: p.headBranch ?? "", url: p.url })) });
           st.done++; this.announce(st); continue;
         }
         const branch = open.length ? null : branches.find(b => matchesKey(b, key)) ?? null;
         const merged = open.length || branch ? null : await this.deps.forge?.findMergedPr?.(repo, key) ?? null;
         const found = open.length ? { kind: "pr" as const, pr: open[0] } : branch ? { kind: "branch" as const, branch } : merged ? { kind: "merged" as const, pr: merged } : null;
-        const t = found ? await this.deps.engine.importTask({ issue, repo, found }) : await this.deps.engine.intake({ issueRef: key, repo, issue, fetched: true });
+        const t = found ? await this.deps.engine.importTask({ issue, repo, found, protect }) : await this.deps.engine.intake({ issueRef: key, repo, issue, fetched: true });
         end({ imported: { key: issue.key, taskId: t.id, stage: t.stage } });
       } catch (err) {
         const e = err as Error & { code?: string };
