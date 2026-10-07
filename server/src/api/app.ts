@@ -20,6 +20,7 @@ import type { IntegrationsStore, Integrations } from "../bugfix/integrations.js"
 import type { TrackerProvider } from "../bugfix/tracker.js";
 import type { TrackerCache } from "../bugfix/trackerCache.js";
 import { MOMENTS } from "../bugfix/trackerSync.js";
+import { validateStageModels, type StageModels } from "../bugfix/models.js";
 import type { BatchStarter } from "../bugfix/batch.js";
 import type { ForgeAdapter } from "../bugfix/forge/types.js";
 import { discoverMcpServers } from "../bugfix/mcp-discovery.js";
@@ -408,6 +409,10 @@ export function createApp(deps: AppDeps) {
     projectRepos: cfg.projectRepos,
     ...(cfg.maxConcurrentRuns !== undefined ? { maxConcurrentRuns: cfg.maxConcurrentRuns } : {}),
     ...(cfg.statusMap !== undefined ? { statusMap: cfg.statusMap } : {}),
+    ...(cfg.stageModels !== undefined ? { stageModels: cfg.stageModels } : {}),
+    ...(cfg.autoResolveConflicts !== undefined ? { autoResolveConflicts: cfg.autoResolveConflicts } : {}),
+    ...(cfg.commentQuietMinutes !== undefined ? { commentQuietMinutes: cfg.commentQuietMinutes } : {}),
+    ...(cfg.dailyBudgetUsd !== undefined ? { dailyBudgetUsd: cfg.dailyBudgetUsd } : {}),
     ...(cfg.forge ? { forge: cfg.forge } : {}),
     ...(cfg.tracker ? { tracker: {
       preset: cfg.tracker.preset,
@@ -544,7 +549,7 @@ export function createApp(deps: AppDeps) {
     // Only the two known top-level fields are accepted; anything else in the body is
     // deliberately dropped rather than persisted (same "pick the fields you accept"
     // convention POST /api/agents already uses), not silently merged onto disk.
-    const patch: { tracker?: unknown; forge?: unknown; maxConcurrentRuns?: number; statusMap?: unknown } = {};
+    const patch: { tracker?: unknown; forge?: unknown; maxConcurrentRuns?: number; statusMap?: unknown; stageModels?: StageModels; autoResolveConflicts?: boolean; commentQuietMinutes?: number; dailyBudgetUsd?: number | null } = {};
     if (body.statusMap !== undefined) {
       const m = body.statusMap;
       const bad = (why: string) => { throw new BadRequest(`statusMap: ${why}`); };
@@ -560,6 +565,21 @@ export function createApp(deps: AppDeps) {
         }
       }
       patch.statusMap = m;
+    }
+    if (body.stageModels !== undefined) patch.stageModels = validateStageModels(body.stageModels);
+    if (body.autoResolveConflicts !== undefined) {
+      if (typeof body.autoResolveConflicts !== "boolean") throw new BadRequest("autoResolveConflicts must be true or false");
+      patch.autoResolveConflicts = body.autoResolveConflicts;
+    }
+    if (body.commentQuietMinutes !== undefined) {
+      const n = body.commentQuietMinutes;
+      if (!Number.isInteger(n) || n < 0 || n > 240) throw new BadRequest("commentQuietMinutes must be a whole number from 0 to 240");
+      patch.commentQuietMinutes = n;
+    }
+    if (body.dailyBudgetUsd !== undefined) {
+      const n = body.dailyBudgetUsd;
+      if (n !== null && (typeof n !== "number" || !(n >= 0.5 && n <= 10000))) throw new BadRequest("dailyBudgetUsd must be from 0.5 to 10000, or null for no limit");
+      patch.dailyBudgetUsd = n;
     }
     if (body.maxConcurrentRuns !== undefined) {
       const n = body.maxConcurrentRuns;

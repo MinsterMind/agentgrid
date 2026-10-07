@@ -146,6 +146,18 @@ describe("bug task routes", () => {
     expect((await request(app).get("/api/integrations")).body.maxConcurrentRuns).toBe(8);
   });
 
+  it("saves the bug-fix token settings, and refuses bad ones", async () => {
+    const ok = await request(app).put("/api/integrations").send({ autoResolveConflicts: false, commentQuietMinutes: 0, dailyBudgetUsd: 20, stageModels: { implementing: { model: "claude-opus-5" } } });
+    expect(ok.status).toBe(200);
+    expect(ok.body).toMatchObject({ autoResolveConflicts: false, commentQuietMinutes: 0, dailyBudgetUsd: 20, stageModels: { implementing: { model: "claude-opus-5" } } });
+    expect((await request(app).put("/api/integrations").send({ commentQuietMinutes: -1 })).status).toBe(400);
+    expect((await request(app).put("/api/integrations").send({ dailyBudgetUsd: 0.1 })).status).toBe(400);
+    expect((await request(app).put("/api/integrations").send({ autoResolveConflicts: "yes" })).status).toBe(400);
+    expect((await request(app).put("/api/integrations").send({ stageModels: { implementing: { model: "nope" } } })).status).toBe(400);
+    // null clears the daily limit
+    expect((await request(app).put("/api/integrations").send({ dailyBudgetUsd: null })).body.dailyBudgetUsd).toBeNull();
+  });
+
   it("Resolve all approves every bug waiting at the conflict gate", async () => {
     expect((await request(app).post("/api/bugtasks/resolve-conflicts").expect(200)).body).toEqual({ ids: ["bt1"] });
     expect(calls).toContain("resolve-all");

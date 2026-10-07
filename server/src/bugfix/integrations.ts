@@ -7,7 +7,11 @@ export interface TrackerConfig { preset: string; toolPrefix: string; hints?: str
 export interface ForgeConfig { preset: "github" | "gitlab" | "bitbucket" | "custom"; username?: string; getPr?: string; merge?: string; map?: Record<string, string> }
 /** `maxConcurrentRuns`: how many bug-fix agent runs may happen at once (default 4, 1–32). */
 export interface Integrations { tracker?: TrackerConfig; forge?: ForgeConfig; projectRepos: Record<string, string>; maxConcurrentRuns?: number;
-  /** Per project, per moment: the workflow transition to make (spec 2026-10-08 §4). */ statusMap?: StatusMap }
+  /** Per project, per moment: the workflow transition to make (spec 2026-10-08 §4). */ statusMap?: StatusMap;
+  /** Per-stage model, effort, turns and cap (spec 2026-10-09 §6.2). */ stageModels?: StageModels;
+  /** A detected conflict starts the rebase on its own (default true, spec 2026-10-09 §4). */ autoResolveConflicts?: boolean;
+  /** Minutes with no new reviewer comment before a round starts (default 10; 0 = at once, spec 2026-10-09 §5). */ commentQuietMinutes?: number;
+  /** New bug-fix runs wait once today's spend reaches this; null or absent = no limit (spec 2026-10-09 §6.4). */ dailyBudgetUsd?: number | null }
 
 /** Which forge a git remote belongs to; null means "we can't poll it" (the flow still works, manually). */
 export function detectForge(remoteUrl: string | null): "github" | "gitlab" | "bitbucket" | null {
@@ -21,6 +25,7 @@ export function detectForge(remoteUrl: string | null): "github" | "gitlab" | "bi
 }
 
 import type { StatusMap } from "./trackerSync.js";
+import type { StageModels } from "./models.js";
 
 let seq = 0;
 const writeChains = new Map<string, Promise<unknown>>();
