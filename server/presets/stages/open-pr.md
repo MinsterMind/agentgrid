@@ -1,5 +1,7 @@
 The fix for {{issueKey}} has been approved and is ready to go up as a pull request.
 
+{{freshStart}}
+
 Your job in this step:
 
 1. Read the plan at {{planPath}}, the commits going up (`git log --oneline {{baseRef}}..HEAD` in {{worktree}})

@@ -1,5 +1,7 @@
 Continue the fix for {{issueKey}} in {{worktree}}, on branch {{branch}}.
 
+{{freshStart}}
+
 The approved plan is at {{planPath}} — follow it; if reality contradicts it, say so in your summary.
 
 Your branch was cut from {{baseRef}}. See what you have done with `git log --oneline {{baseRef}}..HEAD`

@@ -1,7 +1,10 @@
+import { matchesKey } from "../git.js";
 import type { CreatePrContext, ForgeAdapter, MergeMethod, PrInfo, ReviewEvent, Runner } from "./types.js";
 
 const FIELDS = "number,url,state,isDraft,reviewDecision,mergeable,updatedAt,statusCheckRollup,headRefOid";
 const PR_FIELDS = FIELDS;
+/** A listing also carries what an import matches a ticket by. */
+const LIST_FIELDS = FIELDS + ",headRefName,baseRefName,title,isCrossRepository";
 /** gh says "no pull requests found" for a genuinely absent PR; anything else is a broken call. */
 const NOT_FOUND = /no pull requests? found|could not resolve to a pullrequest/i;
 
@@ -50,6 +53,10 @@ function toPrInfo(pr: any): PrInfo {
     reviewDecision: pr.reviewDecision ?? null, checks: rollup(pr.statusCheckRollup),
     mergeable: pr.mergeable ?? null, headSha: pr.headRefOid ?? null,
     lastSeenEventAt: pr.updatedAt ?? new Date().toISOString(),
+    ...(pr.headRefName !== undefined ? { headBranch: pr.headRefName ?? null } : {}),
+    ...(pr.baseRefName !== undefined ? { baseBranch: pr.baseRefName ?? null } : {}),
+    ...(pr.title !== undefined ? { title: pr.title ?? null } : {}),
+    ...(pr.isCrossRepository !== undefined ? { crossRepo: Boolean(pr.isCrossRepository) } : {}),
   };
 }
 
@@ -86,7 +93,19 @@ async function findPrImpl(run: Runner, repoDir: string, branch: string): Promise
 }
 
 export function githubAdapter(run: Runner): ForgeAdapter {
+  // Who `gh` acts as — known once, asked again after a failure.
+  let me: Promise<{ login: string } | { unavailable: string }> | null = null;
+  const whoami = (repoDir: string) => {
+    me ??= run("gh", ["api", "user", "--jq", ".login"], repoDir).then(r => {
+      const login = r.stdout.trim();
+      if (r.code === 0 && login) return { login };
+      me = null;
+      return { unavailable: (r.stderr ?? "").trim() || login || `gh exited ${r.code}` };
+    }, (err: Error) => { me = null; return { unavailable: err.message }; });
+    return me;
+  };
   return {
+    whoami,
     name: "github",
     async authStatus() {
       const r = await run("gh", ["auth", "status"]);
@@ -125,13 +144,20 @@ export function githubAdapter(run: Runner): ForgeAdapter {
       return { found: toPrInfo(parsed) };
     },
 
-    /** My open PRs in one `gh pr list` (paged internally, 100 per page). */
-    async listOpenPrs(repoDir: string) {
-      const r = await run("gh", ["pr", "list", "--state", "open", "--author", "@me", "--limit", "3000", "--json", FIELDS], repoDir);
+    /** My open PRs in one `gh pr list` (paged internally, 100 per page) — or, for an import, everyone's. */
+    async listOpenPrs(repoDir: string, opts: { all?: boolean } = {}) {
+      const r = await run("gh", ["pr", "list", "--state", "open", ...(opts.all ? [] : ["--author", "@me"]), "--limit", "3000", "--json", LIST_FIELDS], repoDir);
       if (r.code !== 0) return { unavailable: (r.stderr ?? r.stdout ?? "").trim() || `gh exited ${r.code}` };
       let rows: any[];
       try { rows = JSON.parse(r.stdout || "[]"); } catch { return { unavailable: "gh pr list returned something that isn't JSON" }; }
       return { prs: (Array.isArray(rows) ? rows : []).filter(looksLikePr).map(toPrInfo) };
+    },
+
+    async findMergedPr(repoDir: string, key: string) {
+      const r = await run("gh", ["pr", "list", "--state", "merged", "--search", `${key} in:title,head`, "--limit", "5", "--json", LIST_FIELDS], repoDir);
+      if (r.code !== 0) return null;
+      // gh's search is fuzzy: keep only a PR naming the key as a whole word (PAY-41 is not PAY-410).
+      try { const rows = JSON.parse(r.stdout || "[]"); const hit = Array.isArray(rows) ? rows.find((x: any) => looksLikePr(x) && (matchesKey(x.headRefName ?? "", key) || matchesKey(x.title ?? "", key))) : null; return hit ? toPrInfo(hit) : null; } catch { return null; }
     },
 
     async listReviewEvents(repoDir: string, number: number, since: string): Promise<ReviewEvent[]> {
@@ -142,25 +168,37 @@ export function githubAdapter(run: Runner): ForgeAdapter {
       // `{repo}` placeholders resolve from repoDir (passed as cwd) the same way `gh pr` does.
       // Two calls instead of one GraphQL query is acceptable — this only runs when a PR
       // actually changed and changes were requested.
-      const [reviewsR, commentsR] = await Promise.all([
-        run("gh", ["api", `repos/{owner}/{repo}/pulls/${number}/reviews`], repoDir),
-        run("gh", ["api", `repos/{owner}/{repo}/issues/${number}/comments`], repoDir),
+      // Inline review comments (on lines of the diff) are a third REST list (spec 2026-10-09 §5).
+      const [reviewsR, commentsR, inlineR, who] = await Promise.all([
+        run("gh", ["api", "--paginate", "--jq", ".[]", `repos/{owner}/{repo}/pulls/${number}/reviews`], repoDir),
+        run("gh", ["api", "--paginate", "--jq", ".[]", `repos/{owner}/{repo}/issues/${number}/comments`], repoDir),
+        run("gh", ["api", "--paginate", "--jq", ".[]", `repos/{owner}/{repo}/pulls/${number}/comments`], repoDir),
+        whoami(repoDir),
       ]);
+      const login = "login" in who ? who.login : "";
       const parseArray = (r: { stdout: string; code: number }): any[] => {
         if (r.code !== 0) return [];
-        try { const v = JSON.parse(r.stdout || "[]"); return Array.isArray(v) ? v : []; }
-        catch { return []; }
+        // `--paginate --jq '.[]'`: every page, one JSON object per line (a bare array is still accepted).
+        const out: any[] = [];
+        for (const line of (r.stdout || "").split("\n")) {
+          const l = line.trim(); if (!l) continue;
+          try { const v = JSON.parse(l); if (Array.isArray(v)) out.push(...v); else if (v && typeof v === "object") out.push(v); } catch { /* skip a broken line */ }
+        }
+        return out;
       };
       // REST's `user.type === "Bot"` is the real signal (dependabot, github-actions, ...);
       // the `[bot]` login suffix is kept only as corroboration/fallback. What neither field
       // catches: a PAT-driven service *user* account reports `type: "User"` with no suffix
       // and is indistinguishable from a human by anything either API exposes.
       const isBot = (u: any) => Boolean(u?.type === "Bot" || /\[bot\]$/i.test(u?.login ?? ""));
+      const isSelf = (u: any) => !!login && u?.login === login;
+      const comment = (c: any) => ({ kind: "comment" as const, state: "",
+        author: c.user?.login ?? "", isBot: isBot(c.user), isSelf: isSelf(c.user), body: c.body ?? "", at: c.created_at ?? "" });
       const out: ReviewEvent[] = [
         ...parseArray(reviewsR).map((v: any) => ({ kind: "review" as const, state: (v.state ?? "").toUpperCase(),
-          author: v.user?.login ?? "", isBot: isBot(v.user), body: v.body ?? "", at: v.submitted_at ?? "" })),
-        ...parseArray(commentsR).map((c: any) => ({ kind: "comment" as const, state: "",
-          author: c.user?.login ?? "", isBot: isBot(c.user), body: c.body ?? "", at: c.created_at ?? "" })),
+          author: v.user?.login ?? "", isBot: isBot(v.user), isSelf: isSelf(v.user), body: v.body ?? "", at: v.submitted_at ?? "" })),
+        ...parseArray(commentsR).map(comment),
+        ...parseArray(inlineR).map(comment),
       ];
       return out.filter(e => e.at > since).sort((a, b) => a.at.localeCompare(b.at));
     },

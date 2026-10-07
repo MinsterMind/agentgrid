@@ -1,5 +1,5 @@
 import { Store } from "../store/store.js";
-import { Runner, type BuildOptions, type QueryFn } from "./runner.js";
+import { Runner, type BuildOptions, type QueryFn, type RunOverrides } from "./runner.js";
 import { buildOptions as defaultBuildOptions, realQuery } from "./sdk.js";
 import type { Assignment, Decision } from "../types.js";
 import type { RulesStore } from "../permissions/rules.js";
@@ -32,7 +32,7 @@ export class Manager {
     }
   }
 
-  async assign(agentId: string, prompt: string): Promise<Assignment> { return this.runner(agentId).assign(prompt); }
+  async assign(agentId: string, prompt: string, opts: { fresh?: boolean; overrides?: RunOverrides } = {}): Promise<Assignment> { return this.runner(agentId).assign(prompt, opts); }
   /** Answer a finished run in its own conversation: dismiss it, then continue its session with `text`. */
   async reply(agentId: string, text: string): Promise<Assignment> {
     const agent = this.store.getAgent(agentId);

@@ -140,6 +140,10 @@ export function blockersFor({ task, pending, setup, setupError }: { task: BugTas
   }
   if (task.conflictCheckError) out.push({ kind: "pr", title: task.conflictCheckError });
   if (task.trackerSyncError) out.push({ kind: "pr", title: task.trackerSyncError });
+  // Spending and reviewer comments (spec 2026-10-09 §5, §6.4).
+  if (task.queuedReason && task.queuedAt) out.push({ kind: "pr", title: task.queuedReason });
+  if (task.commentsPendingSince) out.push({ kind: "pr", title: "Reviewer comments waiting — a round starts after the quiet period" });
+  if (task.commentsNote) out.push({ kind: "pr", title: task.commentsNote });
   if (task.error?.startsWith(UNREACHABLE)) out.push({ kind: "pr", title: "Could not check the pull request", detail: task.error.slice(UNREACHABLE.length).trim() });
   if (setupError) out.push({ kind: "setup", title: "Could not check setup" });
   else for (const c of setup?.checks ?? []) if (c.blocks && c.state !== "ok") out.push({ kind: "setup", title: c.detail });
@@ -201,4 +205,20 @@ export function parseHunks(patch: string): DiffRow[] {
     else if (line.startsWith(" ")) rows.push({ kind: "ctx", oldNo: oldNo++, newNo: newNo++, text: line.slice(1) });
   }
   return rows;
+}
+
+/** A model id as a person says it. */
+export const modelName = (id: string): string => /opus/.test(id) ? "Opus" : /sonnet/.test(id) ? "Sonnet" : /haiku/.test(id) ? "Haiku" : id;
+
+/** What each step of a fix cost, and on which models — from the task's run log (spec 2026-10-09 §6.5). */
+export function costByStep(task: Pick<BugTask, "runs">): Array<{ stage: BugStage; label: string; usd: number; models: string[] }> {
+  const out: Array<{ stage: BugStage; label: string; usd: number; models: string[] }> = [];
+  for (const r of task.runs ?? []) {
+    let row = out.find(x => x.stage === r.stage);
+    if (!row) { row = { stage: r.stage, label: stageLabel(r.stage), usd: 0, models: [] }; out.push(row); }
+    row.usd = Number((row.usd + r.costUsd).toFixed(4));
+    const m = modelName(r.model);
+    if (r.model && !row.models.includes(m)) row.models.push(m);
+  }
+  return out;
 }

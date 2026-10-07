@@ -32,6 +32,14 @@ afterEach(() => {
 });
 
 describe("Runner", () => {
+  it("a fresh assignment never resumes the agent's saved session, and passes the run's overrides", async () => {
+    await store.updateAgent(agentId, { resumeSessionId: "old-session" });
+    const seen: Array<{ resume?: string; model?: string }> = [];
+    const r = new Runner(agentId, { store, queryFn: fake.queryFn, buildOptions: (_role, a, e) => { seen.push({ resume: a.resumeSessionId, model: e.overrides?.model }); return { cwd: a.repo, canUseTool: e.canUseTool, abortController: e.abortController } as Options; } });
+    await r.assign("go", { fresh: true, overrides: { model: "claude-haiku-4-5-20251001" } });
+    expect(seen[0]).toEqual({ resume: undefined, model: "claude-haiku-4-5-20251001" });
+  });
+
   it("assign: builds prompt with memory index, marks agent working, records sessionId + activity", async () => {
     await writeFile(path.join(store.memoryDir(agentId), "MEMORY.md"), "- [k](k.md) — hook");
     const asg = await runner.assign("Fix the bug");

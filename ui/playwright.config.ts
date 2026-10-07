@@ -14,9 +14,9 @@ process.env.AGENTGRID_E2E_REPO = process.env.AGENTGRID_E2E_REPO ?? fixtureRepo;
 // comments for why the call counts (`after: 2`, `after: 5`) are what they are — the watcher's
 // own polling, and the engine's own push-confirmation read, both consume `getPr` calls too.
 const fakePrScript = JSON.stringify([
-  { after: 2, pr: { reviewDecision: "CHANGES_REQUESTED", lastSeenEventAt: "2026-09-26T09:30:00Z" },
-    events: [{ kind: "review", state: "CHANGES_REQUESTED", author: "alice", isBot: false, body: "Name it properly.", at: "2026-09-26T09:30:00Z" }] },
-  { after: 5, pr: { reviewDecision: "APPROVED", lastSeenEventAt: "2026-09-26T10:00:00Z" } },
+  { after: 2, pr: { reviewDecision: "CHANGES_REQUESTED", lastSeenEventAt: "2099-09-26T09:30:00Z" },
+    events: [{ kind: "review", state: "CHANGES_REQUESTED", author: "alice", isBot: false, body: "Name it properly.", at: "2099-09-26T09:30:00Z" }] },
+  { after: 5, pr: { reviewDecision: "APPROVED", lastSeenEventAt: "2099-09-26T10:00:00Z" } },
 ]);
 
 // I8, spec §9 ("Nothing in CI reads a real `~/.claude`"): `BugLauncher` calls `GET /api/setup` on

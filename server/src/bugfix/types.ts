@@ -40,6 +40,10 @@ export interface PrInfo {
   /** `gh`'s `headRefOid` — the server's only proof that a push actually landed on the PR. */
   headSha: string | null;
   lastSeenEventAt: string;
+  /** The PR's own branch, the branch it targets, and its title — from a listing; what an import matches a ticket by (spec 2026-10-09 §3). */
+  headBranch?: string | null; baseBranch?: string | null; title?: string | null;
+  /** The PR comes from a fork: its head branch isn't origin's, so it's never imported. */
+  crossRepo?: boolean;
 }
 
 export interface BugTask {
@@ -75,6 +79,18 @@ export interface BugTask {
   /** The instructions a queued stage will run with (a request-changes note, reviewer comments) — kept on
    *  the task while it waits, so a restart can't start it without them. Null otherwise. */
   queuedNote: { text: string; trusted: boolean } | null;
+  /** Why a queued task is held rather than waiting for a slot — the daily spending limit (spec 2026-10-09 §6.4). */
+  queuedReason: string | null;
+  /** Reviewer comments up to here have had their round (spec 2026-10-09 §5). Null: since the PR's last seen event. */
+  commentsSince: string | null;
+  /** The newest reviewer comment still waiting out the quiet period; null when none waits. */
+  commentsPendingSince: string | null;
+  /** Why comment rounds may be imperfect — e.g. the user's own comments couldn't be told apart. */
+  commentsNote: string | null;
+  /** Picked up from work already in progress elsewhere (spec 2026-10-09 §3). */
+  imported: boolean;
+  /** Origin's tip when the last round started: the one commit a force-push after it may replace. */
+  leaseHead: string | null;
   /** The last status move on the tracker that failed (shown on the card); cleared by the next success. */
   trackerSyncError: string | null;
   agentId: string;
@@ -121,6 +137,10 @@ export interface BugTask {
    *  before this field existed normalise to null in `BugTaskStore.init`. */
   prCheckedAt: string | null;
   costUsd: number;
+  /** Every agent run for this task: which stage, on which model, what it cost (spec 2026-10-09 §6.5). */
+  runs: Array<{ stage: BugStage; model: string; costUsd: number; at: string; ok: boolean }>;
+  /** A stage that failed its check and was stepped up to a stronger model keeps it (spec 2026-10-09 §6.3). */
+  stageModel: Partial<Record<"analyzing" | "implementing" | "opening-pr" | "review-feedback" | "rebase", string>>;
   history: Array<{ stage: BugStage; at: string; note: string }>;
   error: string | null;
   createdAt: string;
@@ -150,19 +170,20 @@ export type BugEvent =
   | { type: "retry" }
   /** Nothing to change: the human closes at the plan gate, or the change step ended with no commits and a clean tree. */
   | { type: "no-change"; report: string }
+  | { type: "feedback-no-change"; note: string }
   /** `source` says whose words `comments` are, and therefore whether the agent may obey them:
    *  "forge" is reviewer/CI text pulled off the pull request (data, fenced in the prompt);
    *  "operator" is the human at the console typing into this app. The watcher only ever
    *  produces "forge"; `addressComments` produces either, depending on whether the human
    *  supplied the text themselves. */
-  | { type: "review-changes-requested"; comments: string; source: "forge" | "operator" }
+  | { type: "review-changes-requested"; comments: string; source: "forge" | "operator"; upTo?: string }
   /** `headSha` is the PR head the failing build ran against, and the engine records it as
    *  `BugTask.checksRoundHead` when it dispatches the round — that is what stops the same red
    *  build being answered twice. Null when the adapter does not report a head. */
   | { type: "checks-failed"; checks: string; headSha: string | null }
   | { type: "review-approved" }
   /** The branch no longer merges cleanly into its base — from the ConflictWatcher (with the files) or the forge's own flag. */
-  | { type: "conflicting"; files?: string[]; base?: string }
+  | { type: "conflicting"; files?: string[]; base?: string; auto?: boolean }
   /** It merges cleanly again (someone rebased by hand, or the base moved on). */
   | { type: "conflict-cleared" }
   | { type: "pr-closed" }

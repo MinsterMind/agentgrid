@@ -3,6 +3,7 @@ import { Check as CheckIcon, CheckCircle2, FolderGit2, GitPullRequest, PlugZap, 
 import { relativeTime } from "../format";
 import { api } from "../api";
 import type { Check, FixAction, McpServerFound, SetupReport } from "../types";
+import { DEFAULT_STAGE_RUNS, EFFORTS, MODELS, type ModelStage, type StageModels, type StageRun } from "../../../server/src/bugfix/models";
 
 // Populated from `GET /api/integrations` alongside the setup report; no route exists to edit
 // a single entry (`PUT /api/integrations` only accepts `tracker`/`forge`), so this stays
@@ -311,6 +312,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
 
           <AgentsAtOnce />
 
+          <Spending />
+
           <AlwaysAllowed />
 
           {report.discovery.problems.length > 0 && (
@@ -378,6 +381,61 @@ function AgentsAtOnce() {
         {!ok && <span className="errtext">Between 1 and 32</span>}
         {saved && <span className="oktext">{saved}</span>}
         {err && <span className="errtext">{err}</span>}
+      </div>
+    </section>
+  );
+}
+
+const STEPS: Array<[ModelStage, string]> = [["analyzing", "Plan"], ["implementing", "Change"], ["opening-pr", "PR description"], ["review-feedback", "Review feedback"], ["rebase", "Conflict"]];
+const MODEL_NAMES: Array<[string, string]> = [[MODELS.opus, "Opus"], [MODELS.sonnet, "Sonnet"], [MODELS.haiku, "Haiku"]];
+
+/** How much the bug-fix workflow may spend, and on what (spec 2026-10-09 §4–§6). */
+function Spending() {
+  const [auto, setAuto] = useState(true);
+  const [quiet, setQuiet] = useState("10");
+  const [models, setModels] = useState<StageModels>({});
+  const [limitOn, setLimitOn] = useState(false);
+  const [limit, setLimit] = useState("");
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  useEffect(() => { let live = true; api.getIntegrations().then(i => {
+    if (!live) return;
+    setAuto(i.autoResolveConflicts !== false); setQuiet(String(i.commentQuietMinutes ?? 10)); setModels(i.stageModels ?? {});
+    setLimitOn(typeof i.dailyBudgetUsd === "number"); setLimit(typeof i.dailyBudgetUsd === "number" ? String(i.dailyBudgetUsd) : "");
+  }).catch(() => {}); return () => { live = false; }; }, []);
+  /** An empty value, or the default, clears the override. */
+  const set = (s: ModelStage, k: keyof StageRun, v: string) => { setMsg(null); setModels(m => {
+    const cur = { ...(m[s] ?? {}) } as Record<string, unknown>;
+    if (v === "" || v === String(DEFAULT_STAGE_RUNS[s][k])) delete cur[k]; else cur[k] = k === "maxTurns" || k === "maxBudgetUsd" ? Number(v) : v;
+    return { ...m, [s]: cur };
+  }); };
+  const save = () => {
+    const stageModels = Object.fromEntries(Object.entries(models).filter(([, v]) => v && Object.keys(v).length));
+    api.putIntegrations({ autoResolveConflicts: auto, commentQuietMinutes: Number(quiet), dailyBudgetUsd: limitOn ? Number(limit) : null, stageModels })
+      .then(() => setMsg({ ok: true, text: "Saved." })).catch(e => setMsg({ ok: false, text: (e as Error).message }));
+  };
+  return (
+    <section className="sec">
+      <div className="sec-head"><h4><Ticket />Spending</h4><p className="why">Each step runs as a short session on the model it needs. A step that fails its check tries once more a model up.</p></div>
+      <div className="sec-body spending">
+        <label className="row"><input type="checkbox" checked={auto} onChange={e => { setAuto(e.target.checked); setMsg(null); }} /> Resolve conflicts automatically — you still review the result before it's pushed</label>
+        <div className="row"><label className="label" htmlFor="quiet-min">Wait for reviewers to finish commenting (minutes)</label>
+          <input id="quiet-min" className="input mono" type="number" min={0} max={240} style={{ width: 90 }} value={quiet} onChange={e => { setQuiet(e.target.value); setMsg(null); }} />
+          <span className="help">0 starts a round at once</span></div>
+        <table className="stage-models"><thead><tr><th>Step</th><th>Model</th><th>Effort</th><th>Max turns</th><th>Cap ($)</th></tr></thead><tbody>
+          {STEPS.map(([s, label]) => { const d = DEFAULT_STAGE_RUNS[s]; const v = models[s] ?? {}; return (
+            <tr key={s}><td>{label}</td>
+              <td><select aria-label={`Model for ${label}`} className="input" value={v.model ?? d.model} onChange={e => set(s, "model", e.target.value)}>
+                {MODEL_NAMES.map(([id, n]) => <option key={id} value={id}>{n}</option>)}</select></td>
+              <td><select aria-label={`Effort for ${label}`} className="input" value={v.effort ?? d.effort} onChange={e => set(s, "effort", e.target.value)}>
+                {EFFORTS.map(x => <option key={x} value={x}>{x}</option>)}</select></td>
+              <td><input aria-label={`Max turns for ${label}`} className="input mono" type="number" min={1} max={300} placeholder={String(d.maxTurns)} value={v.maxTurns ?? ""} onChange={e => set(s, "maxTurns", e.target.value)} /></td>
+              <td><input aria-label={`Cap for ${label}`} className="input mono" type="number" step="0.05" min={0.05} max={100} placeholder={String(d.maxBudgetUsd)} value={v.maxBudgetUsd ?? ""} onChange={e => set(s, "maxBudgetUsd", e.target.value)} /></td></tr>); })}
+        </tbody></table>
+        <div className="row"><label><input type="checkbox" checked={limitOn} onChange={e => { setLimitOn(e.target.checked); setMsg(null); }} /> Limit bug-fix spending per day</label>
+          {limitOn && <><label className="label" htmlFor="daily-limit">Daily limit ($)</label>
+            <input id="daily-limit" className="input mono" type="number" min={0.5} max={10000} style={{ width: 100 }} value={limit} onChange={e => { setLimit(e.target.value); setMsg(null); }} /></>}</div>
+        <div className="row"><button className="btn sm" onClick={save}>Set spending</button>
+          {msg && <span className={msg.ok ? "oktext" : "errtext"}>{msg.text}</span>}</div>
       </div>
     </section>
   );

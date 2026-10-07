@@ -20,7 +20,10 @@ import type { IntegrationsStore, Integrations } from "../bugfix/integrations.js"
 import type { TrackerProvider } from "../bugfix/tracker.js";
 import type { TrackerCache } from "../bugfix/trackerCache.js";
 import { MOMENTS } from "../bugfix/trackerSync.js";
+import { validateStageModels, type StageModels } from "../bugfix/models.js";
 import type { BatchStarter } from "../bugfix/batch.js";
+import type { FakeForge } from "../fake/forge.js";
+import type { Importer } from "../bugfix/importer.js";
 import type { ForgeAdapter } from "../bugfix/forge/types.js";
 import { discoverMcpServers } from "../bugfix/mcp-discovery.js";
 import { buildSetupReport } from "../bugfix/setup.js";
@@ -29,7 +32,7 @@ export interface AppDeps {
   store: Store;
   manager: Manager;
   /** Bug-fix workflow; absent when the feature is not configured (routes answer 501). */
-  bugs?: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider; trackerCache?: TrackerCache; batches?: BatchStarter };
+  bugs?: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider; trackerCache?: TrackerCache; batches?: BatchStarter; importer?: Importer };
   /** The config store, needed with or without an engine: an unconfigured machine must still
    *  be able to read and write its own integrations.json. */
   integrations?: IntegrationsStore;
@@ -78,6 +81,8 @@ export interface AppDeps {
   hookToken?: () => string | null;
   /** Fake mode only: POST /api/fake/permission raises a terminal permission request (the real one comes from the hook). */
   fakePermissions?: boolean;
+  /** Fake mode only: POST /api/fake/forge/events scripts reviewer comments on the fake forge's PRs (e2e). */
+  fakeForge?: FakeForge;
   /** The agent that owns a Claude Code session (adopted, or ran it), or null. */
   agentForSession?: (sessionId: string) => string | null;
 }
@@ -213,6 +218,12 @@ export function createApp(deps: AppDeps) {
     const d = await decision;
     if (!res.writableEnded && !res.destroyed) res.json({ decision: d });
   }));
+  if (deps.fakeForge) {
+    const f = deps.fakeForge;
+    app.post("/api/fake/forge/events", wrap(async (req, res) => {
+      f.setEvents(Array.isArray(req.body?.events) ? req.body.events : []); f.touch(); res.json({ ok: true });
+    }));
+  }
   if (deps.fakePermissions && deps.permissions) {
     const broker = deps.permissions.broker;
     app.post("/api/fake/permission", wrap(async (req, res) => {
@@ -408,6 +419,10 @@ export function createApp(deps: AppDeps) {
     projectRepos: cfg.projectRepos,
     ...(cfg.maxConcurrentRuns !== undefined ? { maxConcurrentRuns: cfg.maxConcurrentRuns } : {}),
     ...(cfg.statusMap !== undefined ? { statusMap: cfg.statusMap } : {}),
+    ...(cfg.stageModels !== undefined ? { stageModels: cfg.stageModels } : {}),
+    ...(cfg.autoResolveConflicts !== undefined ? { autoResolveConflicts: cfg.autoResolveConflicts } : {}),
+    ...(cfg.commentQuietMinutes !== undefined ? { commentQuietMinutes: cfg.commentQuietMinutes } : {}),
+    ...(cfg.dailyBudgetUsd !== undefined ? { dailyBudgetUsd: cfg.dailyBudgetUsd } : {}),
     ...(cfg.forge ? { forge: cfg.forge } : {}),
     ...(cfg.tracker ? { tracker: {
       preset: cfg.tracker.preset,
@@ -462,6 +477,29 @@ export function createApp(deps: AppDeps) {
     if (!st) throw new NotFound(`batch ${req.params.batchId}`);
     res.json(st);
   }));
+  /** Pick up tickets already in progress (spec 2026-10-09 §3): 202 with an import id; progress arrives as `import` events. */
+  app.post("/api/bugtasks/import", wrap(async (req, res) => {
+    const b = bugs();
+    if (!b.importer) throw Object.assign(new Error("importing isn't available"), { status: 501 });
+    const keys = req.body?.keys; const repo = req.body?.repo;
+    if (!Array.isArray(keys) || keys.length === 0 || keys.some((k: unknown) => typeof k !== "string" || !/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(k.trim()))) throw new BadRequest("keys must list ticket keys like PAY-42");
+    if (keys.length > 500) throw new BadRequest("at most 500 tickets per import — send the rest in another");
+    if (typeof repo !== "string" || !path.isAbsolute(repo)) throw new BadRequest("an absolute repo path is required");
+    res.status(202).json({ importId: b.importer.start(keys.map((k: string) => k.trim()), repo) });
+  }));
+  app.get("/api/bugtasks/import/:importId", wrap(async (req, res) => {
+    const st = bugs().importer?.get(req.params.importId as string);
+    if (!st) throw new NotFound(`import ${req.params.importId}`);
+    res.json(st);
+  }));
+  app.post("/api/bugtasks/import/:importId/choose", wrap(async (req, res) => {
+    const { key, prNumber } = req.body ?? {};
+    if (typeof key !== "string" || !Number.isInteger(prNumber)) throw new BadRequest("say which ticket and which pull request number");
+    const imp = bugs().importer;
+    if (!imp) throw new NotFound(`import ${req.params.importId}`);
+    res.json(await imp.choose(req.params.importId as string, key, prNumber));
+  }));
+  app.get("/api/bugfix/spend", wrap(async (_req, res) => res.json(bugs().engine.spend())));
   app.post("/api/bugtasks/resolve-conflicts", wrap(async (_req, res) => res.json({ ids: await bugs().engine.resolveConflicts() })));
   app.post("/api/bugtasks/:id/override-tests", wrap(async (req, res) => {
     const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
@@ -544,7 +582,7 @@ export function createApp(deps: AppDeps) {
     // Only the two known top-level fields are accepted; anything else in the body is
     // deliberately dropped rather than persisted (same "pick the fields you accept"
     // convention POST /api/agents already uses), not silently merged onto disk.
-    const patch: { tracker?: unknown; forge?: unknown; maxConcurrentRuns?: number; statusMap?: unknown } = {};
+    const patch: { tracker?: unknown; forge?: unknown; maxConcurrentRuns?: number; statusMap?: unknown; stageModels?: StageModels; autoResolveConflicts?: boolean; commentQuietMinutes?: number; dailyBudgetUsd?: number | null } = {};
     if (body.statusMap !== undefined) {
       const m = body.statusMap;
       const bad = (why: string) => { throw new BadRequest(`statusMap: ${why}`); };
@@ -560,6 +598,21 @@ export function createApp(deps: AppDeps) {
         }
       }
       patch.statusMap = m;
+    }
+    if (body.stageModels !== undefined) patch.stageModels = validateStageModels(body.stageModels);
+    if (body.autoResolveConflicts !== undefined) {
+      if (typeof body.autoResolveConflicts !== "boolean") throw new BadRequest("autoResolveConflicts must be true or false");
+      patch.autoResolveConflicts = body.autoResolveConflicts;
+    }
+    if (body.commentQuietMinutes !== undefined) {
+      const n = body.commentQuietMinutes;
+      if (!Number.isInteger(n) || n < 0 || n > 240) throw new BadRequest("commentQuietMinutes must be a whole number from 0 to 240");
+      patch.commentQuietMinutes = n;
+    }
+    if (body.dailyBudgetUsd !== undefined) {
+      const n = body.dailyBudgetUsd;
+      if (n !== null && (typeof n !== "number" || !(n >= 0.5 && n <= 10000))) throw new BadRequest("dailyBudgetUsd must be from 0.5 to 10000, or null for no limit");
+      patch.dailyBudgetUsd = n;
     }
     if (body.maxConcurrentRuns !== undefined) {
       const n = body.maxConcurrentRuns;
@@ -613,6 +666,7 @@ export function createApp(deps: AppDeps) {
     // A different tracker: its bugs aren't the old one's — never show those (Review Focus 4).
     if (patch.tracker !== undefined) wired?.trackerCache?.clear();
     if (patch.maxConcurrentRuns !== undefined) wired?.engine.setMaxConcurrentRuns(patch.maxConcurrentRuns);
+    if (patch.dailyBudgetUsd !== undefined) wired?.engine.setDailyBudget(patch.dailyBudgetUsd ?? null);
     await tryWire();
     res.json(redactIntegrations(saved));
   }));

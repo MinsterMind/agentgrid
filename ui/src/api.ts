@@ -1,4 +1,4 @@
-import type { BatchState, IssueList, TrackerIssue } from "./types";
+import type { BatchState, ImportState, IssueList, TrackerIssue } from "./types";
 import type { Agent, Assignment, BugTask, Decision, DirListing, GridEvent, GridState, Integrations, IssueSummary, MemoryFile, SessionInfo, SetupReport } from "./types";
 
 export interface TranscriptEntry { ts: string; role: "user" | "assistant"; kind: "text" | "tool_use" | "tool_result"; text: string; tool?: string; input?: unknown }
@@ -78,6 +78,10 @@ export const api = {
   startBatch: (items: Array<{ issueRef: string; repo: string; baseBranch?: string }>, startAnyway?: string[]) =>
     call<{ batchId: string }>("POST", "/api/bugtasks/batch", { items, ...(startAnyway?.length ? { startAnyway } : {}) }),
   getBatch: (id: string) => call<BatchState>("GET", `/api/bugtasks/batch/${encodeURIComponent(id)}`),
+  startImport: (keys: string[], repo: string) => call<{ importId: string }>("POST", "/api/bugtasks/import", { keys, repo }),
+  getImport: (id: string) => call<ImportState>("GET", `/api/bugtasks/import/${encodeURIComponent(id)}`),
+  chooseImport: (id: string, key: string, prNumber: number) => call<ImportState>("POST", `/api/bugtasks/import/${encodeURIComponent(id)}/choose`, { key, prNumber }),
+  spend: () => call<{ today: number; limit: number | null }>("GET", "/api/bugfix/spend"),
   refreshIssues: () => call<object>("POST", "/api/bugfix/issues/refresh"),
   repoStatus: (path: string) => call<{ exists: boolean; isRepo: boolean; branch: string | null }>("GET", `/api/repo-status?path=${encodeURIComponent(path)}`),
   bugPreflight: (repo: string) => call<{ ok: boolean; problems: string[]; remote?: string | null; baseBranch?: string | null; branches?: string[] }>("GET", `/api/bugfix/preflight?repo=${encodeURIComponent(repo)}`),

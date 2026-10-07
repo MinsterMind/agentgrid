@@ -16,6 +16,7 @@ export interface ReviewEvent {
   state: string;            // e.g. "CHANGES_REQUESTED", "APPROVED", "" for a plain comment
   author: string;
   isBot: boolean;           // the adapter decides; the engine must never guess from a name
+  isSelf: boolean;          // the forge's own account — the user, never a reviewer (spec 2026-10-09 §5)
   body: string;
   at: string;               // ISO
 }
@@ -40,8 +41,13 @@ export interface ForgeAdapter {
   listReviewEvents(repoDir: string, number: number, since: string): Promise<ReviewEvent[]>;
   merge(repoDir: string, number: number, method: MergeMethod): Promise<MergeResult>;
   /** Every open AgentGrid PR in the repo, in as few calls as the forge allows — what lets ~1000 PRs be
-   *  watched within API limits (spec 2026-10-07 §6). Optional: without it the watcher polls per PR. */
-  listOpenPrs?(repoDir: string): Promise<{ prs: PrInfo[] } | { unavailable: string }>;
+   *  watched within API limits (spec 2026-10-07 §6). Optional: without it the watcher polls per PR.
+   *  `all`: every open PR in the repo, with branch, base and title — what an import matches tickets against (spec 2026-10-09 §3.4). */
+  listOpenPrs?(repoDir: string, opts?: { all?: boolean }): Promise<{ prs: PrInfo[] } | { unavailable: string }>;
+  /** The newest merged PR whose title or head branch names `key`; null when none or unreadable. */
+  findMergedPr?(repoDir: string, key: string): Promise<PrInfo | null>;
+  /** The account the forge CLI or token acts as — whose comments are the user's own. Cached once known. */
+  whoami?(repoDir: string): Promise<{ login: string } | { unavailable: string }>;
 }
 
 export type Runner = (cmd: string, args: string[], cwd?: string) => Promise<{ stdout: string; stderr?: string; code: number }>;

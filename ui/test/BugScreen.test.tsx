@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BugScreen, mergeRows } from "../src/components/BugScreen";
+import { api } from "../src/api";
 import type { BugTask } from "../src/types";
 
 const { ApiError } = vi.hoisted(() => {
@@ -32,13 +33,13 @@ vi.mock("../src/api", () => ({
     requestBugChanges: vi.fn(), cancelBug: vi.fn(), retryBug: vi.fn(), listBugTasks: vi.fn(async () => []),
     addressComments: vi.fn(), dismissBug: vi.fn(),
     myIssues: () => myIssues(), refreshIssues: () => refreshIssues(), issue: vi.fn(async () => ({ key: "PAY-1", title: "Not started", url: "u", status: "Open", priority: "High", description: "", acceptanceCriteria: [] })),
-    getIntegrations: vi.fn(async () => ({ projectRepos: {} })), resolveConflicts: () => resolveConflicts(), bugPreflight: () => bugPreflight(), createBugTask: vi.fn(), pickFolder: vi.fn(), startBatch: vi.fn(async () => ({ batchId: "b1" })),
+    getIntegrations: vi.fn(async () => ({ projectRepos: {} })), resolveConflicts: () => resolveConflicts(), bugPreflight: () => bugPreflight(), createBugTask: vi.fn(), pickFolder: vi.fn(), startBatch: vi.fn(async () => ({ batchId: "b1" })), startImport: vi.fn(async () => ({ importId: "i1" })), spend: vi.fn(async () => ({ today: 0, limit: null })),
   },
 }));
 
 const ISSUE = { key: "PAY-42", title: "Refresh token rotates twice", url: "https://x/PAY-42", status: "Open", priority: "High", description: "", acceptanceCriteria: [] as string[] };
 function task(stage: BugTask["stage"], extra: Partial<BugTask> = {}): BugTask {
-  return { id: "bt1", issue: ISSUE, trackerProject: "PAY", sourceRepo: "/r", worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", baseRef: "origin/main", ticketCommits: [], verdict: null, report: null, plannedTests: [], testsInDiff: null, testOverride: null, conflict: null, conflictCheckError: null, queuedAt: null, queuedNote: null, trackerSyncError: null, agentId: "bugfix@r",
+  return { id: "bt1", issue: ISSUE, trackerProject: "PAY", sourceRepo: "/r", worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", baseRef: "origin/main", ticketCommits: [], verdict: null, report: null, plannedTests: [], testsInDiff: null, testOverride: null, conflict: null, conflictCheckError: null, queuedAt: null, queuedNote: null, trackerSyncError: null, queuedReason: null, commentsSince: null, commentsPendingSince: null, commentsNote: null, imported: false, leaseHead: null, runs: [], stageModel: {}, agentId: "bugfix@r",
     stage, gate: stage === "plan-review" ? { kind: "plan", openedAt: "" } : stage === "diff-review" ? { kind: "diff", openedAt: "" } : stage === "approved" ? { kind: "merge", openedAt: "" } : null,
     mergePolicy: "ask", mergeMethod: "squash", approvedHead: null, outcome: null, checksRoundHead: null, pr: null, prCheckedAt: null,
     costUsd: 0.4, history: [{ stage: "intake", at: "2026-10-05T10:00:00Z", note: "" }, { stage, at: "2026-10-05T10:05:00Z", note: "" }], error: null,
@@ -57,6 +58,25 @@ const renderScreen = (tasks: BugTask[], selectedId: string | null = tasks[0]?.id
 };
 
 describe("BugScreen", () => {
+  it("shows today's bug-fix spend against the limit, and the cost per step", async () => {
+    vi.mocked(api.spend).mockResolvedValue({ today: 4.2, limit: 20 });
+    renderScreen([task("diff-review", { runs: [{ stage: "analyzing", model: "claude-opus-5", costUsd: 1.1, at: "a", ok: true }] })]);
+    expect(await screen.findByText("Today $4.20 of $20.00")).toBeTruthy();
+    expect(screen.getByText(/Plan.*Opus.*\$1\.10|Analy.*Opus.*\$1\.10/)).toBeTruthy();
+  });
+  it("with no limit, just today's spend; a held task says so in the list", async () => {
+    vi.mocked(api.spend).mockResolvedValue({ today: 4.2, limit: null });
+    renderScreen([task("analyzing", { queuedAt: "2026-10-09T10:00:00Z", queuedReason: "Daily limit reached ($20.00 of $20.00)" })]);
+    expect(await screen.findByText("Today $4.20")).toBeTruthy();
+    expect(screen.getByText(/Held · daily limit/)).toBeTruthy();
+  });
+  it("opens Import tickets from the list header", async () => {
+    renderScreen([task("implementing")]);
+    await userEvent.click(screen.getByRole("button", { name: "Import tickets…" }));
+    expect(screen.getByTestId("import-tickets")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByTestId("import-tickets")).toBeNull();
+  });
   it("lists every bug with a status word, active ones first", () => {
     renderScreen([task("done", { id: "bt1", issue: { ...ISSUE, key: "PAY-1" } }), task("plan-review", { id: "bt2", issue: { ...ISSUE, key: "PAY-2" } })], "bt2");
     const rows = screen.getAllByRole("option");

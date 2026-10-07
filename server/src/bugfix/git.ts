@@ -12,6 +12,17 @@ export const assertIssueKey = (key: string): string => {
   return key;
 };
 
+/** A branch name from a forge, fit to hand to git: nothing option-like, range-like, or that git refuses as a ref. */
+export function safeBranch(name: string): string {
+  if (!/^[A-Za-z0-9._/-]{1,200}$/.test(name) || name.startsWith("-") || name.includes("..") || name.endsWith(".lock") || name.endsWith("/") || name.includes("//"))
+    throw new Error(`unsafe branch name: ${name.slice(0, 80)}`);
+  return name;
+}
+
+/** The key as a whole word: PAY-41 is in "feature/PAY-41-x" and "pay-41: fix", never in "PAY-410" or "XPAY-41". */
+export const matchesKey = (text: string, key: string): boolean =>
+  new RegExp(`(^|[^A-Za-z0-9])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^0-9]|$)`, "i").test(text);
+
 export const branchName = (issueKey: string) => `bugfix/${assertIssueKey(issueKey)}`;
 export const worktreePath = (repo: string, issueKey: string) => path.join(repo, ".worktrees", `bugfix-${assertIssueKey(issueKey)}`);
 
@@ -127,6 +138,15 @@ export class GitOps {
     return dir;
   }
 
+  /** A worktree on an existing remote branch — an imported PR's own branch — at the ticket's usual path (spec 2026-10-09 §3.3).
+   *  `-B` puts the local branch exactly at origin's tip; `--no-track` as in `createWorktree`. */
+  async checkoutWorktree(repo: string, issueKey: string, branch: string): Promise<string> {
+    const dir = worktreePath(repo, issueKey);
+    const b = safeBranch(branch);
+    await this.run(repo, ["worktree", "add", "--no-track", "-B", b, dir, `origin/${b}`]);
+    return dir;
+  }
+
   async removeWorktree(repo: string, worktree: string, branch: string): Promise<void> {
     const failures: string[] = [];
 
@@ -196,6 +216,30 @@ export class GitOps {
     return this.run(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).then(() => true, () => false);
   }
 
+  /**
+   * Bring the worktree up to what is on the pull request before a round (spec 2026-10-09 §3: a shared PR's branch moves).
+   * Fast-forwards to origin's tip; refuses when both have moved. Returns origin's tip — the lease a later force-push may
+   * replace — or null when origin has no such branch.
+   */
+  async catchUp(dir: string, branch: string): Promise<string | null> {
+    await this.run(dir, ["fetch", "--quiet", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+    const tip = (await this.run(dir, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`]).catch(() => "")).trim();
+    if (!tip) return null;
+    const head = (await this.run(dir, ["rev-parse", "HEAD"])).trim();
+    if (head === tip) return tip;
+    const anc = (a: string, b: string) => this.run(dir, ["merge-base", "--is-ancestor", a, b]).then(() => true, () => false);
+    if (await anc(head, tip)) { await this.run(dir, ["merge", "--ff-only", "--quiet", tip]); return tip; }
+    if (await anc(tip, head)) return tip;
+    throw new Error(`the pull request's branch ${branch} and the worktree have diverged — someone pushed to it while this worktree has commits it doesn't. Reconcile them in ${dir}, then Retry.`);
+  }
+
+  /** The local branch has commits origin's copy doesn't — resetting it to origin would lose them. False when there is no local branch. */
+  async localBranchAhead(repo: string, branch: string): Promise<boolean> {
+    const exists = await this.run(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).then(() => true, () => false);
+    if (!exists) return false;
+    return this.run(repo, ["merge-base", "--is-ancestor", `refs/heads/${branch}`, `refs/remotes/origin/${branch}`]).then(() => false, () => true);
+  }
+
   /** Whether `dir` is already registered as a worktree of `repo` — `git worktree add`
    *  refuses otherwise, for the same cancelled-task-leftover reason as `branchExists`. */
   async worktreeRegistered(repo: string, dir: string): Promise<boolean> {
@@ -246,8 +290,10 @@ export class GitOps {
     });
   }
 
-  async push(dir: string, branch: string, opts: { force?: boolean } = {}): Promise<void> {
-    const args = ["push", ...(opts.force ? ["--force-with-lease"] : []), "origin", `${branch}:${branch}`];
+  /** `lease`: the remote tip this force-push may replace, and nothing else — a bare lease checks the tracking ref, which
+   *  any background fetch moves, so it would wave a teammate's newer commits away. */
+  async push(dir: string, branch: string, opts: { force?: boolean; lease?: string } = {}): Promise<void> {
+    const args = ["push", ...(opts.force ? [opts.lease ? `--force-with-lease=${branch}:${opts.lease}` : "--force-with-lease"] : []), "origin", `${branch}:${branch}`];
     await this.run(dir, args);
   }
 

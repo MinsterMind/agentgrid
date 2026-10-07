@@ -3,7 +3,7 @@ import { mkdtemp, writeFile, appendFile, rm } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { GitOps, worktreePath, branchName } from "../../src/bugfix/git.js";
+import { GitOps, worktreePath, branchName, safeBranch } from "../../src/bugfix/git.js";
 import { sh, makeRepo, gitflowClone } from "../helpers/gitRepos.js";
 
 const run = (cmd: string, args: string[], opts?: { cwd?: string }): Promise<{ stdout: string; stderr: string; code: number }> =>
@@ -381,5 +381,77 @@ describe("GitOps — conflicts without a forge", () => {
     expect(await git.conflictFiles(clone, "origin/develop", "origin/nope")).toBeNull();
     expect(await git.remoteTip(clone, "develop")).toBe((await sh(seed, ["rev-parse", "develop"])).trim());
     expect(await git.remoteTip(clone, "nope")).toBeNull();
+  });
+});
+
+describe("importing a branch already in progress (spec 2026-10-09 §3.3)", () => {
+  it("checks a worktree out on an existing remote branch, at the ticket's usual path", async () => {
+    const { clone } = await gitflowClone();
+    await sh(clone, ["checkout", "-q", "-b", "feature/PAY-42-x"]);
+    await writeFile(path.join(clone, "f.txt"), "fix\n"); await sh(clone, ["add", "."]); await sh(clone, ["commit", "-qm", "PAY-42: fix"]);
+    await sh(clone, ["push", "-q", "origin", "feature/PAY-42-x"]);
+    await sh(clone, ["checkout", "-q", "main"]); await sh(clone, ["branch", "-q", "-D", "feature/PAY-42-x"]);
+    const g = new GitOps();
+    await g.fetch(clone);
+    const dir = await g.checkoutWorktree(clone, "PAY-42", "feature/PAY-42-x");
+    expect(dir).toBe(worktreePath(clone, "PAY-42"));
+    expect(await g.currentBranch(dir)).toBe("feature/PAY-42-x");
+    expect((await sh(dir, ["log", "-1", "--format=%s"])).trim()).toBe("PAY-42: fix");
+  });
+  it("refuses unsafe branch names", () => {
+    for (const b of ["-x", "a..b", "a b", "", "x".repeat(201), "a.lock", "a/"]) expect(() => safeBranch(b)).toThrow(/unsafe branch/);
+    expect(safeBranch("feature/PAY-42_x.1")).toBe("feature/PAY-42_x.1");
+  });
+});
+
+describe("final review: a local branch ahead of origin", () => {
+  it("is reported, so an import never resets it", async () => {
+    const { clone } = await gitflowClone();
+    await sh(clone, ["checkout", "-q", "-b", "feature/PAY-9"]);
+    await writeFile(path.join(clone, "g.txt"), "1\n"); await sh(clone, ["add", "."]); await sh(clone, ["commit", "-qm", "one"]);
+    await sh(clone, ["push", "-q", "origin", "feature/PAY-9"]);
+    const g = new GitOps();
+    expect(await g.localBranchAhead(clone, "feature/PAY-9")).toBe(false);
+    await writeFile(path.join(clone, "g.txt"), "2\n"); await sh(clone, ["commit", "-qam", "unpushed"]);
+    expect(await g.localBranchAhead(clone, "feature/PAY-9")).toBe(true);
+    expect(await g.localBranchAhead(clone, "no-such-branch")).toBe(false);
+  });
+});
+
+describe("final review: a round starts from what is on the PR", () => {
+  async function shared() {
+    const { clone, origin } = await gitflowClone();
+    await sh(clone, ["checkout", "-q", "-b", "feature/PAY-7"]);
+    await writeFile(path.join(clone, "h.txt"), "1\n"); await sh(clone, ["add", "."]); await sh(clone, ["commit", "-qm", "mine"]);
+    await sh(clone, ["push", "-q", "origin", "feature/PAY-7"]);
+    // A teammate's clone pushes on top.
+    const mate = await mkdtemp(path.join(tmpdir(), "mate-"));
+    await sh(mate, ["clone", "-q", origin, "m"]); const m = path.join(mate, "m");
+    await sh(m, ["config", "user.email", "t@t"]); await sh(m, ["config", "user.name", "T"]);
+    await sh(m, ["checkout", "-q", "feature/PAY-7"]);
+    await writeFile(path.join(m, "t.txt"), "mate\n"); await sh(m, ["add", "."]); await sh(m, ["commit", "-qm", "teammate"]);
+    await sh(m, ["push", "-q", "origin", "feature/PAY-7"]);
+    return { clone, m };
+  }
+  it("fast-forwards to a teammate's push and returns origin's tip as the lease", async () => {
+    const { clone } = await shared();
+    const g = new GitOps();
+    const tip = await g.catchUp(clone, "feature/PAY-7");
+    expect((await sh(clone, ["log", "-1", "--format=%s"])).trim()).toBe("teammate");
+    expect(tip).toBe((await sh(clone, ["rev-parse", "HEAD"])).trim());
+  });
+  it("refuses when the worktree and the PR have both moved", async () => {
+    const { clone } = await shared();
+    await writeFile(path.join(clone, "h.txt"), "2\n"); await sh(clone, ["commit", "-qam", "local only"]);
+    await expect(new GitOps().catchUp(clone, "feature/PAY-7")).rejects.toThrow(/diverged/);
+  });
+  it("a force push with a lease refuses when origin moved past it", async () => {
+    const { clone, m } = await shared();
+    const g = new GitOps();
+    const lease = await g.catchUp(clone, "feature/PAY-7");
+    await writeFile(path.join(m, "t.txt"), "again\n"); await sh(m, ["commit", "-qam", "teammate 2"]); await sh(m, ["push", "-q", "origin", "feature/PAY-7"]);
+    await sh(clone, ["fetch", "-q", "origin"]);                                          // a watcher's fetch moves the tracking ref
+    await sh(clone, ["commit", "-q", "--amend", "-m", "rewritten"]);
+    await expect(g.push(clone, "feature/PAY-7", { force: true, lease: lease! })).rejects.toThrow();
   });
 });

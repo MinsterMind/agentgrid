@@ -261,3 +261,26 @@ describe("the conflict gate", () => {
     expect(() => nextStage(task("conflict", C("monitoring")), { type: "request-changes", text: "x" })).toThrow();
   });
 });
+
+describe("conflicts resolve themselves (spec 2026-10-09 §4)", () => {
+  it("a conflict with auto-resolve on goes straight to the rebase", () => {
+    for (const from of ["monitoring", "approved"] as const) {
+      const t = nextStage(task(from), { type: "conflicting", files: ["a.ts"], base: "develop", auto: true });
+      expect(t).toMatchObject({ stage: "rebase", run: "rebase", gate: null });
+      expect(t.note).toMatch(/Conflicts with develop: a\.ts/);
+    }
+  });
+  it("without auto it still waits at the conflict gate", () => {
+    expect(nextStage(task("monitoring"), { type: "conflicting", files: ["a.ts"] })).toMatchObject({ stage: "conflict", gate: { kind: "conflict" } });
+  });
+});
+
+describe("a feedback round with no change (final review I5)", () => {
+  it("goes back to the merge gate when the round started there, else to watching", () => {
+    const fromGate = task("review-feedback", { history: [{ stage: "monitoring", at: "a", note: "" }, { stage: "approved", at: "b", note: "" }, { stage: "review-feedback", at: "c", note: "" }] });
+    expect(nextStage(fromGate, { type: "feedback-no-change", note: "n" })).toMatchObject({ stage: "approved", gate: { kind: "merge" }, note: "n" });
+    const fromWatch = task("review-feedback", { history: [{ stage: "monitoring", at: "a", note: "" }, { stage: "review-feedback", at: "c", note: "" }] });
+    expect(nextStage(fromWatch, { type: "feedback-no-change", note: "n" })).toMatchObject({ stage: "monitoring", gate: null });
+    expect(() => nextStage(task("monitoring"), { type: "feedback-no-change", note: "n" })).toThrow();
+  });
+});

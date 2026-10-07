@@ -37,13 +37,23 @@ export function nextStage(task: BugTask, event: BugEvent): Transition {
       if (task.stage !== "plan-review" && task.stage !== "implementing") throw new Conflict(`a task closes as "no change needed" only from the plan gate or the change step (is ${task.stage})`);
       return { stage: "done", run: null, gate: null, note: "No change needed", error: null, outcome: "no-change", report: event.report };
 
+    // A round that answered without changing anything (a question, a "thanks"): back to where the PR was resting.
+    case "feedback-no-change": {
+      if (task.stage !== "review-feedback") throw new Conflict(`only a feedback round can end with no change (task is ${task.stage})`);
+      const from = [...task.history].reverse().find(h => !["review-feedback", "failed", "diff-review", "pushing"].includes(h.stage))?.stage;
+      return from === "approved" ? { ...wait("approved", "merge"), note: event.note } : go("monitoring", null, event.note);
+    }
     case "review-changes-requested": return go("review-feedback", "review-feedback", event.comments);
     case "checks-failed":            return go("review-feedback", "review-feedback", event.checks);
     case "review-approved":          return wait("approved", "merge");
-    // Never a rebase on its own: the conflict waits for the human (spec 2026-10-07 §4.2).
-    case "conflicting":
+    // A rebase on its own only when auto-resolve is on (spec 2026-10-09 §4) — its diff is still reviewed before the push.
+    // Otherwise the conflict waits for the human (spec 2026-10-07 §4.2).
+    case "conflicting": {
       if (task.stage === "conflict") return { stage: "conflict", run: null, gate: task.gate, note: "", error: null };
-      return { ...wait("conflict", "conflict"), note: `Conflicts with ${event.base ?? task.baseBranch}${event.files?.length ? `: ${event.files.join(", ")}` : ""}` };
+      const what = `Conflicts with ${event.base ?? task.baseBranch}${event.files?.length ? `: ${event.files.join(", ")}` : ""}`;
+      if (event.auto) return go("rebase", "rebase", `${what} — resolving`);
+      return { ...wait("conflict", "conflict"), note: what };
+    }
     case "conflict-cleared":
       return task.conflict?.returnTo === "approved" ? { ...wait("approved", "merge"), note: "The conflict cleared" } : go("monitoring", null, "The conflict cleared");
     case "pr-closed":

@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { AGENT_STAGES as SERVER_AGENT, GATE_STAGES as SERVER_GATE, SERVER_STAGES as SERVER_SERVER, TERMINAL_STAGES as SERVER_TERMINAL } from "../../server/src/bugfix/types";
-import { AGENT_STAGES, GATE_STAGES, SERVER_STAGES, TERMINAL_STAGES, stageLabel, pipelineFor, listStatus, nowFor, blockersFor, orderAssumptions, isNew, planSections, parseHunks } from "../src/bugView";
+import { AGENT_STAGES, GATE_STAGES, SERVER_STAGES, TERMINAL_STAGES, stageLabel, pipelineFor, listStatus, nowFor, blockersFor, orderAssumptions, isNew, planSections, parseHunks, costByStep, modelName } from "../src/bugView";
 import type { Assumption, BugStage, BugTask, SetupReport } from "../src/types";
 
 const ALL: BugStage[] = ["intake", "analyzing", "plan-review", "implementing", "diff-review", "opening-pr", "creating-pr", "monitoring", "review-feedback", "rebase", "pushing", "approved", "merging", "done", "cancelled", "failed"];
 
 function task(stage: BugStage, extra: Partial<BugTask> = {}): BugTask {
   return { id: "bt1", issue: { key: "PAY-42", title: "T", url: "https://x", status: "Open", priority: "High", description: "", acceptanceCriteria: [] },
-    trackerProject: "PAY", sourceRepo: "/r", worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", baseRef: "origin/main", ticketCommits: [], verdict: null, report: null, plannedTests: [], testsInDiff: null, testOverride: null, conflict: null, conflictCheckError: null, queuedAt: null, queuedNote: null, trackerSyncError: null, agentId: "a1", stage,
+    trackerProject: "PAY", sourceRepo: "/r", worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", baseRef: "origin/main", ticketCommits: [], verdict: null, report: null, plannedTests: [], testsInDiff: null, testOverride: null, conflict: null, conflictCheckError: null, queuedAt: null, queuedNote: null, trackerSyncError: null, queuedReason: null, commentsSince: null, commentsPendingSince: null, commentsNote: null, imported: false, leaseHead: null, runs: [], stageModel: {}, agentId: "a1", stage,
     gate: stage === "plan-review" ? { kind: "plan", openedAt: "t" } : stage === "diff-review" ? { kind: "diff", openedAt: "t" } : stage === "approved" ? { kind: "merge", openedAt: "t" } : null,
     mergePolicy: "ask", mergeMethod: "squash", approvedHead: null, outcome: null, checksRoundHead: null, pr: null, prCheckedAt: null,
     costUsd: 0, history: [{ stage: "intake", at: "2026-10-05T10:00:00Z", note: "" }, { stage, at: "2026-10-05T10:05:00Z", note: "" }],
@@ -313,5 +313,28 @@ describe("blockersFor — the tracker's status", () => {
   it("a status move that failed shows on the card", () => {
     const b = blockersFor({ task: task("monitoring", { trackerSyncError: "Couldn't move PAY-42 to In Review: no such transition" }), pending: null, setup: null, setupError: false });
     expect(b.map(x => x.title)).toContain("Couldn't move PAY-42 to In Review: no such transition");
+  });
+});
+
+describe("cost per step and the token notes (spec 2026-10-09 §6.4–§6.5)", () => {
+  it("costByStep sums runs per step and names the models used", () => {
+    const t = task("diff-review", { runs: [
+      { stage: "analyzing", model: "claude-opus-5", costUsd: 1.2, at: "a", ok: true },
+      { stage: "implementing", model: "claude-sonnet-5-5", costUsd: 0.5, at: "b", ok: false },
+      { stage: "implementing", model: "claude-opus-5", costUsd: 0.75, at: "c", ok: true },
+    ] });
+    expect(costByStep(t)).toEqual([
+      { stage: "analyzing", label: stageLabel("analyzing"), usd: 1.2, models: ["Opus"] },
+      { stage: "implementing", label: stageLabel("implementing"), usd: 1.25, models: ["Sonnet", "Opus"] },
+    ]);
+    expect(modelName("claude-haiku-4-5-20251001")).toBe("Haiku");
+    expect(modelName("other")).toBe("other");
+  });
+  it("a held run, waiting reviewer comments and an unknown self are notes on the card", () => {
+    const base = { pending: null, setup: null, setupError: false };
+    const titles = (t: BugTask) => blockersFor({ ...base, task: t }).map(b => b.title);
+    expect(titles(task("analyzing", { queuedAt: "t", queuedReason: "Daily limit reached ($20.00 of $20.00)" }))).toContain("Daily limit reached ($20.00 of $20.00)");
+    expect(titles(task("monitoring", { commentsPendingSince: "t" }))).toContain("Reviewer comments waiting — a round starts after the quiet period");
+    expect(titles(task("monitoring", { commentsNote: "Couldn't tell which comments are yours: x" }))).toContain("Couldn't tell which comments are yours: x");
   });
 });

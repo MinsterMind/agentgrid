@@ -61,6 +61,10 @@ function fakeGit(state: { commits: number; ticketCommits?: string[]; uncommitted
   return { git: g, calls };
 }
 
+/** What `bugs.create` needs, for a task made directly in the store. */
+const minimalCreateInput = () => ({ issue: ISSUE, trackerProject: "PAY", sourceRepo: repo, worktree: repo, branch: "bugfix/PAY-1", baseBranch: "develop", baseRef: "origin/develop",
+  ticketCommits: [] as string[], agentId: "a", mergePolicy: "ask" as const, mergeMethod: "squash" as const });
+
 const forge = {
   name: "github",
   // Mutable merge-tracking state, reset in `beforeEach` below — shared by every test that
@@ -84,6 +88,7 @@ const forge = {
 
 let home: string; let repo: string; let store: Store; let bugs: BugTaskStore; let fake: ReturnType<typeof makeFakeQuery>;
 let engine: BugFixEngine; let comments: Array<[string, string]>; let gitFake: ReturnType<typeof fakeGit>;
+let seenOverrides: Array<Record<string, unknown> | undefined>; let seenResume: Array<string | undefined>;
 let gitState: { commits: number; ticketCommits?: string[]; uncommitted?: string[]; head?: string; commitsAhead?: number; rebaseState?: { inProgress: boolean; conflicted: string[] }; removed?: Array<{ repo: string; worktree: string; branch: string }>; removeError?: string; remoteDeleted?: Array<{ dir: string; branch: string }>; deleteRemoteError?: string };
 
 beforeEach(async () => {
@@ -96,13 +101,14 @@ beforeEach(async () => {
   fake = makeFakeQuery();
   gitState = { commits: 0 };
   comments = [];
+  seenOverrides = []; seenResume = [];
   // Reset the shared default forge's mutable merge-tracking state between tests.
   forge.merges = [];
   forge.mergeResult = { ok: true, message: "merged (fake)" };
   forge.state = "OPEN";
   forge.stateAfterMerge = "MERGED";
   engine = new BugFixEngine({
-    store, bugs, manager: new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, a, e) => ({ cwd: a.repo, abortController: e.abortController, canUseTool: e.canUseTool } as Options) }),
+    store, bugs, manager: new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, a, e) => { seenOverrides.push(e.overrides as never); seenResume.push(a.resumeSessionId); return { cwd: a.repo, abortController: e.abortController, canUseTool: e.canUseTool } as Options; } }),
     git: (gitFake = fakeGit(gitState)).git, integrations: new IntegrationsStore(home),
     tracker: { listMyIssues: async () => [], fetchIssue: async (ref: string) => ({ ...ISSUE, key: ref }), comment: async (k, t) => { comments.push([k, t]); } },
     forge, presetsDir: path.resolve("presets"),
@@ -984,14 +990,34 @@ describe("a feedback round", () => {
     expect(t.approvedHead).toBe("bbb");                                  // re-pinned for this round
   });
 
-  it("fails the round when the agent produced no new commits", async () => {
+  it("a round that answers without changing anything goes back to watching, with the agent's answer (final review I5)", async () => {
     const { engine, bugs, fake, gitState } = await onMonitoringTask();
-    gitState.prHead = "aaa"; gitState.head = "aaa";                      // nothing new
+    gitState.prHead = "aaa"; gitState.head = "aaa";                      // nothing new, nothing uncommitted
+    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "review-changes-requested", comments: "why X?" } });
+    const n = fake.calls.length;
+    fake.emit(success("X is needed because of Y; no change made.")); fake.end();
+    await until(() => bugs.get("bt1").stage === "monitoring", 2000);
+    const t = bugs.get("bt1");
+    expect(t.history.at(-1)!.note).toMatch(/No change.*X is needed because of Y/s);
+    expect(t.stageModel["review-feedback"]).toBeUndefined();            // nothing to step up
+    expect(t.error).toBeNull();
+    await new Promise(r => setTimeout(r, 50));
+    expect(fake.calls.length).toBe(n);                                   // and no retry
+  });
+
+  it("fails the round when the agent left changes uncommitted", async () => {
+    const { engine, bugs, fake, gitState } = await onMonitoringTask();
+    gitState.prHead = "aaa"; gitState.head = "aaa"; gitState.uncommitted = ["a.ts"];   // edited, never committed
     await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "review-changes-requested", comments: "fix it" } });
-    await finishStage(fake);
+    // The round retries once on a stronger model by itself (spec 2026-10-09 §6.3); the second failure fails it.
+    const n = fake.calls.length;
+    fake.emit(success("done")); fake.end();
+    await until(() => fake.calls.length > n, 2000);
+    fake.emit(success("done")); fake.end();
+    await until(() => bugs.get("bt1").stage === "failed", 2000);
     const t = bugs.get("bt1");
     expect(t.stage).toBe("failed");
-    expect(t.error).toMatch(/no new commits/i);
+    expect(t.error).toMatch(/no new commits.*retried on .*no new commits/is);
   });
 
   it("stops dispatching after the cap and reports it instead", async () => {
@@ -1211,6 +1237,8 @@ describe("the server pushes an approved feedback diff", () => {
 });
 
 describe("the conflict gate, in the engine", () => {
+  // These exercise the conflict gate itself: auto-resolve (on by default since 0.14) is turned off.
+  beforeEach(async () => { await new IntegrationsStore(home).write({ autoResolveConflicts: false }); });
   it("records what conflicts, resolves on approve with the files in the prompt, and forgets it once rebased", async () => {
     const { engine, bugs, fake, gitState } = await onMonitoringTask();
     await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflicting", files: ["src/a.ts"], base: "develop" } });
@@ -1322,6 +1350,8 @@ describe("at most N bug-fix agents at once", () => {
 });
 
 describe("a click meant for one gate never acts on another", () => {
+  // These exercise the conflict gate itself: auto-resolve (on by default since 0.14) is turned off.
+  beforeEach(async () => { await new IntegrationsStore(home).write({ autoResolveConflicts: false }); });
   // Final review #4: a conflict can move a task out of "approved" on its own; a Merge click that was
   // already on its way must not become "start a rebase".
   it("approve names the gate it was for, and is refused when the task has moved to another", async () => {
@@ -1382,6 +1412,8 @@ describe("intake with what a batch already has", () => {
 });
 
 describe("Resolve all conflicts", () => {
+  // These exercise the conflict gate itself: auto-resolve (on by default since 0.14) is turned off.
+  beforeEach(async () => { await new IntegrationsStore(home).write({ autoResolveConflicts: false }); });
   it("approves only the tasks waiting at the conflict gate", async () => {
     const { engine, bugs } = await onMonitoringTask();
     expect(await engine.resolveConflicts()).toEqual([]);
@@ -1392,6 +1424,8 @@ describe("Resolve all conflicts", () => {
 });
 
 describe("a rebase round", () => {
+  // These exercise the conflict gate itself: auto-resolve (on by default since 0.14) is turned off.
+  beforeEach(async () => { await new IntegrationsStore(home).write({ autoResolveConflicts: false }); });
   it("dispatches rebase on a conflict and opens a diff gate labelled rebase", async () => {
     const { engine, bugs, fake, gitState } = await onMonitoringTask();
     await engine.onPrFinding({ taskId: "bt1", pr: { ...gitState.pr, mergeable: "CONFLICTING" }, event: { type: "conflicting" } });
@@ -1408,7 +1442,11 @@ describe("a rebase round", () => {
     await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "conflicting" } });
     await engine.approve("bt1");
     gitState.rebaseState = { inProgress: true, conflicted: ["src/a.ts"] };
-    await finishStage(fake);
+    const n = fake.calls.length;
+    fake.emit(success("done")); fake.end();
+    await until(() => fake.calls.length > n, 2000);                       // the automatic retry, a model up
+    fake.emit(success("done")); fake.end();
+    await until(() => bugs.get("bt1").stage === "failed", 2000);
     const t = bugs.get("bt1");
     expect(t.stage).toBe("failed");
     expect(t.error).toMatch(/rebase is not finished|conflict/i);
@@ -1540,7 +1578,8 @@ describe("merging", () => {
     const { engine, bugs, gitState, taskId } = await atMergeGate();
     gitState.deleteRemoteError = "remote rejected the delete (protected branch)";
     await engine.approve(taskId);
-    await until(() => bugs.get(taskId).stage !== "merging", 2000);
+    // The cleanup note lands just after the task reaches done (runServerStage writes it after the transition).
+    await until(() => bugs.get(taskId).stage !== "merging" && !!bugs.get(taskId).error, 2000);
     const t = bugs.get(taskId);
     expect(t.stage).toBe("done");
     expect(t.outcome).toBe("merged");
@@ -2179,6 +2218,8 @@ describe("a pull request opened outside AgentGrid", () => {
     expect(t.error).toBeNull();
     expect(t.history.at(-1)!.note).toMatch(/#7.*outside AgentGrid/);
     expect(said).toContainEqual(["PAY-42", expect.stringContaining("https://bb/pr/7")]);
+    // Reviewer comments count from the adoption (final review I4): never from a lastSeenEventAt that later polls move.
+    expect(typeof t.commentsSince).toBe("string");
   });
 
   it("with commits nobody reviewed here, opens the diff gate on what is actually in the PR", async () => {
@@ -2250,5 +2291,336 @@ describe("preflight", () => {
     const e = new BugFixEngine({ store, bugs, manager: new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, a, x) => ({ cwd: a.repo, abortController: x.abortController, canUseTool: x.canUseTool } as Options) }),
       git: g, integrations: new IntegrationsStore(home), tracker: { listMyIssues: async () => [], fetchIssue: async () => ISSUE, comment: async () => {} }, forge, presetsDir: path.resolve("presets") });
     expect((await e.preflight(repo)).remote).toBeNull();
+  });
+});
+
+describe("short sessions and a model per stage (spec 2026-10-09 §6)", () => {
+  it("each stage starts a fresh session on its own model — the plan on Opus, the change on Sonnet", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await writeFile(path.join(bugs.dir(t.id), "plan.md"), "# plan\n");
+    await finishStage();
+    await engine.approve(t.id);
+    expect(fake.calls).toHaveLength(2);
+    expect(seenOverrides[0]).toMatchObject({ model: "claude-opus-5", maxTurns: 40 });
+    expect(seenOverrides[1]).toMatchObject({ model: "claude-sonnet-5-5", maxTurns: 60 });
+    expect(seenResume).toEqual([undefined, undefined]);
+  });
+  it("an agent left with a resumable session by 0.13 still starts each stage fresh", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await store.updateAgent(t.agentId, { resumeSessionId: "from-0.13" });
+    await writeFile(path.join(bugs.dir(t.id), "plan.md"), "# plan\n");
+    await finishStage();
+    await engine.approve(t.id);
+    expect(seenResume.at(-1)).toBeUndefined();
+    expect(store.getAgent(t.agentId).resumeSessionId).toBe("from-0.13"); // never written over, never used
+  });
+  it("records each run's stage, model and cost", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await writeFile(path.join(bugs.dir(t.id), "plan.md"), "# plan\n");
+    await finishStage();
+    expect(bugs.get(t.id).runs).toEqual([expect.objectContaining({ stage: "analyzing", model: "claude-opus-5", ok: true })]);
+  });
+  it("uses the stage settings saved in integrations", async () => {
+    await new IntegrationsStore(home).write({ stageModels: { analyzing: { model: "claude-haiku-4-5-20251001", maxTurns: 7 } } });
+    await engine.intake({ issueRef: "PAY-42", repo });
+    expect(seenOverrides[0]).toMatchObject({ model: "claude-haiku-4-5-20251001", maxTurns: 7 });
+  });
+});
+
+describe("a failed check steps up the model (spec 2026-10-09 §6.3)", () => {
+  /** End the current run without waiting for the stage to move: an automatic retry lands it back where it was. */
+  const endRun = () => { fake.emit(success("done")); fake.end(); };
+  const toPrStage = async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await writeFile(path.join(bugs.dir(t.id), "plan.md"), "# plan\n");
+    await finishStage(); await engine.approve(t.id);
+    gitState.commits = 1; await finishStage();           // implementing → diff gate
+    await engine.approve(t.id);                          // → opening-pr on Haiku
+    return t;
+  };
+  it("opening-pr that writes no PR body retries once on Sonnet by itself", async () => {
+    const t = await toPrStage();
+    expect(seenOverrides.at(-1)).toMatchObject({ model: "claude-haiku-4-5-20251001" });
+    endRun();                                            // no pr-body.md → verify fails
+    await until(() => seenOverrides.length >= 4, 2000);
+    expect(seenOverrides.at(-1)).toMatchObject({ model: "claude-sonnet-5-5" });
+    expect(bugs.get(t.id)).toMatchObject({ stage: "opening-pr", stageModel: { "opening-pr": "claude-sonnet-5-5" } });
+  });
+  it("a second failure fails the task once, naming both errors", async () => {
+    const t = await toPrStage();
+    endRun();
+    await until(() => seenOverrides.length >= 4, 2000);
+    endRun();
+    await until(() => bugs.get(t.id).stage === "failed", 2000);
+    expect(bugs.get(t.id).error).toMatch(/pr-body\.md.*retried on claude-sonnet-5-5.*pr-body\.md/s);
+    await new Promise(r => setTimeout(r, 50));
+    expect(seenOverrides).toHaveLength(4);               // never a third run
+  });
+  it("a failed change step doesn't retry by itself, but Retry runs it one model up", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await writeFile(path.join(bugs.dir(t.id), "plan.md"), "# plan\n");
+    await finishStage(); await engine.approve(t.id);
+    gitState.commits = 0; gitState.uncommitted = ["a.ts"];
+    await finishStage();
+    expect(bugs.get(t.id).stage).toBe("failed");
+    expect(bugs.get(t.id).stageModel.implementing).toBe("claude-opus-5");
+    await engine.retry(t.id);
+    expect(seenOverrides.at(-1)).toMatchObject({ model: "claude-opus-5" });
+  });
+  it("a run cancelled by the user is not a reason to step up", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await engine.cancel(t.id);
+    expect(bugs.get(t.id).stageModel).toEqual({});
+  });
+  it("an auto-retried feedback round still carries the reviewers' comments", async () => {
+    const h = await onMonitoringTask();
+    h.gitState.uncommitted = ["w.ts"];                   // edited but not committed → the check fails
+    await engine.onPrFinding({ taskId: "bt1", pr: h.gitState.pr, event: { type: "review-changes-requested", comments: "please rename widget", source: "forge" } });
+    const before = fake.calls.length;
+    endRun();                                            // head unchanged → "no new commits" → retry on Opus
+    await until(() => fake.calls.length > before, 2000);
+    expect(fake.calls.at(-1)!.prompt).toContain("please rename widget");
+    expect(seenOverrides.at(-1)).toMatchObject({ model: "claude-opus-5" });
+  });
+});
+
+describe("hand-off files on disk (spec 2026-10-09 §6.1)", () => {
+  it("writes ticket.md at intake", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    expect(await bugs.readArtifact(t.id, "ticket.md")).toContain("PAY-42");
+  });
+  it("a task from before 0.14 gets its ticket.md before its next stage", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await rm(path.join(bugs.dir(t.id), "ticket.md"));
+    await writeFile(path.join(bugs.dir(t.id), "plan.md"), "# plan\n");
+    await finishStage(); await engine.approve(t.id);
+    expect(await bugs.readArtifact(t.id, "ticket.md")).toContain("PAY-42");
+  });
+  it("writes the round's comments to feedback-<n>.md and names it in the prompt", async () => {
+    const h = await onMonitoringTask();
+    await engine.onPrFinding({ taskId: "bt1", pr: h.gitState.pr, event: { type: "review-changes-requested", comments: "rename it", source: "forge" } });
+    expect(await bugs.readArtifact("bt1", "feedback-1.md")).toContain("rename it");
+    expect(fake.calls.at(-1)!.prompt).toContain("feedback-1.md");
+  });
+});
+
+describe("the daily limit (spec 2026-10-09 §6.4)", () => {
+  it("holds new runs once today's spend reaches the limit, and releases them when it rises", async () => {
+    const t1 = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.patch(t1.id, { runs: [{ stage: "analyzing", model: "m", costUsd: 5, at: new Date().toISOString(), ok: true }] });
+    engine.setDailyBudget(5);
+    const t2 = await engine.intake({ issueRef: "PAY-43", repo });
+    expect(bugs.get(t2.id)).toMatchObject({ stage: "analyzing", queuedReason: "Daily limit reached ($5.00 of $5.00)" });
+    expect(bugs.get(t2.id).queuedAt).not.toBeNull();
+    const before = fake.calls.length;
+    engine.setDailyBudget(20);
+    await until(() => fake.calls.length > before, 2000);
+    await until(() => bugs.get(t2.id).queuedAt === null, 2000);
+    expect(bugs.get(t2.id)).toMatchObject({ queuedAt: null, queuedReason: null });
+  });
+  it("tasks already queued for a slot are held too, and start in order when the limit rises", async () => {
+    engine.setMaxConcurrentRuns(1);
+    const t1 = await engine.intake({ issueRef: "PAY-42", repo });           // runs
+    const t2 = await engine.intake({ issueRef: "PAY-43", repo });           // waits for a slot
+    expect(bugs.get(t2.id).queuedAt).not.toBeNull();
+    await bugs.patch(t1.id, { runs: [{ stage: "analyzing", model: "m", costUsd: 9, at: new Date().toISOString(), ok: true }] });
+    engine.setDailyBudget(5);
+    await writeFile(path.join(bugs.dir(t1.id), "plan.md"), "# plan\n");
+    const n = fake.calls.length;
+    fake.emit(success("done")); fake.end();                                 // t1's run ends: frees the slot — but over the limit
+    await until(() => bugs.get(t1.id).stage === "plan-review", 2000);
+    await new Promise(r => setTimeout(r, 50));
+    expect(fake.calls.length).toBe(n);
+    expect(bugs.get(t2.id).queuedReason).toMatch(/Daily limit reached/);
+    engine.setDailyBudget(null);
+    await until(() => fake.calls.length > n, 2000);
+  });
+  it("counts only today's runs", async () => {
+    const yesterday = new Date(Date.now() - 36 * 3600_000).toISOString();
+    const t = await bugs.create(minimalCreateInput());
+    await bugs.patch(t.id, { runs: [{ stage: "analyzing", model: "m", costUsd: 9, at: yesterday, ok: true }, { stage: "implementing", model: "m", costUsd: 1.25, at: new Date().toISOString(), ok: true }] });
+    expect(engine.spentToday()).toBeCloseTo(1.25);
+  });
+  it("no limit set: nothing is held", async () => {
+    engine.setDailyBudget(null);
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    expect(bugs.get(t.id).queuedReason).toBeNull();
+  });
+});
+
+describe("conflicts resolve themselves (spec 2026-10-09 §4)", () => {
+  it("with auto-resolve on (the default), a conflict finding starts the rebase and keeps the files", async () => {
+    await onMonitoringTask();
+    await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflicting", files: ["x.ts"], base: "develop" } });
+    expect(bugs.get("bt1")).toMatchObject({ stage: "rebase", conflict: { files: ["x.ts"], returnTo: "monitoring" } });
+    expect(fake.calls.at(-1)!.prompt).toContain("x.ts");
+  });
+  it("the watcher's own conflict finding resolves on its own too", async () => {
+    const h = await onMonitoringTask();
+    await engine.onPrFinding({ taskId: "bt1", pr: h.gitState.pr, event: { type: "conflicting" } });
+    expect(bugs.get("bt1").stage).toBe("rebase");
+  });
+  it("with auto-resolve off, it waits at the conflict gate as in 0.12", async () => {
+    await new IntegrationsStore(home).write({ autoResolveConflicts: false });
+    await onMonitoringTask();
+    await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflicting", files: ["x.ts"], base: "develop" } });
+    expect(bugs.get("bt1").stage).toBe("conflict");
+  });
+});
+
+describe("comment bookkeeping (spec 2026-10-09 §5)", () => {
+  it("a comment round moves commentsSince past the comments it answered and clears the waiting mark", async () => {
+    const h = await onMonitoringTask();
+    await bugs.patch("bt1", { commentsPendingSince: "2026-10-09T10:00:00Z" });
+    await engine.onPrFinding({ taskId: "bt1", pr: h.gitState.pr, event: { type: "review-changes-requested", comments: "x", source: "forge", upTo: "2026-10-09T10:00:00Z" } });
+    expect(bugs.get("bt1")).toMatchObject({ stage: "review-feedback", commentsSince: "2026-10-09T10:00:00Z", commentsPendingSince: null });
+  });
+  it("records a waiting comment, and says so when it can't tell which comments are yours", async () => {
+    const h = await onMonitoringTask();
+    await engine.onPrFinding({ taskId: "bt1", pr: h.gitState.pr, event: null, commentsPending: "2026-10-09T10:00:00Z", selfUnknown: "gh api user failed" });
+    expect(bugs.get("bt1")).toMatchObject({ commentsPendingSince: "2026-10-09T10:00:00Z", commentsNote: "Couldn't tell which comments are yours: gh api user failed" });
+  });
+  it("the PR AgentGrid opens counts comments only from its opening", async () => {
+    await onMonitoringTask();
+    expect(typeof bugs.get("bt1").commentsSince).toBe("string");
+  });
+  it("at the round limit, the waiting mark is cleared so the watcher stops re-reading", async () => {
+    const h = await onMonitoringTask();
+    await bugs.patch("bt1", { feedbackRounds: FEEDBACK_ROUND_CAP, commentsPendingSince: "2026-10-09T10:00:00Z" });
+    await engine.onPrFinding({ taskId: "bt1", pr: h.gitState.pr, event: { type: "review-changes-requested", comments: "x", source: "forge", upTo: "2026-10-09T10:00:00Z" } });
+    expect(bugs.get("bt1")).toMatchObject({ stage: "monitoring", commentsPendingSince: null });
+  });
+});
+
+describe("importTask (spec 2026-10-09 §3.3)", () => {
+  const openPr = { number: 12, url: "https://x/pr/12", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: "abc1234", lastSeenEventAt: "t", headBranch: "feature/PAY-42-x", baseBranch: "develop", title: "PAY-42" };
+  beforeEach(() => { gitFake.git.checkoutWorktree = async (r, key, b) => { gitFake.calls.push(`checkout ${b}`); const d = path.join(r, ".worktrees", `bugfix-${key}`); await mkdir(d, { recursive: true }); return d; }; });
+  it("an open PR: the PR's own branch, its base, watching it at once", async () => {
+    const t = await engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: openPr } });
+    expect(t).toMatchObject({ stage: "monitoring", branch: "feature/PAY-42-x", baseBranch: "develop", baseRef: "origin/develop", approvedHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", imported: true, pr: { number: 12 } });
+    expect(typeof t.commentsSince).toBe("string");
+    expect(gitFake.calls).toContain("checkout feature/PAY-42-x");
+    expect(fake.calls).toHaveLength(0);              // no agent run
+    expect(await bugs.readArtifact(t.id, "ticket.md")).toContain("PAY-42");
+  });
+  it("a branch with no PR: its diff at the diff gate, then the normal Open PR path", async () => {
+    gitState.head = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"; gitState.commits = 1;
+    const t = await engine.importTask({ issue: ISSUE, repo, found: { kind: "branch", branch: "bugfix/PAY-42" } });
+    expect(t).toMatchObject({ stage: "diff-review", gate: { kind: "diff" }, approvedHead: gitState.head });
+    await engine.approve(t.id);
+    expect(bugs.get(t.id).stage).toBe("opening-pr");
+  });
+  it("merged: done, outcome merged, no worktree", async () => {
+    const t = await engine.importTask({ issue: ISSUE, repo, found: { kind: "merged", pr: { ...openPr, state: "MERGED" } } });
+    expect(t).toMatchObject({ stage: "done", outcome: "merged", imported: true });
+    expect(gitFake.calls.some(c => c.startsWith("checkout"))).toBe(false);
+  });
+  it("refuses a PR whose head is its base, or an unsafe branch", async () => {
+    await expect(engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: { ...openPr, headBranch: "develop" } } })).rejects.toThrow(/base branch/);
+    await expect(engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: { ...openPr, headBranch: "-x" } } })).rejects.toThrow(/unsafe branch/);
+    expect(gitFake.calls.some(c => c.startsWith("checkout"))).toBe(false);
+  });
+  it("refuses while a leftover worktree for the ticket is still there", async () => {
+    gitFake.git.worktreeRegistered = async () => true;
+    await expect(engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: openPr } })).rejects.toThrow(/worktree remove --force/);
+  });
+  it("a push for an imported task goes to the PR's own branch", async () => {
+    const pushes: string[] = [];
+    gitFake.git.push = async (_d, b) => { pushes.push(b); };
+    gitState.commits = 1;
+    const t = await engine.importTask({ issue: ISSUE, repo, found: { kind: "branch", branch: "feature/PAY-42-x" } });
+    gitFake.git.currentBranch = async () => "feature/PAY-42-x";
+    await engine.approve(t.id);                       // → opening-pr
+    await writeFile(path.join(bugs.dir(t.id), "pr-body.md"), "body");
+    await finishStage();                              // → creating-pr → push
+    await until(() => pushes.length > 0, 2000);
+    expect(pushes).toEqual(["feature/PAY-42-x"]);
+  });
+});
+
+describe("final review: imports never touch a shared branch or local work", () => {
+  const openPr = { number: 12, url: "https://x/pr/12", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: "abc1234abcd1", lastSeenEventAt: "t", headBranch: "feature/PAY-42-x", baseBranch: "main", title: "PAY-42" };
+  beforeEach(() => { gitFake.git.checkoutWorktree = async (r, key, b) => { gitFake.calls.push(`checkout ${b}`); const d = path.join(r, ".worktrees", `bugfix-${key}`); await mkdir(d, { recursive: true }); return d; }; });
+  it("refuses a PR whose head is the repo's integration or default branch, or another open PR's base", async () => {
+    // A release PR develop → main naming the ticket in its title
+    await expect(engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: { ...openPr, headBranch: "develop" } } })).rejects.toThrow(/refusing to work on develop/);
+    await expect(engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: { ...openPr, headBranch: "main", baseBranch: "release" } } })).rejects.toThrow(/refusing to work on main/);
+    await expect(engine.importTask({ issue: ISSUE, repo, protect: ["staging"], found: { kind: "pr", pr: { ...openPr, headBranch: "staging" } } })).rejects.toThrow(/refusing to work on staging/);
+    expect(gitFake.calls.some(c => c.startsWith("checkout"))).toBe(false);
+  });
+  it("refuses a PR from a fork", async () => {
+    await expect(engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: { ...openPr, crossRepo: true } } })).rejects.toThrow(/fork/);
+  });
+  it("refuses a PR base that isn't a plain branch name", async () => {
+    await expect(engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: { ...openPr, baseBranch: "main;$(x)" } } })).rejects.toThrow(/unsafe branch/);
+  });
+  it("refuses when the local branch has commits origin doesn't", async () => {
+    gitFake.git.localBranchAhead = async () => true;
+    await expect(engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: openPr } })).rejects.toThrow(/local branch feature\/PAY-42-x has commits/);
+    expect(gitFake.calls.some(c => c.startsWith("checkout"))).toBe(false);
+  });
+  it("pins the full commit the worktree is on, never a forge's short hash", async () => {
+    gitState.head = "f".repeat(40);
+    const t = await engine.importTask({ issue: ISSUE, repo, found: { kind: "pr", pr: openPr } });
+    expect(t.approvedHead).toBe("f".repeat(40));
+  });
+});
+
+describe("final review: rounds catch up with the PR and push with an explicit lease", () => {
+  it("a rebase round catches up first, and its force push leases the tip it saw", async () => {
+    await new IntegrationsStore(home).write({ autoResolveConflicts: false });
+    const caught: string[] = []; const pushes: Array<{ b: string; o: unknown }> = [];
+    gitFake.git.catchUp = async (_d, b) => { caught.push(b); return "c".repeat(40); };
+    gitFake.git.push = async (_d, b, o) => { pushes.push({ b, o }); };
+    const h = await onMonitoringTask();
+    await engine.onPrFinding({ taskId: "bt1", pr: h.gitState.pr, event: { type: "conflicting" } });
+    await engine.approve("bt1");
+    expect(caught).toEqual(["bugfix/PAY-42"]);
+    h.gitState.head = "ddd"; h.gitState.commitsAhead = 1;
+    await finishStage(fake);
+    await engine.approve("bt1");
+    await until(() => pushes.length > 1, 2000);
+    expect(pushes.at(-1)!.o).toMatchObject({ force: true, lease: "c".repeat(40) });
+  });
+  it("a round whose branch diverged fails, saying so, before any agent runs", async () => {
+    gitFake.git.catchUp = async () => { throw new Error("the pull request's branch and the worktree have diverged"); };
+    const h = await onMonitoringTask();
+    const n = fake.calls.length;
+    await engine.onPrFinding({ taskId: "bt1", pr: h.gitState.pr, event: { type: "review-changes-requested", comments: "x", source: "forge" } });
+    expect(bugs.get("bt1")).toMatchObject({ stage: "failed", error: expect.stringMatching(/diverged/) });
+    expect(fake.calls.length).toBe(n);
+  });
+});
+
+describe("final review: the Address comments button and the watcher agree (I9)", () => {
+  it("reads reviewers' comments since the last round, and moves that point on", async () => {
+    const h = await onMonitoringTask();
+    await bugs.patch("bt1", { commentsSince: "2026-10-09T09:00:00Z", commentsPendingSince: "2026-10-09T10:00:00Z" });
+    const sinces: string[] = [];
+    const saved = forge.listReviewEvents;
+    (forge as any).listReviewEvents = async (_r: string, _n: number, since: string) => { sinces.push(since); return [
+      { kind: "comment", state: "", author: "rev", isBot: false, isSelf: false, body: "rename it", at: "2026-10-09T10:00:00Z" },
+      { kind: "comment", state: "", author: "me", isBot: false, isSelf: true, body: "will do", at: "2026-10-09T10:01:00Z" }]; };
+    try {
+      await engine.addressComments("bt1");
+    } finally { (forge as any).listReviewEvents = saved; }
+    expect(sinces).toEqual(["2026-10-09T09:00:00Z"]);
+    expect(fake.calls.at(-1)!.prompt).toContain("rename it");
+    expect(fake.calls.at(-1)!.prompt).not.toContain("will do");
+    expect(bugs.get("bt1")).toMatchObject({ stage: "review-feedback", commentsSince: "2026-10-09T10:01:00Z", commentsPendingSince: null });
+    void h;
+  });
+});
+
+describe("final review: dismissing a task keeps today's spend (I11)", () => {
+  it("counts what a dismissed task spent today, also after a restart", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.patch(t.id, { runs: [{ stage: "analyzing", model: "m", costUsd: 5, at: new Date().toISOString(), ok: true }] });
+    await engine.cancel(t.id);
+    await engine.dismiss(t.id);
+    expect(engine.spentToday()).toBeCloseTo(5);
+    const again = new BugTaskStore(home); await again.init();
+    const e2 = new BugFixEngine({ ...(engine as any).deps, bugs: again });
+    expect(e2.spentToday()).toBeCloseTo(5);
   });
 });

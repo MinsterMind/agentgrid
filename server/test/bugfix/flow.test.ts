@@ -116,6 +116,7 @@ describe("the whole bug-fix flow, offline in fake mode", () => {
       // AGENTGRID_FAKE_PR_SCRIPT drives the fake forge: each step applies once the given
       // number of getPr calls have been made, so the watcher's own polling advances the story.
       running = await startServer({ home, port: 0, fake: true, log: () => {},
+        // Event times are in the future: reviewer comments count from when AgentGrid opened the PR (spec 2026-10-09 §5).
         fakePrScript: [
           // `after: 2`, not 1: the watcher's very first poll happens as soon as the task
           // reaches `monitoring`, and a task's own store `stage` flips away from `monitoring`
@@ -124,15 +125,15 @@ describe("the whole bug-fix flow, offline in fake mode", () => {
           // already carried the finding. Call 1 is a stable no-op read (nothing differs from
           // the baseline PR, so nothing fires) that leaves `monitoring` resting for a full
           // backoff interval; call 2 is where the review lands.
-          { after: 2, pr: { reviewDecision: "CHANGES_REQUESTED", lastSeenEventAt: "2026-09-26T09:30:00Z" },
-            events: [{ kind: "review", state: "CHANGES_REQUESTED", author: "alice", isBot: false, body: "Name it properly.", at: "2026-09-26T09:30:00Z" }] },
+          { after: 2, pr: { reviewDecision: "CHANGES_REQUESTED", lastSeenEventAt: "2099-09-26T09:30:00Z" },
+            events: [{ kind: "review", state: "CHANGES_REQUESTED", author: "alice", isBot: false, body: "Name it properly.", at: "2099-09-26T09:30:00Z" }] },
           // The engine's own push-confirmation read (`doPush`'s `forge.getPr`, once the
           // feedback round is approved) is itself a `getPr` call and consumes slot 3 before
           // the watcher ever gets to see it — an approval landing there would be silently
           // absorbed into the push's own confirmation and never reach `decide()`. Slot 4 is
           // the watcher's first poll back in `monitoring` (a stable no-op, same reasoning as
           // above); slot 5 is where the approval actually lands.
-          { after: 5, pr: { reviewDecision: "APPROVED", lastSeenEventAt: "2026-09-26T10:00:00Z" } },
+          { after: 5, pr: { reviewDecision: "APPROVED", lastSeenEventAt: "2099-09-26T10:00:00Z" } },
         ] });
       const url = running.url;
       const created = await post<BugTask>(`${url}/api/bugtasks`, { issueRef: "FAKE-1", repo });

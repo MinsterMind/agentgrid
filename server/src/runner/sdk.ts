@@ -25,17 +25,19 @@ export const realQuery: QueryFn = ({ prompt, options }) => {
 };
 
 export const buildOptions: BuildOptions = (role, agent, extra) => {
+  const ov = extra.overrides ?? {};
+  const model = ov.model ?? role.model;
   const o: Options = {
     cwd: agent.repo,
-    model: role.model,
-    effort: role.effort,
+    model,
+    effort: ov.effort ?? role.effort,
     permissionMode: role.permissionMode,
     settingSources: role.settingSources,
     allowedTools: role.allowedTools,
-    maxTurns: role.maxTurns,
+    maxTurns: ov.maxTurns ?? role.maxTurns,
     permissionPrompts: "host",
     agent: role.name,
-    agents: { [role.name]: { description: `AgentGrid role ${role.name}`, prompt: role.prompt, model: role.model } },
+    agents: { [role.name]: { description: `AgentGrid role ${role.name}`, prompt: role.prompt, model } },
     canUseTool: extra.canUseTool,
     abortController: extra.abortController,
     // `env` REPLACES the subprocess environment rather than merging with process.env
@@ -44,7 +46,8 @@ export const buildOptions: BuildOptions = (role, agent, extra) => {
     // process ever starts — see env.ts.
     env: stripForgeSecrets(process.env),
   };
-  if (role.maxBudgetUsd !== undefined) o.maxBudgetUsd = role.maxBudgetUsd;
+  const budget = ov.maxBudgetUsd ?? role.maxBudgetUsd;
+  if (budget !== undefined) o.maxBudgetUsd = budget;
   if (agent.resumeSessionId) o.resume = agent.resumeSessionId;
   return o;
 };

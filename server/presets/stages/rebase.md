@@ -1,6 +1,10 @@
 The pull request for {{issueKey}} conflicts with {{baseBranch}} and cannot be merged.
 
+{{freshStart}}
+
 {{conflictFiles}}
+
+The conflict is described in {{conflictPath}}.
 
 {{note}}
 

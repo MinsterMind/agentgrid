@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { mkdir, readdir, readFile, writeFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { NotFound } from "../store/store.js";
 import { TERMINAL_STAGES, type Assumption, type BugTask, type PrInfo, type TrackerIssue, type Transition } from "./types.js";
 
@@ -44,8 +45,14 @@ export class BugTaskStore extends EventEmitter {
   private root: string;
   constructor(home: string) { super(); this.root = path.join(home, "bugtasks"); }
 
+  /** What removed (dismissed) tasks spent, per local day — so dismissing doesn't lift the daily limit (spec 2026-10-09 §6.4). */
+  private removedSpend: Record<string, number> = {};
+  private get spendFile() { return path.join(this.root, "..", "bug-spend.json"); }
+  spentByRemovedOn(day: string): number { return this.removedSpend[day] ?? 0; }
+
   async init(): Promise<void> {
     await mkdir(this.root, { recursive: true });
+    try { this.removedSpend = JSON.parse(await readFile(this.spendFile, "utf8")) ?? {}; } catch { this.removedSpend = {}; }
     for (const f of (await readdir(this.root)).filter(f => f.endsWith(".json"))) {
       const t = JSON.parse(await readFile(path.join(this.root, f), "utf8")) as BugTask;
       // Records written before this field existed load without it — normalise here, the one
@@ -69,6 +76,15 @@ export class BugTaskStore extends EventEmitter {
       t.queuedAt ??= null;
       t.queuedNote ??= null;
       t.trackerSyncError ??= null;
+      t.runs ??= [];
+      t.queuedReason ??= null;
+      // A PR from before 0.14: comments count from its last seen event, fixed now — later polls move lastSeenEventAt.
+      t.commentsSince ??= t.pr?.lastSeenEventAt ?? null;
+      t.commentsPendingSince ??= null;
+      t.commentsNote ??= null;
+      t.imported ??= false;
+      t.leaseHead ??= null;
+      t.stageModel ??= {};
       this.tasks.set(t.id, t);
       const n = Number(t.id.slice(2));
       if (n >= this.next) this.next = n + 1;
@@ -118,7 +134,7 @@ export class BugTaskStore extends EventEmitter {
       id: `bt${this.next++}`, ...input, stage: "intake", gate: null, approvedHead: null, outcome: null, checksRoundHead: null, pr: null, prCheckedAt: null,
       costUsd: 0, history: [{ stage: "intake", at: now, note: "" }], error: null,
       createdAt: now, updatedAt: now, feedbackRounds: 0,
-      assumptions: [], assumptionsProblem: null, assumptionsToken: null, verdict: null, report: null, plannedTests: [], testsInDiff: null, testOverride: null, conflict: null, conflictCheckError: null, queuedAt: null, queuedNote: null, trackerSyncError: null,
+      assumptions: [], assumptionsProblem: null, assumptionsToken: null, verdict: null, report: null, plannedTests: [], testsInDiff: null, testOverride: null, conflict: null, conflictCheckError: null, queuedAt: null, queuedNote: null, trackerSyncError: null, queuedReason: null, commentsSince: null, commentsPendingSince: null, commentsNote: null, imported: false, leaseHead: null, runs: [], stageModel: {},
     };
     await mkdir(this.dir(task.id), { recursive: true });
     return withWriteChain(this.file(task.id), () => this.save(task));
@@ -196,6 +212,14 @@ export class BugTaskStore extends EventEmitter {
   async remove(id: string): Promise<void> {
     this.get(id);   // throws NotFound for an unknown or malformed id, before queueing behind the chain
     return withWriteChain(this.file(id), async () => {
+      const gone = this.tasks.get(id);
+      if (gone?.runs?.length) {
+        const keep = new Date(Date.now() - 2 * 86_400_000).toDateString();   // only recent days matter
+        for (const r of gone.runs) { const day = new Date(r.at).toDateString(); this.removedSpend[day] = Number(((this.removedSpend[day] ?? 0) + r.costUsd).toFixed(4)); }
+        for (const d of Object.keys(this.removedSpend)) if (new Date(d) < new Date(keep)) delete this.removedSpend[d];
+        const tmp = `${this.spendFile}.${process.pid}.${randomUUID()}.tmp`;   // removes of different tasks may write at once
+        await writeFile(tmp, JSON.stringify(this.removedSpend)); await rename(tmp, this.spendFile);
+      }
       await rm(this.file(id), { force: true });
       await rm(this.dir(id), { recursive: true, force: true });
       this.tasks.delete(id);

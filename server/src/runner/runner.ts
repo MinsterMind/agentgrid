@@ -5,7 +5,9 @@ import type { Agent, Assignment, Decision, Pending, RoleDef } from "../types.js"
 import { allowedByRules, isBroadRule, suggestRule, type RulesStore } from "../permissions/rules.js";
 
 export type QueryFn = (args: { prompt: string; options: Options }) => AsyncIterable<SDKMessage>;
-export type BuildOptions = (role: RoleDef, agent: Agent, extra: { canUseTool: CanUseTool; abortController: AbortController }) => Options;
+/** One run's own model, effort, turns and cap, over the role's (spec 2026-10-09 §6.2). */
+export interface RunOverrides { model?: string; effort?: "low" | "medium" | "high" | "xhigh"; maxTurns?: number; maxBudgetUsd?: number }
+export type BuildOptions = (role: RoleDef, agent: Agent, extra: { canUseTool: CanUseTool; abortController: AbortController; overrides?: RunOverrides }) => Options;
 
 interface Parked { pending: Pending; resolve: (r: PermissionResult) => void }
 
@@ -36,13 +38,14 @@ export class Runner {
 
   get busy(): boolean { return this.assignmentId !== null; }
 
-  /** `continueSession`: resume this session instead of the agent's own — a reply to a finished run. */
-  async assign(prompt: string, opts: { continueSession?: string } = {}): Promise<Assignment> {
+  /** `continueSession`: resume this session instead of the agent's own — a reply to a finished run.
+   *  `fresh`: start a new session whatever the agent last ran (spec 2026-10-09 §6.1). `overrides`: this run's model, effort, turns, cap. */
+  async assign(prompt: string, opts: { continueSession?: string; fresh?: boolean; overrides?: RunOverrides } = {}): Promise<Assignment> {
     const { store } = this.deps;
     if (this.assigning) throw new Conflict(`agent ${this.agentId} is being assigned`);
     const agent = store.getAgent(this.agentId);
     if (agent.state !== "free") throw new Conflict(`agent ${this.agentId} is ${agent.state}`);
-    if (agent.resumeSessionId && store.isLive(agent.resumeSessionId)) throw new Conflict(`session is open in a terminal — close it (or use the Terminal tab) before assigning`);
+    if (!opts.fresh && agent.resumeSessionId && store.isLive(agent.resumeSessionId)) throw new Conflict(`session is open in a terminal — close it (or use the Terminal tab) before assigning`);
     this.assigning = true;
     try {
       const role = store.getRole(agent.role);
@@ -52,7 +55,8 @@ export class Runner {
 
       const fullPrompt = assemblePrompt({ memoryDir: store.memoryDir(this.agentId), index: await store.readMemoryIndex(this.agentId), task: prompt });
       this.abort = new AbortController();
-      const options = this.deps.buildOptions(role, opts.continueSession ? { ...agent, resumeSessionId: opts.continueSession } : agent, { canUseTool: this.canUseTool, abortController: this.abort });
+      const runAgent = opts.continueSession ? { ...agent, resumeSessionId: opts.continueSession } : opts.fresh ? { ...agent, resumeSessionId: undefined } : agent;
+      const options = this.deps.buildOptions(role, runAgent, { canUseTool: this.canUseTool, abortController: this.abort, ...(opts.overrides ? { overrides: opts.overrides } : {}) });
       // Fire-and-forget by design (the stream is consumed in the background), but never
       // bare: any failure that escapes consume()'s own try/catch is logged, not left to
       // become an unhandled rejection that could take down the process.

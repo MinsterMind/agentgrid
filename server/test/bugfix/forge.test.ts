@@ -166,6 +166,7 @@ const eventsRunner = async (fixtureName: string) => {
   return async (_cmd: string, args: string[]) => {
     const path = args[args.length - 1] as string;
     if (path.includes("/reviews")) return { stdout: JSON.stringify(raw.reviews ?? []), code: 0 };
+    if (path.includes("/pulls/") && path.includes("/comments")) return { stdout: JSON.stringify(raw.inline ?? []), code: 0 };
     if (path.includes("/comments")) return { stdout: JSON.stringify(raw.comments ?? []), code: 0 };
     return { stdout: "", code: 1 };
   };
@@ -176,8 +177,8 @@ describe("listReviewEvents", () => {
     const f = githubAdapter(await eventsRunner("events-with-bot.json"));
     const events = await f.listReviewEvents("/r", 7, "2026-09-26T08:00:00Z");
     expect(events).toEqual([
-      { kind: "review", state: "CHANGES_REQUESTED", author: "alice", isBot: false, body: "This leaks a handle.", at: "2026-09-26T09:00:00Z" },
-      { kind: "comment", state: "", author: "pytorch-bot[bot]", isBot: true, body: "Build failed.", at: "2026-09-26T09:05:00Z" },
+      { kind: "review", state: "CHANGES_REQUESTED", author: "alice", isBot: false, isSelf: false, body: "This leaks a handle.", at: "2026-09-26T09:00:00Z" },
+      { kind: "comment", state: "", author: "pytorch-bot[bot]", isBot: true, isSelf: false, body: "Build failed.", at: "2026-09-26T09:05:00Z" },
     ]);
   });
 
@@ -270,5 +271,72 @@ describe("createPr", () => {
     const r = await f.createPr("/r", ctx);
     expect(r).toMatchObject({ found: { number: 7 } });
     expect(call).toBeGreaterThan(1);
+  });
+});
+
+describe("github: import and comment support (spec 2026-10-09 §3.4, §5)", () => {
+  it("lists every open PR in the repo for an import, with branch, base and title", async () => {
+    const calls: string[][] = [];
+    const gh = githubAdapter(async (_c, args) => { calls.push(args); return { code: 0, stdout: JSON.stringify([{ number: 3, url: "u", state: "OPEN", headRefName: "feature/PAY-42-x", baseRefName: "develop", title: "PAY-42 fix", updatedAt: "t" }]) }; });
+    const r = await gh.listOpenPrs!("/r", { all: true });
+    expect(calls[0]).not.toContain("--author");
+    expect(calls[0].join(" ")).toContain("headRefName,baseRefName,title");
+    expect(r).toEqual({ prs: [expect.objectContaining({ number: 3, headBranch: "feature/PAY-42-x", baseBranch: "develop", title: "PAY-42 fix" })] });
+    await gh.listOpenPrs!("/r");
+    expect(calls[1]).toContain("--author");
+  });
+  it("finds a merged PR naming the key", async () => {
+    const gh = githubAdapter(async (_c, args) => ({ code: 0, stdout: args.includes("merged") ? JSON.stringify([{ number: 9, url: "u9", state: "MERGED", headRefName: "bugfix/PAY-42", baseRefName: "develop", title: "PAY-42", updatedAt: "t" }]) : "[]" }));
+    expect(await gh.findMergedPr!("/r", "PAY-42")).toMatchObject({ number: 9, state: "MERGED", headBranch: "bugfix/PAY-42" });
+    const none = githubAdapter(async () => ({ code: 0, stdout: "[]" }));
+    expect(await none.findMergedPr!("/r", "PAY-42")).toBeNull();
+  });
+  it("marks the user's own comments and reads inline review comments too", async () => {
+    const gh = githubAdapter(async (_c, args) => {
+      const p = args.join(" ");
+      if (p.startsWith("api user")) return { code: 0, stdout: "me\n" };
+      if (p.includes("/reviews")) return { code: 0, stdout: "[]" };
+      if (p.includes("pulls/5/comments")) return { code: 0, stdout: JSON.stringify([{ user: { login: "rev", type: "User" }, body: "inline", created_at: "2026-10-09T10:00:00Z" }]) };
+      return { code: 0, stdout: JSON.stringify([{ user: { login: "me", type: "User" }, body: "mine", created_at: "2026-10-09T10:01:00Z" }]) };
+    });
+    const ev = await gh.listReviewEvents("/r", 5, "2026-10-09T00:00:00Z");
+    expect(ev.map(e => [e.body, e.isSelf])).toEqual([["inline", false], ["mine", true]]);
+  });
+  it("whoami reports a failure, and asks again next time", async () => {
+    let n = 0;
+    const gh = githubAdapter(async () => (++n === 1 ? { code: 1, stdout: "", stderr: "not logged in" } : { code: 0, stdout: "me\n" }) as any);
+    expect(await gh.whoami!("/r")).toEqual({ unavailable: "not logged in" });
+    expect(await gh.whoami!("/r")).toEqual({ login: "me" });
+  });
+});
+
+describe("final review: forks", () => {
+  it("github marks a PR from a fork", async () => {
+    const gh = githubAdapter(async () => ({ code: 0, stdout: JSON.stringify([{ number: 3, url: "u", state: "OPEN", headRefName: "main", baseRefName: "main", title: "PAY-1", isCrossRepository: true, updatedAt: "t" }]) }));
+    expect(await gh.listOpenPrs!("/r", { all: true })).toEqual({ prs: [expect.objectContaining({ crossRepo: true })] });
+  });
+});
+
+describe("final review: merged search is whole-word (I6)", () => {
+  it("github skips a merged PR for a longer key", async () => {
+    const gh = githubAdapter(async () => ({ code: 0, stdout: JSON.stringify([
+      { number: 8, url: "u8", state: "MERGED", headRefName: "bugfix/PAY-410", baseRefName: "develop", title: "PAY-410", updatedAt: "t" },
+      { number: 9, url: "u9", state: "MERGED", headRefName: "x", baseRefName: "develop", title: "PAY-41: fix", updatedAt: "t" }]) }));
+    expect(await gh.findMergedPr!("/r", "PAY-41")).toMatchObject({ number: 9 });
+  });
+});
+
+describe("final review: every page of comments (I12)", () => {
+  it("asks gh for every page and reads the one-per-line answer", async () => {
+    const seen: string[][] = [];
+    const gh = githubAdapter(async (_c, args) => {
+      seen.push(args);
+      if (args[1] === "user") return { code: 0, stdout: "me\n" };
+      if (args.some(a => a.includes("/issues/5/comments"))) return { code: 0, stdout: [1, 2, 31].map(i => JSON.stringify({ user: { login: "rev", type: "User" }, body: `c${i}`, created_at: `2026-10-09T10:${String(i).padStart(2, "0")}:00Z` })).join("\n") };
+      return { code: 0, stdout: "" };
+    });
+    const ev = await gh.listReviewEvents("/r", 5, "2026-10-09T00:00:00Z");
+    expect(ev.map(e => e.body)).toEqual(["c1", "c2", "c31"]);
+    expect(seen.filter(a => a[1] !== "user").every(a => a.includes("--paginate"))).toBe(true);
   });
 });

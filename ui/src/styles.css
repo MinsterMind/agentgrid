@@ -446,3 +446,13 @@ textarea.input { resize:none; }
 .bulk-keys { margin:4px 0 8px 18px; font-size:13px; } .bulk-keys li { margin:2px 0; }
 .bugdetail.bulk .bar { height:6px; border-radius:3px; background:var(--surface-raised); overflow:hidden; margin:8px 0; }
 .bugdetail.bulk .bar span { display:block; height:100%; background:var(--accent); transition:width .3s; }
+
+/* Settings → Spending: the model per step (spec 2026-10-09 §6.2) */
+.spending .stage-models { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 12px; }
+.spending .stage-models th { text-align: left; font-weight: 500; color: var(--muted, inherit); padding: 4px 6px; }
+.spending .stage-models td { padding: 3px 6px; }
+.spending .stage-models .input { width: 100%; min-width: 0; }
+/* Cost per step under the Cost counter (spec 2026-10-09 §6.5) */
+.cost-steps { font-size: 11px; margin-top: 4px; }
+.cost-steps ul { margin: 4px 0 0; padding-left: 14px; }
+.buglist .lh .spend { white-space: nowrap; }

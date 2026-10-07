@@ -24,6 +24,8 @@ const fakeEngine = (bugs: BugTaskStore, calls: string[]) => ({
   closeNoChange: async (id: string) => { calls.push(`no-change ${id}`); return bugs.get(id); },
   setMaxConcurrentRuns: (n: number) => { calls.push(`cap ${n}`); },
   resolveConflicts: async () => { calls.push("resolve-all"); return ["bt1"]; },
+  setDailyBudget: (n: number | null) => { calls.push(`budget ${n}`); },
+  spend: () => ({ today: 1.5, limit: null }),
   overrideTests: async (id: string, reason: string) => { calls.push(`override ${id} ${reason}`); return bugs.get(id); },
   intake: async (input: { issueRef: string; repo: string; baseBranch?: string; startAnyway?: boolean }) => { calls.push(`intake ${input.issueRef}${input.baseBranch ? ` base=${input.baseBranch}` : ""}${input.startAnyway ? " anyway" : ""}`);
     if (input.issueRef === "PAY-1") throw Object.assign(new Error("PAY-1 may already be fixed"), { status: 409, code: "already-on-base" });
@@ -42,8 +44,17 @@ beforeEach(async () => {
   calls = [];
   app = createApp({ store, manager: new Manager(store, { queryFn: makeFakeQuery().queryFn }),
     bugs: { engine: fakeEngine(bugs, calls) as never, store: bugs, integrations: new IntegrationsStore(home),
-            tracker: { listMyIssues: async () => [{ key: "PAY-42", title: "Boom", url: "u", status: "Open", priority: "High" }], fetchIssue: async () => ISSUE, comment: async () => {} } } });
+            tracker: { listMyIssues: async () => [{ key: "PAY-42", title: "Boom", url: "u", status: "Open", priority: "High" }], fetchIssue: async () => ISSUE, comment: async () => {} },
+            importer: fakeImporter(calls) as never } });
 });
+
+/** A stand-in importer: records the import, knows one import id. */
+const fakeImporter = (calls: string[]) => {
+  const st = { importId: "i1", total: 1, done: 0, imported: [], choose: [], skipped: [], failed: [], finished: false };
+  return { start: (keys: string[], repo: string) => { calls.push(`import ${keys.join(",")} ${repo}`); return "i1"; },
+    get: (id: string) => (id === "i1" ? st : null),
+    choose: async (id: string, key: string, n: number) => { calls.push(`choose ${id} ${key} ${n}`); return st; } };
+};
 
 describe("bug task routes", () => {
   it("creates a task and lists it, and exposes it in /api/state", async () => {
@@ -144,6 +155,37 @@ describe("bug task routes", () => {
     expect(saved.body.maxConcurrentRuns).toBe(8);
     expect(calls).toContain("cap 8");
     expect((await request(app).get("/api/integrations")).body.maxConcurrentRuns).toBe(8);
+  });
+
+  it("saves the bug-fix token settings, and refuses bad ones", async () => {
+    const ok = await request(app).put("/api/integrations").send({ autoResolveConflicts: false, commentQuietMinutes: 0, dailyBudgetUsd: 20, stageModels: { implementing: { model: "claude-opus-5" } } });
+    expect(ok.status).toBe(200);
+    expect(ok.body).toMatchObject({ autoResolveConflicts: false, commentQuietMinutes: 0, dailyBudgetUsd: 20, stageModels: { implementing: { model: "claude-opus-5" } } });
+    expect((await request(app).put("/api/integrations").send({ commentQuietMinutes: -1 })).status).toBe(400);
+    expect((await request(app).put("/api/integrations").send({ dailyBudgetUsd: 0.1 })).status).toBe(400);
+    expect((await request(app).put("/api/integrations").send({ autoResolveConflicts: "yes" })).status).toBe(400);
+    expect((await request(app).put("/api/integrations").send({ stageModels: { implementing: { model: "nope" } } })).status).toBe(400);
+    // null clears the daily limit
+    expect((await request(app).put("/api/integrations").send({ dailyBudgetUsd: null })).body.dailyBudgetUsd).toBeNull();
+  });
+
+  it("today's spend, and a saved daily limit applies at once", async () => {
+    expect((await request(app).get("/api/bugfix/spend").expect(200)).body).toEqual({ today: 1.5, limit: null });
+    await request(app).put("/api/integrations").send({ dailyBudgetUsd: 25 }).expect(200);
+    expect(calls).toContain("budget 25");
+  });
+
+  it("import: checks the keys and the repo, then starts in the background", async () => {
+    await request(app).post("/api/bugtasks/import").send({ keys: [], repo: "/r" }).expect(400);
+    await request(app).post("/api/bugtasks/import").send({ keys: Array.from({ length: 501 }, (_, i) => `PAY-${i + 1}`), repo: "/r" }).expect(400);
+    await request(app).post("/api/bugtasks/import").send({ keys: ["PAY-1"], repo: "relative" }).expect(400);
+    await request(app).post("/api/bugtasks/import").send({ keys: ["not a key"], repo: "/r" }).expect(400);
+    expect((await request(app).post("/api/bugtasks/import").send({ keys: ["PAY-1"], repo: "/r" }).expect(202)).body).toEqual({ importId: "i1" });
+    expect(calls).toContain("import PAY-1 /r");
+    expect((await request(app).get("/api/bugtasks/import/i1").expect(200)).body).toMatchObject({ importId: "i1" });
+    await request(app).get("/api/bugtasks/import/nope").expect(404);
+    expect((await request(app).post("/api/bugtasks/import/i1/choose").send({ key: "PAY-1", prNumber: 5 }).expect(200)).body).toMatchObject({ importId: "i1" });
+    await request(app).post("/api/bugtasks/import/i1/choose").send({ key: "PAY-1" }).expect(400);
   });
 
   it("Resolve all approves every bug waiting at the conflict gate", async () => {

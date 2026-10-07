@@ -25,6 +25,7 @@ import { ConflictWatcher } from "./bugfix/conflicts.js";
 import { TrackerCache } from "./bugfix/trackerCache.js";
 import { TrackerSync } from "./bugfix/trackerSync.js";
 import { BatchStarter } from "./bugfix/batch.js";
+import { Importer } from "./bugfix/importer.js";
 import { mcpTracker, type TrackerProvider } from "./bugfix/tracker.js";
 import { BugFixEngine, recoverStuckBugTasks } from "./bugfix/engine.js";
 import { PrWatcher } from "./bugfix/watcher.js";
@@ -190,11 +191,17 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   // in a real deployment's environment would otherwise throw here and stop the server booting.
   const fakePrScript = fake ? (opts.fakePrScript ?? parseFakePrScript(process.env.AGENTGRID_FAKE_PR_SCRIPT)) : undefined;
   const fakeForgeHandle = fake ? fakeForge(fakePrScript ?? []) : null;
+  // The repo's open PRs, for an import to find (e2e): a JSON array of PrInfo.
+  if (fakeForgeHandle && process.env.AGENTGRID_FAKE_OPEN_PRS) {
+    try { fakeForgeHandle.setOpenPrs(JSON.parse(process.env.AGENTGRID_FAKE_OPEN_PRS)); }
+    catch (err) { throw new Error(`AGENTGRID_FAKE_OPEN_PRS is not valid JSON: ${(err as Error).message}`); }
+  }
 
-  let wiredBugFix: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider; trackerCache?: TrackerCache; batches?: BatchStarter } | undefined;
+  let wiredBugFix: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider; trackerCache?: TrackerCache; batches?: BatchStarter; importer?: Importer } | undefined;
   let wiredWatcher: PrWatcher | null = null;
   let wiredConflicts: ConflictWatcher | null = null;
   let wiredCache: TrackerCache | null = null;
+  let quietTimer: NodeJS.Timeout | null = null;
   let lastCfg = cfg;
 
   /**
@@ -218,9 +225,16 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     // Tickets move through the user's workflow as the fix goes on (spec 2026-10-08 §4).
     engine.setTrackerSync(new TrackerSync({ tracker, bugs: bugStore, statusMap: async () => (await integrations.read()).statusMap }));
     engine.attach();
+    wiredBugFix?.engine.detach();
     wiredWatcher?.stop();
+    // How long reviewers must be quiet before their comments start a round (spec 2026-10-09 §5), re-read every 30 s.
+    let quietMs = 600_000;
+    const readQuiet = () => integrations.read().then(c => { quietMs = (c.commentQuietMinutes ?? 10) * 60_000; }).catch(() => {});
+    await readQuiet();
+    if (quietTimer) clearInterval(quietTimer);
+    quietTimer = setInterval(() => void readQuiet(), 30_000); quietTimer.unref();
     wiredWatcher = forge
-      ? new PrWatcher({ bugs: bugStore, forge, onFinding: f => engine.onPrFinding(f).catch(err => log(`bugfix: watcher finding failed: ${(err as Error).message}`)),
+      ? new PrWatcher({ bugs: bugStore, forge, quietMs: () => quietMs, onFinding: f => engine.onPrFinding(f).catch(err => log(`bugfix: watcher finding failed: ${(err as Error).message}`)),
           onChecked: (id, at) => engine.onPrChecked(id, at).catch(err => log(`bugfix: recording the poll failed: ${(err as Error).message}`)),
           ...(fake ? { baseMs: 200, ceilingMs: 1_000 } : {}) })
       : null;
@@ -236,7 +250,11 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     const batches = new BatchStarter({ engine, git: new GitOps(), tracker, cache: trackerCache,
       activeTaskFor: key => bugStore.list().find(t => t.issue.key.toUpperCase() === key && !["done", "cancelled", "failed"].includes(t.stage))?.id ?? null });
     batches.on("event", e => store.emit("event", e));
-    wiredBugFix = { engine, store: bugStore, integrations, tracker, trackerCache, batches };
+    // Tickets already in progress, picked up where they are (spec 2026-10-09 §3).
+    const importer = new Importer({ engine, git: new GitOps(), forge, tracker, cache: trackerCache,
+      activeTaskFor: key => bugStore.list().find(t => t.issue.key.toUpperCase() === key && !["done", "cancelled", "failed"].includes(t.stage))?.id ?? null });
+    importer.on("event", e => store.emit("event", e));
+    wiredBugFix = { engine, store: bugStore, integrations, tracker, trackerCache, batches, importer };
     return wiredBugFix;
   };
 
@@ -246,7 +264,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const agentPrs = new AgentPrWatcher({ store, forge: () => fakeForgeHandle ?? makeForge(lastCfg.forge) });
   agentPrs.start();
 
-  const app = createApp({ store, manager, permissions: { broker: permissionBroker, rules }, ...(fake ? { fakePermissions: true } : {}), hookToken: () => hookToken, agentForSession, submitToTerminal: (sid, text) => ptys.submit(sid, text), transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }),
+  const app = createApp({ store, manager, permissions: { broker: permissionBroker, rules }, ...(fake ? { fakePermissions: true } : {}), ...(fakeForgeHandle ? { fakeForge: fakeForgeHandle } : {}), hookToken: () => hookToken, agentForSession, submitToTerminal: (sid, text) => ptys.submit(sid, text), transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }),
     openTerminal, runInTerminal, staticDir, browseRoot: opts.browseRoot ?? process.env.AGENTGRID_BROWSE_ROOT, ...(fakeSessions ? { sessions: fakeSessions } : {}),
     integrations,
     roleResolves: () => { try { store.getRole("bugfix"); return true; } catch { return false; } },

@@ -1,8 +1,12 @@
 Reviewers have asked for changes on the pull request for {{issueKey}}.
 
+{{freshStart}}
+
 {{noteFraming}}
 
 {{note}}
+
+The same feedback is saved at {{feedbackPath}}.
 
 Your job in this step:
 
