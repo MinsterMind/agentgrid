@@ -1,11 +1,13 @@
 export type BugStage =
   | "intake" | "analyzing" | "plan-review" | "implementing" | "diff-review"
   | "opening-pr" | "creating-pr" | "monitoring" | "review-feedback" | "rebase" | "pushing"
-  | "approved" | "merging" | "done" | "cancelled" | "failed";
+  | "approved" | "merging" | "done" | "cancelled" | "failed"
+  /** The PR conflicts with its base: waiting for the human to allow a rebase (spec 2026-10-07 §4.2). */
+  | "conflict";
 
 /** A gate's kind is what the card renders. There is no "rebase" gate: a rebase round lands at the
  *  DIFF gate carrying `reason: "rebase"` (see `Transition.gate`), which is what labels it. */
-export type GateKind = "plan" | "diff" | "review" | "merge";
+export type GateKind = "plan" | "diff" | "review" | "merge" | "conflict";
 
 /** Normalised ticket — every tracker preset returns this shape. */
 export interface TrackerIssue {
@@ -64,6 +66,8 @@ export interface BugTask {
   testsInDiff: string[] | null;
   /** "Approve without a regression test", with the reason — valid only for the head it was given at. */
   testOverride: { reason: string; at: string; head: string } | null;
+  /** What the PR conflicts on, while it waits at the conflict gate (kept through the rebase it allows). */
+  conflict: { files: string[]; base: string; detectedAt: string; returnTo: "monitoring" | "approved" } | null;
   agentId: string;
   stage: BugStage;
   gate: { kind: GateKind; openedAt: string; reason?: "feedback" | "rebase" | "external" } | null;
@@ -148,7 +152,10 @@ export type BugEvent =
    *  build being answered twice. Null when the adapter does not report a head. */
   | { type: "checks-failed"; checks: string; headSha: string | null }
   | { type: "review-approved" }
-  | { type: "conflicting" }
+  /** The branch no longer merges cleanly into its base — from the ConflictWatcher (with the files) or the forge's own flag. */
+  | { type: "conflicting"; files?: string[]; base?: string }
+  /** It merges cleanly again (someone rebased by hand, or the base moved on). */
+  | { type: "conflict-cleared" }
   | { type: "pr-closed" }
   | { type: "pr-merged" }
   /** A PR for the task's branch, found on the forge after the task failed while pushing or
@@ -174,13 +181,13 @@ export interface Transition {
 /** Stages whose work is done by an agent assignment. */
 export const AGENT_STAGES: BugStage[] = ["analyzing", "implementing", "opening-pr", "review-feedback", "rebase"];
 /** Stages that are waiting on a human click. */
-export const GATE_STAGES: BugStage[] = ["plan-review", "diff-review", "approved"];
+export const GATE_STAGES: BugStage[] = ["plan-review", "diff-review", "approved", "conflict"];
 /** Stages the ENGINE performs itself — no assignment, no agent, no tokens. They still
  *  report stage-done/stage-failed, so failure and retry work exactly as for agent stages. */
 export const SERVER_STAGES: BugStage[] = ["pushing", "creating-pr", "merging"];
 /** Resting stages the watcher polls. Never an agent stage: two things driving one task is
  *  the bug class Phase 1 spent its Criticals on. */
-export const WATCHED_STAGES: BugStage[] = ["monitoring", "approved"];
+export const WATCHED_STAGES: BugStage[] = ["monitoring", "approved", "conflict"];
 /** Agent stages dispatched to resolve a review round; distinct from the other AGENT_STAGES
  *  because they're the ones a feedback-round budget must count against. */
 export const FEEDBACK_AGENT_STAGES: BugStage[] = ["review-feedback", "rebase"];

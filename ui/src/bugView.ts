@@ -3,7 +3,7 @@ import type { Assumption, BugStage, BugTask, Pending, SessionActivity, SetupRepo
 // Copies of the server's stage groups (types.ts there exports them as values, but the ui only
 // imports server *types*). `bugView.test.ts` pins these equal to the server's.
 export const AGENT_STAGES: BugStage[] = ["analyzing", "implementing", "opening-pr", "review-feedback", "rebase"];
-export const GATE_STAGES: BugStage[] = ["plan-review", "diff-review", "approved"];
+export const GATE_STAGES: BugStage[] = ["plan-review", "diff-review", "approved", "conflict"];
 export const SERVER_STAGES: BugStage[] = ["pushing", "creating-pr", "merging"];
 export const TERMINAL_STAGES: BugStage[] = ["done", "cancelled", "failed"];
 const UNREACHABLE = "could not check the pull request:";
@@ -13,6 +13,7 @@ const LABELS: Record<BugStage, string> = {
   "diff-review": "Diff review", "opening-pr": "Writing the PR", pushing: "Pushing the branch",
   "creating-pr": "Opening the pull request", monitoring: "Watching the PR", "review-feedback": "Addressing review",
   rebase: "Rebasing", approved: "Ready to merge", merging: "Merging", done: "Done", cancelled: "Cancelled", failed: "Failed",
+  conflict: "Conflict",
 };
 export const stageLabel = (s: BugStage): string => LABELS[s];
 
@@ -25,7 +26,7 @@ const STEPS: Array<{ id: string; label: string; stages: BugStage[] }> = [
   { id: "implement", label: "Implement", stages: ["implementing"] },
   { id: "diff", label: "Diff review", stages: ["diff-review"] },
   { id: "pr", label: "Open PR", stages: ["opening-pr", "pushing", "creating-pr"] },
-  { id: "monitor", label: "Monitor", stages: ["monitoring", "review-feedback", "rebase"] },
+  { id: "monitor", label: "Monitor", stages: ["monitoring", "review-feedback", "rebase", "conflict"] },
   { id: "merge", label: "Merge", stages: ["approved", "merging", "done"] },
 ];
 

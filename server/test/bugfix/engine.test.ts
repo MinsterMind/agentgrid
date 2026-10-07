@@ -1210,10 +1210,42 @@ describe("the server pushes an approved feedback diff", () => {
   });
 });
 
+describe("the conflict gate, in the engine", () => {
+  it("records what conflicts, resolves on approve with the files in the prompt, and forgets it once rebased", async () => {
+    const { engine, bugs, fake, gitState } = await onMonitoringTask();
+    await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflicting", files: ["src/a.ts"], base: "develop" } });
+    expect(bugs.get("bt1")).toMatchObject({ stage: "conflict", conflict: { files: ["src/a.ts"], base: "develop", returnTo: "monitoring" } });
+    await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflicting", files: ["src/a.ts", "src/b.ts"], base: "develop" } });
+    expect(bugs.get("bt1").conflict!.files).toEqual(["src/a.ts", "src/b.ts"]);
+    await engine.approve("bt1");
+    expect(bugs.get("bt1").stage).toBe("rebase");
+    expect(fake.calls.at(-1)!.prompt).toContain("src/b.ts");
+    gitState.head = "ddd"; gitState.commitsAhead = 1;
+    await finishStage(fake);
+    expect(bugs.get("bt1")).toMatchObject({ stage: "diff-review", conflict: null });
+  });
+  it("a conflict that clears on its own returns the task where it was", async () => {
+    const { engine, bugs } = await onMonitoringTask();
+    await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflicting", files: ["a"], base: "main" } });
+    await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflict-cleared" } });
+    expect(bugs.get("bt1")).toMatchObject({ stage: "monitoring", conflict: null, gate: null });
+  });
+  // Review Focus 1
+  it("a late finding for a task that moved on is ignored, not an error", async () => {
+    const { engine, bugs } = await onMonitoringTask();
+    await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflicting", files: ["a"], base: "main" } });
+    await engine.approve("bt1");
+    await expect(engine.onConflictFinding({ taskId: "bt1", event: { type: "conflict-cleared" } })).resolves.toBeUndefined();
+    expect(bugs.get("bt1").stage).toBe("rebase");
+  });
+});
+
 describe("a rebase round", () => {
   it("dispatches rebase on a conflict and opens a diff gate labelled rebase", async () => {
     const { engine, bugs, fake, gitState } = await onMonitoringTask();
     await engine.onPrFinding({ taskId: "bt1", pr: { ...gitState.pr, mergeable: "CONFLICTING" }, event: { type: "conflicting" } });
+    expect(bugs.get("bt1").stage).toBe("conflict");          // waits for permission (spec 2026-10-07)
+    await engine.approve("bt1");
     expect(bugs.get("bt1").stage).toBe("rebase");
     gitState.head = "ddd"; gitState.commitsAhead = 1;
     await finishStage(fake);
@@ -1223,6 +1255,7 @@ describe("a rebase round", () => {
   it("fails the stage when the rebase was left half-finished or conflicted", async () => {
     const { engine, bugs, fake, gitState } = await onMonitoringTask();
     await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "conflicting" } });
+    await engine.approve("bt1");
     gitState.rebaseState = { inProgress: true, conflicted: ["src/a.ts"] };
     await finishStage(fake);
     const t = bugs.get("bt1");
@@ -1238,6 +1271,7 @@ describe("a rebase round", () => {
   it("re-pins approvedHead to the post-rebase head, so the subsequent push does not trip the pin", async () => {
     const { engine, bugs, fake, gitState } = await onMonitoringTask();
     await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "conflicting" } });
+    await engine.approve("bt1");
     gitState.head = "ddd"; gitState.commitsAhead = 1;
     await finishStage(fake);
     let t = bugs.get("bt1");

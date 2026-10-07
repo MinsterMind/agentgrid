@@ -376,6 +376,16 @@ export class BugFixEngine {
    * a stale "couldn't reach the forge" note clears. Nothing here touches stage, so it needs no
    * place in `advance()`'s chain.
    */
+  /** A ConflictWatcher finding. A late one for a task that has moved on (say, Resolve was pressed
+   *  meanwhile) is simply out of date: nextStage refuses it, and that is not an error. */
+  async onConflictFinding(f: { taskId: string; event: BugEvent }): Promise<void> {
+    await this.serial(f.taskId, async () => {
+      try { await this.advanceLocked(f.taskId, f.event); }
+      catch (err) { if (!(err instanceof Conflict)) throw err; }
+      return this.deps.bugs.get(f.taskId);
+    });
+  }
+
   async onPrChecked(taskId: string, checkedAt: string): Promise<void> {
     const task = this.deps.bugs.get(taskId);
     // Cosmetic ordering only — a concurrent finding's own (newer) stamp must not be walked
@@ -477,7 +487,18 @@ export class BugFixEngine {
     // already answered from a new one (see `BugTask.checksRoundHead`). Written only now, after
     // `nextStage` accepted the transition — a refused event must leave nothing behind.
     if (event.type === "checks-failed") await this.deps.bugs.patch(taskId, { checksRoundHead: event.headSha });
+    // What conflicts, and where to return if it clears: written only once nextStage accepted the finding.
+    if (event.type === "conflicting") {
+      const files = event.files ?? current.conflict?.files ?? [];
+      await this.deps.bugs.patch(taskId, { conflict: current.stage === "conflict" && current.conflict
+        ? { ...current.conflict, files }
+        : { files, base: event.base ?? current.baseBranch, detectedAt: new Date().toISOString(), returnTo: current.stage === "approved" ? "approved" : "monitoring" } });
+    }
     let task = await this.deps.bugs.apply(taskId, t);
+    // The conflict is over once it cleared, the PR ended, or the rebase it allowed is up for review.
+    const conflictOver = event.type === "conflict-cleared" || (current.stage === "conflict" && (event.type === "pr-merged" || event.type === "pr-closed"))
+      || (event.type === "stage-done" && current.stage === "rebase");
+    if (conflictOver && task.conflict) task = await this.deps.bugs.patch(taskId, { conflict: null });
     await this.settleTerminal(task);
     // A server stage is work the engine does itself: no assignment, no agent, no tokens. It
     // still reports stage-done/stage-failed, so failure and retry behave exactly as for an
