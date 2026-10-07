@@ -437,3 +437,11 @@ textarea.input { resize:none; }
 .buglist .lh .updated + .btn { margin-left:6px; }
 @keyframes ag-spin { to { transform: rotate(360deg); } }
 .spin { animation: ag-spin 1s linear infinite; }
+
+/* Start many */
+.buglist .pick-row { margin:6px 10px; gap:6px; }
+.bugrow input.pick { margin-right:6px; accent-color: var(--accent); }
+.bugdetail.bulk .panel { margin-top:12px; }
+.bulk-keys { margin:4px 0 8px 18px; font-size:13px; } .bulk-keys li { margin:2px 0; }
+.bugdetail.bulk .bar { height:6px; border-radius:3px; background:var(--surface-raised); overflow:hidden; margin:8px 0; }
+.bugdetail.bulk .bar span { display:block; height:100%; background:var(--accent); transition:width .3s; }

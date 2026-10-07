@@ -1,14 +1,14 @@
 import { attention } from "./attention";
-import type { Agent, AgentState, Assignment, BugTask, GridEvent, GridState, IssueList, PermissionRequest, RoleDef, SessionInfo, SessionActivity } from "../types";
+import type { Agent, AgentState, Assignment, BatchState, BugTask, GridEvent, GridState, IssueList, PermissionRequest, RoleDef, SessionInfo, SessionActivity } from "../types";
 
-export interface UiState { roles: RoleDef[]; agents: Agent[]; assignments: Record<string, Assignment>; liveSessions: SessionInfo[]; activity: Record<string, SessionActivity>; bugTasks: Record<string, BugTask>; /** Open permission requests from embedded terminals, by id. */ permissions: Record<string, PermissionRequest>; /** My open bugs as the server's tracker cache last announced them. */ tracker: IssueList | null; selectedId: string | null; connected: boolean; /** A snapshot has arrived: until then, "no agents" means "not known yet". */ loaded: boolean }
+export interface UiState { roles: RoleDef[]; agents: Agent[]; assignments: Record<string, Assignment>; liveSessions: SessionInfo[]; activity: Record<string, SessionActivity>; bugTasks: Record<string, BugTask>; /** Open permission requests from embedded terminals, by id. */ permissions: Record<string, PermissionRequest>; /** My open bugs as the server's tracker cache last announced them. */ tracker: IssueList | null; /** "Start many" runs, by id, as last announced. */ batches: Record<string, BatchState>; selectedId: string | null; connected: boolean; /** A snapshot has arrived: until then, "no agents" means "not known yet". */ loaded: boolean }
 export type Action =
   | { type: "snapshot"; state: GridState }
   | { type: "change"; event: GridEvent }
   | { type: "select"; id: string | null }
   | { type: "connected"; value: boolean };
 
-export const initial: UiState = { roles: [], agents: [], assignments: {}, liveSessions: [], activity: {}, bugTasks: {}, permissions: {}, tracker: null, selectedId: null, connected: false, loaded: false };
+export const initial: UiState = { roles: [], agents: [], assignments: {}, liveSessions: [], activity: {}, bugTasks: {}, permissions: {}, tracker: null, batches: {}, selectedId: null, connected: false, loaded: false };
 
 export function reducer(s: UiState, a: Action): UiState {
   switch (a.type) {
@@ -28,7 +28,7 @@ export function reducer(s: UiState, a: Action): UiState {
       if (e.type === "assignment") return { ...s, assignments: { ...s.assignments, [e.assignment.id]: e.assignment } };
       if (e.type === "agent-removed") return { ...s, agents: s.agents.filter(x => x.id !== e.id), selectedId: s.selectedId === e.id ? null : s.selectedId };
       if (e.type === "bugtask") return { ...s, bugTasks: { ...s.bugTasks, [e.task.id]: e.task } };
-      if (e.type === "batch") return s;   // Task 7 keeps these
+      if (e.type === "batch") return { ...s, batches: { ...s.batches, [e.state.batchId]: e.state } };
       if (e.type === "tracker-issues") return { ...s, tracker: e.list };
       if (e.type === "tracker-issue") return s;   // a ticket's details: TicketDetail reads them through the API (cached server-side)
       if (e.type === "permission") return { ...s, permissions: { ...s.permissions, [e.request.id]: e.request } };

@@ -23,6 +23,7 @@ type Issue = { key: string; title: string; url: string; status: string; priority
 const L = (issues: Issue[], over: Record<string, unknown> = {}) => ({ issues, fetchedAt: new Date(Date.now() - 2 * 60_000).toISOString(), refreshing: false, error: null as string | null, ...over });
 const myIssues = vi.fn(async (): Promise<ReturnType<typeof L>> => L([]));
 const refreshIssues = vi.fn(async () => ({}));
+const bugPreflight = vi.fn(async () => ({ ok: true, problems: [], baseBranch: "main", branches: ["main"] }));
 vi.mock("../src/api", () => ({
   ApiError,
   api: {
@@ -31,7 +32,7 @@ vi.mock("../src/api", () => ({
     requestBugChanges: vi.fn(), cancelBug: vi.fn(), retryBug: vi.fn(), listBugTasks: vi.fn(async () => []),
     addressComments: vi.fn(), dismissBug: vi.fn(),
     myIssues: () => myIssues(), refreshIssues: () => refreshIssues(), issue: vi.fn(async () => ({ key: "PAY-1", title: "Not started", url: "u", status: "Open", priority: "High", description: "", acceptanceCriteria: [] })),
-    getIntegrations: vi.fn(async () => ({ projectRepos: {} })), resolveConflicts: () => resolveConflicts(), bugPreflight: vi.fn(async () => ({ ok: true, problems: [] })), createBugTask: vi.fn(), pickFolder: vi.fn(),
+    getIntegrations: vi.fn(async () => ({ projectRepos: {} })), resolveConflicts: () => resolveConflicts(), bugPreflight: () => bugPreflight(), createBugTask: vi.fn(), pickFolder: vi.fn(), startBatch: vi.fn(async () => ({ batchId: "b1" })),
   },
 }));
 
@@ -391,5 +392,31 @@ describe("BugScreen — the cached list (spec 2026-10-08 §3)", () => {
     const state = { ...stateWith([]), tracker: L([{ key: "PAY-5", title: "Pushed", url: "u", status: "Open", priority: "High" }], { fetchedAt: new Date().toISOString() }) };
     render(<BugScreen state={state as never} selectedId={null} onSelect={vi.fn()} onSelectTicket={vi.fn()} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={vi.fn()} />);
     expect(await screen.findByText("Pushed")).toBeInTheDocument();
+  });
+});
+
+describe("BugScreen — picking several bugs", () => {
+  const MINE = [{ key: "PAY-1", title: "One", url: "u", status: "Open", priority: "High" }, { key: "PAY-2", title: "Two", url: "u", status: "Open", priority: "Low" }];
+  it("not-started bugs can be ticked; started ones can't; Select all and Clear", async () => {
+    myIssues.mockResolvedValue(L([...MINE, { key: "PAY-42", title: "Started", url: "u", status: "Open", priority: "High" }]));
+    renderScreen([task("implementing")]);
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+    expect(screen.getByLabelText("Select PAY-1")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Select PAY-42")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Select all not started (2)" }));
+    expect(screen.getByLabelText("Select PAY-1")).toBeChecked(); expect(screen.getByLabelText("Select PAY-2")).toBeChecked();
+    expect(screen.getByTestId("bulk-start")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Clear" }));
+    expect(screen.queryByTestId("bulk-start")).toBeNull();
+  });
+  it("ticking doesn't open the ticket", async () => {
+    myIssues.mockResolvedValue(L(MINE));
+    const onSelectTicket = vi.fn();
+    renderScreen([], null, { onSelectTicket });
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+    onSelectTicket.mockClear();
+    await userEvent.click(screen.getByLabelText("Select PAY-2"));
+    expect(onSelectTicket).not.toHaveBeenCalled();
+    expect(screen.getByTestId("bulk-start")).toBeInTheDocument();
   });
 });

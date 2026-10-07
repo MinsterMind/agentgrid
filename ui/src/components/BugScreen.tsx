@@ -6,6 +6,7 @@ import { elapsed, relativeTime, usd } from "../format";
 import { activityFor, assignmentFor, permissionFor, type UiState } from "../state/reducer";
 import type { BugTask, Decision, IssueList, IssueSummary, SetupReport } from "../types";
 import { TicketDetail } from "./TicketDetail";
+import { BulkStart } from "./BulkStart";
 import { PendingPrompt, asPending } from "./PendingPrompt";
 import { BugGates } from "./BugGates";
 import { DiffView, hunksFor } from "./DiffView";
@@ -117,6 +118,11 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
   const queued = useMemo(() => Object.values(state.bugTasks).filter(t => t.queuedAt && !TERMINAL.includes(t.stage)).sort((a, b) => a.queuedAt!.localeCompare(b.queuedAt!)), [state.bugTasks]);
   const queueOf = (t: BugTask) => { const i = queued.findIndex(q => q.id === t.id); return i === -1 ? undefined : { position: i + 1, of: queued.length }; };
   const conflicts = tasks.filter(x => x.t.stage === "conflict").length;
+  // Bugs ticked for "start many" (spec 2026-10-08 §5.1): only assigned ones not started yet.
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const startable = rows.filter(r => !r.task && r.assigned);
+  const pickedRows = startable.filter(r => picked.has(r.key));
+  const toggle = (key: string) => setPicked(x => { const n = new Set(x); if (n.has(key)) n.delete(key); else n.add(key); return n; });
   const [resolving, setResolving] = useState(false);
   const resolveAll = () => { setResolving(true); void api.resolveConflicts().catch(() => {}).finally(() => setResolving(false)); };
 
@@ -162,6 +168,12 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
         <div className="lh"><span>My bugs</span><span className="mono">{rows.length}</span>
           {mine.fetchedAt && <span className="help updated" title={new Date(mine.fetchedAt).toLocaleString()}>updated {relativeTime(mine.fetchedAt, now)}</span>}
           <button className="btn sm" aria-label={mine.refreshing ? "Refreshing…" : "Refresh from the tracker"} title={mine.refreshing ? "Refreshing…" : "Refresh from the tracker"} disabled={mine.refreshing} onClick={mine.refresh}><RefreshCw className={mine.refreshing ? "spin" : ""} /></button></div>
+        {startable.length > 0 && (
+          <div className="row pick-row">
+            {pickedRows.length < startable.length && <button className="btn sm" onClick={() => setPicked(new Set(startable.map(r => r.key)))}>Select all not started ({startable.length})</button>}
+            {pickedRows.length > 0 && <button className="btn sm" onClick={() => setPicked(new Set())}>Clear</button>}
+          </div>
+        )}
         {conflicts > 0 && <button className="btn p resolve-all" disabled={resolving} title="Rebase every conflicted bug onto its base — the agents-at-once limit paces them, and you review each result" onClick={resolveAll}><GitMerge /> Resolve all {conflicts} conflict{conflicts === 1 ? "" : "s"}</button>}
         {mine.err && <div className="warnline"><TriangleAlert /> Couldn't refresh from the tracker: {mine.err}{mine.issues ? " — showing the last list." : ""}</div>}
         <ul role="listbox" aria-label="Bug fixes" onKeyDown={e => {
@@ -174,6 +186,8 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
             if (!r.task) return [head, (
               <li key={r.key} role="option" aria-selected={sel} tabIndex={sel ? 0 : -1} className="bugrow" data-status="todo"
                 onClick={() => open(r)} onKeyDown={e => { if (e.key === "Enter") open(r); }}>
+                {r.assigned && <input type="checkbox" className="pick" aria-label={`Select ${r.key}`} checked={picked.has(r.key)}
+                  onClick={e => e.stopPropagation()} onChange={() => toggle(r.key)} />}
                 <span className="k">{r.key}</span>
                 <span className="t" title={r.title}>{r.title}</span>
                 <span className="s todo">{r.priority && <span className={`chip ${/highest|critical|blocker/i.test(r.priority) ? "red" : /high/i.test(r.priority) ? "amber" : ""}`}>{r.priority}</span>} Not started</span>
@@ -194,7 +208,9 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
         </ul>
         <div className="lfoot"><kbd>↑</kbd> <kbd>↓</kbd> move · <kbd>⏎</kbd> open</div>
       </aside>
-      {task || (shown && !ticket && !selectedTicket)
+      {pickedRows.length > 0
+        ? <BulkStart selected={pickedRows.map(r => ({ key: r.key, title: r.title, url: "", status: "", priority: r.priority ?? "" }))} batches={state.batches ?? {}} />
+        : task || (shown && !ticket && !selectedTicket)
         ? <BugDetail key={(task ?? shown)!.id} task={(task ?? shown)!} state={state} now={now} onBugChanged={onBugChanged} onTranscript={onTranscript} onOpenSettings={onOpenSettings} onDecide={onDecide} />
         : (ticket ?? selectedTicket) ? <TicketDetail key={ticket ?? selectedTicket!} ticketKey={(ticket ?? selectedTicket)!} onStarted={onStarted} /> : null}
     </div>
