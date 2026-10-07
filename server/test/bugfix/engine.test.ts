@@ -5,7 +5,7 @@ import path from "node:path";
 import { Store } from "../../src/store/store.js";
 import { Manager } from "../../src/runner/manager.js";
 import { BugTaskStore } from "../../src/bugfix/store.js";
-import { BugFixEngine, recoverStuckBugTasks, FEEDBACK_ROUND_CAP } from "../../src/bugfix/engine.js";
+import { regressionTests, BugFixEngine, recoverStuckBugTasks, FEEDBACK_ROUND_CAP } from "../../src/bugfix/engine.js";
 import { nextStage } from "../../src/bugfix/stages.js";
 import { GitOps } from "../../src/bugfix/git.js";
 import { IntegrationsStore } from "../../src/bugfix/integrations.js";
@@ -53,7 +53,8 @@ function fakeGit(state: { commits: number; ticketCommits?: string[]; uncommitted
   g.currentBranch = async () => "bugfix/PAY-42";
   g.revParse = async () => state.head ?? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   g.commitsAhead = async (_dir, base) => { calls.push(`ahead of ${base}`); return state.commitsAhead ?? state.commits; };
-  g.diff = async () => ({ patch: "diff --git a/a b/a\n+x\n", files: [{ path: "a", additions: 1, deletions: 0 }], additions: 1, deletions: 0 });
+  // Carries a (zero-line) test file so a diff gate isn't blocked for want of a regression test.
+  g.diff = async () => ({ patch: "diff --git a/a b/a\n+x\n", files: [{ path: "a", additions: 1, deletions: 0 }, { path: "a.test.ts", additions: 0, deletions: 0 }], additions: 1, deletions: 0 });
   g.worktreeRegistered = async () => false;
   g.branchExists = async () => false;
   g.rebaseState = async () => state.rebaseState ?? { inProgress: false, conflicted: [] };
@@ -103,7 +104,7 @@ beforeEach(async () => {
   engine = new BugFixEngine({
     store, bugs, manager: new Manager(store, { queryFn: fake.queryFn, buildOptions: (_r, a, e) => ({ cwd: a.repo, abortController: e.abortController, canUseTool: e.canUseTool } as Options) }),
     git: (gitFake = fakeGit(gitState)).git, integrations: new IntegrationsStore(home),
-    tracker: { listMyIssues: async () => [], fetchIssue: async () => ISSUE, comment: async (k, t) => { comments.push([k, t]); } },
+    tracker: { listMyIssues: async () => [], fetchIssue: async (ref: string) => ({ ...ISSUE, key: ref }), comment: async (k, t) => { comments.push([k, t]); } },
     forge, presetsDir: path.resolve("presets"),
   });
   engine.attach();
@@ -221,6 +222,58 @@ describe("the base a fix is cut from (PULSEAI-414)", () => {
   });
 });
 
+describe("regression tests in the plan", () => {
+  it("reads the list under the heading, ignoring code and stopping at the next heading", () => {
+    const plan = "Verdict: change needed\n## Root cause\nx\n## Regression tests\n- `test/cart.test.ts` › totals match with a coupon — fails today: double discount\n* test/cart.test.ts › coupon applies once\n```\n- not a test\n```\n## Risks\n- none";
+    expect(regressionTests(plan)).toEqual(["`test/cart.test.ts` › totals match with a coupon — fails today: double discount", "test/cart.test.ts › coupon applies once"]);
+    expect(regressionTests("## Fix\n- a")).toEqual([]);
+  });
+  it("the analyze stage records the planned tests on the task", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "Verdict: change needed\n## Regression tests\n- test/a.test.ts › rotates once\n");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    expect(bugs.get(t.id).plannedTests).toEqual(["test/a.test.ts › rotates once"]);
+  });
+});
+
+describe("a change with no regression test", () => {
+  async function atDiffGate(files: string[]) {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "Verdict: change needed\n## Regression tests\n- t\n");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    await engine.approve(t.id);
+    gitState.commits = 1;
+    gitFake.git.diff = async () => ({ patch: "p", files: files.map(path => ({ path, additions: 1, deletions: 0 })), additions: 1, deletions: 0 });
+    await finishStage(); await until(() => bugs.get(t.id).stage === "diff-review");
+    return t;
+  }
+  it("records the diff's test files; with none, approving needs a reason", async () => {
+    const t = await atDiffGate(["src/cart.ts"]);
+    expect(bugs.get(t.id).testsInDiff).toEqual([]);
+    await expect(engine.approve(t.id)).rejects.toThrow(/no regression test/);
+    await expect(engine.overrideTests(t.id, "  ")).rejects.toThrow(/reason|why/);
+    const done = await engine.overrideTests(t.id, "config-only change, covered by e2e");
+    expect(done.stage).toBe("opening-pr");
+    expect(bugs.get(t.id).testOverride).toMatchObject({ reason: "config-only change, covered by e2e", head: "a".repeat(40) });
+    expect(bugs.get(t.id).history.some(h => /Approved without a regression test: config-only/.test(h.note))).toBe(true);
+  });
+  it("a change with a test file approves as before", async () => {
+    const t = await atDiffGate(["src/cart.ts", "src/cart.test.ts"]);
+    expect(bugs.get(t.id).testsInDiff).toEqual(["src/cart.test.ts"]);
+    expect((await engine.approve(t.id)).stage).toBe("opening-pr");
+  });
+  // Review Focus 4
+  it("an override counts only for the head it was given at", async () => {
+    const t = await atDiffGate(["src/cart.ts"]);
+    await bugs.patch(t.id, { testOverride: { reason: "r", at: "", head: "b".repeat(40) } });
+    await expect(engine.approve(t.id)).rejects.toThrow(/no regression test/);
+  });
+  it("overriding is only for the diff gate", async () => {
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await expect(engine.overrideTests(t.id, "x")).rejects.toThrow(/diff/);
+  });
+});
+
 describe("no change needed", () => {
   it("the plan's verdict is read, and the human can close the task at the plan gate", async () => {
     const t = await engine.intake({ issueRef: "PAY-42", repo });
@@ -301,7 +354,7 @@ describe("stage progression", () => {
     await engine.retry(t.id);
     await finishStage(); await until(() => bugs.get(t.id).stage === "diff-review");
     expect(await bugs.readArtifact(t.id, "diff.patch")).toContain("diff --git");
-    expect(JSON.parse((await bugs.readArtifact(t.id, "diffstat.json"))!)).toMatchObject({ additions: 1, files: [{ path: "a" }] });
+    expect(JSON.parse((await bugs.readArtifact(t.id, "diffstat.json"))!)).toMatchObject({ additions: 1, files: [{ path: "a" }, { path: "a.test.ts" }] });
     expect((await engine.diffFor(t.id)).files[0].path).toBe("a");
   });
 
@@ -1157,10 +1210,146 @@ describe("the server pushes an approved feedback diff", () => {
   });
 });
 
+describe("the conflict gate, in the engine", () => {
+  it("records what conflicts, resolves on approve with the files in the prompt, and forgets it once rebased", async () => {
+    const { engine, bugs, fake, gitState } = await onMonitoringTask();
+    await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflicting", files: ["src/a.ts"], base: "develop" } });
+    expect(bugs.get("bt1")).toMatchObject({ stage: "conflict", conflict: { files: ["src/a.ts"], base: "develop", returnTo: "monitoring" } });
+    await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflicting", files: ["src/a.ts", "src/b.ts"], base: "develop" } });
+    expect(bugs.get("bt1").conflict!.files).toEqual(["src/a.ts", "src/b.ts"]);
+    await engine.approve("bt1");
+    expect(bugs.get("bt1").stage).toBe("rebase");
+    expect(fake.calls.at(-1)!.prompt).toContain("src/b.ts");
+    gitState.head = "ddd"; gitState.commitsAhead = 1;
+    await finishStage(fake);
+    // the rebased diff's review shows what conflicted (spec §4.2); it's forgotten once that diff is approved
+    expect(bugs.get("bt1")).toMatchObject({ stage: "diff-review", conflict: { files: ["src/a.ts", "src/b.ts"] } });
+    const deps = (engine as any).deps;
+    deps.git.push = async () => {};
+    deps.forge = { ...deps.forge, getPr: async () => ({ found: { number: 7, url: "u", state: "OPEN" as const, reviewDecision: null, checks: null, mergeable: "MERGEABLE", headSha: "ddd", lastSeenEventAt: "t" } }) };
+    await engine.approve("bt1");
+    await until(() => bugs.get("bt1").stage !== "pushing", 2000);
+    expect(bugs.get("bt1").conflict).toBeNull();
+  });
+  it("a conflict that clears on its own returns the task where it was", async () => {
+    const { engine, bugs } = await onMonitoringTask();
+    await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflicting", files: ["a"], base: "main" } });
+    await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflict-cleared" } });
+    expect(bugs.get("bt1")).toMatchObject({ stage: "monitoring", conflict: null, gate: null });
+  });
+  // Review Focus 1
+  it("a late finding for a task that moved on is ignored, not an error", async () => {
+    const { engine, bugs } = await onMonitoringTask();
+    await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflicting", files: ["a"], base: "main" } });
+    await engine.approve("bt1");
+    await expect(engine.onConflictFinding({ taskId: "bt1", event: { type: "conflict-cleared" } })).resolves.toBeUndefined();
+    expect(bugs.get("bt1").stage).toBe("rebase");
+  });
+});
+
+describe("conflict checks and the engine", () => {
+  it("records why a conflict check couldn't run, and clears it", async () => {
+    const { engine, bugs } = await onMonitoringTask();
+    await engine.onConflictProblem("bt1", "Couldn't check for conflicts: could not resolve host");
+    expect(bugs.get("bt1").conflictCheckError).toBe("Couldn't check for conflicts: could not resolve host");
+    await engine.onConflictProblem("bt1", null);
+    expect(bugs.get("bt1").conflictCheckError).toBeNull();
+  });
+  it("a merged PR nudges a re-check of its repo — its siblings are what a merge can break", async () => {
+    const { engine, bugs } = await onMonitoringTask();
+    const nudged: string[] = []; engine.setConflictNudge(r => nudged.push(r));
+    await engine.onPrFinding({ taskId: "bt1", pr: { ...bugs.get("bt1").pr!, state: "MERGED" }, event: { type: "pr-merged" } });
+    await until(() => nudged.length > 0, 2000);
+    expect(nudged).toEqual([bugs.get("bt1").sourceRepo]);
+  });
+});
+
+describe("at most N bug-fix agents at once", () => {
+  const finishCurrent = async (id: string, from: string) => { fake.emit(success("done")); fake.end(); await until(() => bugs.get(id).stage !== from, 2000); };
+  it("a run over the cap waits its turn, and starts when a slot frees", async () => {
+    engine.setMaxConcurrentRuns(1);
+    const a = await engine.intake({ issueRef: "PAY-42", repo });
+    const b = await engine.intake({ issueRef: "PAY-43", repo });
+    expect(b.stage).toBe("analyzing"); expect(b.queuedAt).toEqual(expect.any(String));
+    expect(fake.calls).toHaveLength(1);
+    await bugs.writeArtifact(a.id, "plan.md", "Verdict: change needed\n## Regression tests\n- t\n");
+    await finishCurrent(a.id, "analyzing");
+    await until(() => fake.calls.length === 2, 2000);
+    expect(bugs.get(b.id).queuedAt).toBeNull();
+    expect(fake.calls[1].prompt).toContain("PAY-43");
+  });
+  // Review Focus 3
+  it("cancelling a queued task takes it out of line; a failed dispatch frees its slot", async () => {
+    engine.setMaxConcurrentRuns(1);
+    const a = await engine.intake({ issueRef: "PAY-42", repo });
+    const b = await engine.intake({ issueRef: "PAY-43", repo });
+    const c = await engine.intake({ issueRef: "PAY-44", repo });
+    await engine.cancel(b.id);
+    expect(bugs.get(b.id).stage).toBe("cancelled");
+    await engine.cancel(a.id);                                 // frees the slot: c (not b) starts
+    await until(() => fake.calls.length === 2, 2000);
+    expect(fake.calls[1].prompt).toContain("PAY-44"); expect(bugs.get(c.id).queuedAt).toBeNull();
+  });
+  // Final review #1: the note lived only in memory; a queue makes "queued across a restart" likely.
+  it("a queued stage keeps its instructions across a restart", async () => {
+    engine.setMaxConcurrentRuns(1);
+    const a = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(a.id, "plan.md", "Verdict: change needed\n## Regression tests\n- t\n");
+    fake.emit(success("done")); fake.end(); await until(() => bugs.get(a.id).stage === "plan-review", 2000);
+    await engine.intake({ issueRef: "PAY-43", repo });                 // takes the only slot
+    await engine.requestChanges(a.id, "use the existing retry helper");
+    expect(bugs.get(a.id)).toMatchObject({ stage: "analyzing", queuedAt: expect.any(String) });
+    const before = fake.calls.length;
+    const engine2 = new BugFixEngine({ ...(engine as any).deps });      // a restart: nothing in memory
+    engine2.setMaxConcurrentRuns(4); engine2.attach();
+    await until(() => fake.calls.length > before, 2000);
+    expect(fake.calls.at(-1)!.prompt).toContain("use the existing retry helper");
+    expect(bugs.get(a.id).queuedNote).toBeNull();
+  });
+  it("a restart leaves queued tasks queued, and the next engine resumes them", async () => {
+    engine.setMaxConcurrentRuns(1);
+    await engine.intake({ issueRef: "PAY-42", repo });
+    const b = await engine.intake({ issueRef: "PAY-43", repo });
+    await recoverStuckBugTasks(bugs);
+    expect(bugs.get(b.id)).toMatchObject({ stage: "analyzing", queuedAt: expect.any(String) });
+    const before = fake.calls.length;
+    const engine2 = new BugFixEngine({ ...(engine as any).deps });
+    engine2.setMaxConcurrentRuns(4);
+    engine2.attach();
+    await until(() => fake.calls.length > before, 2000);
+    expect(fake.calls.at(-1)!.prompt).toContain("PAY-43");
+  });
+});
+
+describe("a click meant for one gate never acts on another", () => {
+  // Final review #4: a conflict can move a task out of "approved" on its own; a Merge click that was
+  // already on its way must not become "start a rebase".
+  it("approve names the gate it was for, and is refused when the task has moved to another", async () => {
+    const { engine, bugs } = await onMonitoringTask();
+    await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflicting", files: ["a"], base: "main" } });
+    await expect(engine.approve("bt1", "merge")).rejects.toThrow(/moved on|conflict/i);
+    expect(bugs.get("bt1").stage).toBe("conflict");
+    await expect(engine.mergeTask("bt1", "squash")).rejects.toThrow(/moved on|conflict/i);
+    expect((await engine.approve("bt1", "conflict")).stage).toBe("rebase");
+  });
+});
+
+describe("Resolve all conflicts", () => {
+  it("approves only the tasks waiting at the conflict gate", async () => {
+    const { engine, bugs } = await onMonitoringTask();
+    expect(await engine.resolveConflicts()).toEqual([]);
+    await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflicting", files: ["a"], base: "main" } });
+    expect(await engine.resolveConflicts()).toEqual(["bt1"]);
+    expect(bugs.get("bt1").stage).toBe("rebase");
+  });
+});
+
 describe("a rebase round", () => {
   it("dispatches rebase on a conflict and opens a diff gate labelled rebase", async () => {
     const { engine, bugs, fake, gitState } = await onMonitoringTask();
     await engine.onPrFinding({ taskId: "bt1", pr: { ...gitState.pr, mergeable: "CONFLICTING" }, event: { type: "conflicting" } });
+    expect(bugs.get("bt1").stage).toBe("conflict");          // waits for permission (spec 2026-10-07)
+    await engine.approve("bt1");
     expect(bugs.get("bt1").stage).toBe("rebase");
     gitState.head = "ddd"; gitState.commitsAhead = 1;
     await finishStage(fake);
@@ -1170,6 +1359,7 @@ describe("a rebase round", () => {
   it("fails the stage when the rebase was left half-finished or conflicted", async () => {
     const { engine, bugs, fake, gitState } = await onMonitoringTask();
     await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "conflicting" } });
+    await engine.approve("bt1");
     gitState.rebaseState = { inProgress: true, conflicted: ["src/a.ts"] };
     await finishStage(fake);
     const t = bugs.get("bt1");
@@ -1185,6 +1375,7 @@ describe("a rebase round", () => {
   it("re-pins approvedHead to the post-rebase head, so the subsequent push does not trip the pin", async () => {
     const { engine, bugs, fake, gitState } = await onMonitoringTask();
     await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "conflicting" } });
+    await engine.approve("bt1");
     gitState.head = "ddd"; gitState.commitsAhead = 1;
     await finishStage(fake);
     let t = bugs.get("bt1");

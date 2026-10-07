@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Bug, CheckCircle2, CircleAlert, FolderOpen, GitBranch, X } from "lucide-react";
-import { api, ApiError } from "../api";
+import { api } from "../api";
+import { useBugStart } from "../hooks/useBugStart";
 import type { BugTask, IssueSummary, SetupReport } from "../types";
 
 /** Start a bug-fix task: pick a ticket (list or URL), pick the repo, check preflight. */
@@ -9,16 +10,8 @@ export function BugLauncher({ onCreated, onClose, onOpenSettings }: { onCreated?
   const [issues, setIssues] = useState<IssueSummary[] | null>(null);
   const [issuesErr, setIssuesErr] = useState<string | null>(null);
   const [issueRef, setIssueRef] = useState("");
-  const [repo, setRepo] = useState("");
-  const [mergePolicy, setMergePolicy] = useState<"ask" | "auto">("ask");
-  const [projectRepos, setProjectRepos] = useState<Record<string, string>>({});
-  const [preflight, setPreflight] = useState<{ ok: boolean; problems: string[]; remote?: string | null; baseBranch?: string | null; branches?: string[] } | null>(null);
-  const [base, setBase] = useState("");
-  // The ticket's fix may already be on the base: the server listed the commits; the human may start anyway.
-  const [alreadyOnBase, setAlreadyOnBase] = useState(false);
-  const [checking, setChecking] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const st = useBugStart({ issueRef, onCreated: t => { onCreated?.(t); onClose(); } });
+  const { repo, setRepo, repoTrimmed, repoValid, preflight, checking, base, setBase, mergePolicy, setMergePolicy, busy, err, alreadyOnBase, blocked, start } = st;
 
   useEffect(() => {
     let live = true;
@@ -30,46 +23,12 @@ export function BugLauncher({ onCreated, onClose, onOpenSettings }: { onCreated?
     api.myIssues().then(v => { if (live) setIssues(v); }).catch(e => { if (live) setIssuesErr((e as Error).message); });
     return () => { live = false; };
   }, []);
-  useEffect(() => {
-    let live = true;
-    api.getIntegrations().then(i => { if (live) setProjectRepos(i.projectRepos ?? {}); }).catch(() => {});
-    return () => { live = false; };
-  }, []);
-
-  const repoTrimmed = repo.trim();
-  const repoValid = repoTrimmed.startsWith("/");
-
-  // Any previous preflight result describes the OLD repo value, not this one — it must never
-  // outlive a repo edit, and Start must stay blocked until a fresh check for THIS value lands.
-  useEffect(() => {
-    setPreflight(null);
-    if (!repoTrimmed || !repoValid) { setChecking(false); return; }
-    let live = true;
-    setChecking(true);
-    const t = setTimeout(() => {
-      api.bugPreflight(repoTrimmed)
-        .then(p => { if (live) { setPreflight(p); setBase(p.baseBranch ?? ""); setChecking(false); } })
-        .catch(e => { if (live) { setErr((e as Error).message); setChecking(false); } });
-    }, 250);
-    return () => { live = false; clearTimeout(t); };
-  }, [repoTrimmed, repoValid]);
 
   const pickIssue = (i: IssueSummary) => {
     setIssueRef(i.key);
-    const remembered = projectRepos[i.key.split("-")[0] ?? ""];
+    const remembered = st.rememberedFor(i.key);
     if (remembered) setRepo(remembered);
   };
-
-  useEffect(() => { setAlreadyOnBase(false); }, [issueRef, repoTrimmed, base]);
-  const start = async (startAnyway = false) => {
-    setBusy(true); setErr(null);
-    // Create first, then tell the parent: `onCreated?.(await …)` would skip the request entirely without a callback.
-    try { const created = await api.createBugTask({ issueRef: issueRef.trim(), repo: repoTrimmed, mergePolicy, ...(base ? { baseBranch: base } : {}), ...(startAnyway ? { startAnyway: true } : {}) }); onCreated?.(created); onClose(); }
-    catch (e) { setErr((e as Error).message); setAlreadyOnBase(e instanceof ApiError && e.code === "already-on-base"); }
-    finally { setBusy(false); }
-  };
-
-  const blocked = !issueRef.trim() || !repoTrimmed || !repoValid || busy || checking || !preflight || !preflight.ok;
 
   // Only checks that actually stop a bug fix from starting: a missing forge token, for
   // instance, fails the forge call later with its own clear message and must not nag here

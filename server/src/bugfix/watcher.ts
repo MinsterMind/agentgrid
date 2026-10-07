@@ -57,6 +57,17 @@ function statesDiffer(pr: PrInfo, prev: PrInfo): boolean {
     || pr.checks !== prev.checks || pr.mergeable !== prev.mergeable || pr.headSha !== prev.headSha;
 }
 
+/**
+ * The listed view says nothing changed. A listing may lack fields (Bitbucket's carries no checks or
+ * mergeable): a missing field is not a change — except checks we were waiting on, which can only be
+ * learnt by reading the PR. GitHub's updatedAt needn't move when CI finishes, so checks are compared too.
+ */
+function listedSame(now: PrInfo, prev: PrInfo): boolean {
+  if (now.lastSeenEventAt !== prev.lastSeenEventAt || now.headSha !== prev.headSha || now.reviewDecision !== prev.reviewDecision || now.state !== prev.state) return false;
+  if (now.checks === null ? prev.checks === "PENDING" : now.checks !== prev.checks) return false;
+  return now.mergeable === null || now.mergeable === prev.mergeable;
+}
+
 /** How a human describes what reviewers said, for the agent's prompt. Exported so a manual
  *  "address comments" click (engine.ts's `recentComments`) renders the same way the watcher
  *  itself would, rather than inventing a second rendering. */
@@ -103,9 +114,11 @@ export class PrWatcher {
     const watched = bugs.list().filter(t => WATCHED_STAGES.includes(t.stage) && t.pr);
     const orphans = bugs.list().filter(awaitsExternalPr);
     const live = new Set([...watched, ...orphans].map(t => t.id));
-    for (const id of [...this.backoff.keys()]) if (!live.has(id)) this.backoff.delete(id);
+    const liveRepos = new Set(watched.map(t => `repo:${t.sourceRepo}`));
+    for (const id of [...this.backoff.keys()]) if (!live.has(id) && !liveRepos.has(id)) this.backoff.delete(id);
 
-    for (const task of watched) {
+    if (forge.listOpenPrs) await this.sweepByRepo(watched, forge);
+    else for (const task of watched) {
       const b = this.backoff.get(task.id) ?? { dueAt: this.now(), intervalMs: this.baseMs, failures: 0, warned: false };
       if (this.now() < b.dueAt) { this.backoff.set(task.id, b); continue; }
       await this.tick(task, b, forge);
@@ -120,7 +133,47 @@ export class PrWatcher {
     }
   }
 
-  private async tick(task: BugTask, b: Backoff, forge: ForgeAdapter): Promise<void> {
+  /**
+   * One listing call per repo instead of one read per PR (spec 2026-10-07 §6). A PR is read on its own
+   * only when its listed view moved (new activity, head or review) or it left the open list (merged or
+   * closed — never read as "nothing changed"). A failed listing falls back to per-PR reads this once.
+   */
+  private async sweepByRepo(watched: BugTask[], forge: ForgeAdapter): Promise<void> {
+    const byRepo = new Map<string, BugTask[]>();
+    for (const t of watched) byRepo.set(t.sourceRepo, [...(byRepo.get(t.sourceRepo) ?? []), t]);
+    for (const [repo, tasks] of byRepo) {
+      const key = `repo:${repo}`;
+      const rb = this.backoff.get(key) ?? { dueAt: this.now(), intervalMs: this.baseMs, failures: 0, warned: false };
+      if (this.now() < rb.dueAt) { this.backoff.set(key, rb); continue; }
+      const listed = await forge.listOpenPrs!(repo);
+      const per = (t: BugTask): Backoff => this.backoff.get(t.id) ?? { dueAt: this.now(), intervalMs: this.baseMs, failures: 0, warned: false };
+      if ("unavailable" in listed) {
+        for (const t of tasks) await this.tick(t, per(t), forge);
+        this.schedule(key, rb, false);
+        continue;
+      }
+      const byNumber = new Map(listed.prs.map(p => [p.number, p]));
+      let changed = false;
+      for (const t of tasks) {
+        const now = byNumber.get(t.pr!.number);
+        if (!now) {
+          // Not in the listing (merged or closed, opened by someone else, past the listing's limit): read it
+          // on its own backoff, so it can't pin the whole repo's cadence.
+          const b = per(t);
+          if (this.now() < b.dueAt) { this.backoff.set(t.id, b); continue; }
+          await this.tick(t, b, forge);
+          continue;
+        }
+        if (listedSame(now, t.pr!)) { await this.deps.onChecked?.(t.id, new Date(this.now()).toISOString()); continue; }
+        // The repo backs off only when reads find nothing new — a listing that merely looks different must not pin it.
+        if (await this.tick(t, per(t), forge)) changed = true;
+      }
+      this.schedule(key, rb, changed);
+    }
+  }
+
+  /** True when the read found something new (a state change, or an event to apply). */
+  private async tick(task: BugTask, b: Backoff, forge: ForgeAdapter): Promise<boolean> {
     // Stamped before the call, so the stamp brackets the read rather than trailing it: two ticks
     // that overlap then order by when each one *started* looking, which is what makes an older
     // view recognisable as older.
@@ -135,14 +188,14 @@ export class PrWatcher {
       if (first) b.warned = true;
       this.schedule(task.id, b, false);
       if (first) await this.deps.onFinding({ taskId: task.id, pr: task.pr, event: null, unavailable: lookup.unavailable, checkedAt });
-      return;
+      return false;
     }
     b.failures = 0; b.warned = false;
 
     if (lookup.found === null) {
       this.schedule(task.id, b, true);
       await this.deps.onFinding({ taskId: task.id, pr: null, event: { type: "pr-closed" }, checkedAt });
-      return;
+      return true;
     }
 
     const pr = lookup.found;
@@ -152,7 +205,7 @@ export class PrWatcher {
     // that field alone says "something happened", not "something that matters happened".
     const stateChanged = statesDiffer(pr, prev);
     const anyChange = pr.lastSeenEventAt !== prev.lastSeenEventAt || stateChanged;
-    if (!anyChange) { this.schedule(task.id, b, false); await this.deps.onChecked?.(task.id, checkedAt); return; }
+    if (!anyChange) { this.schedule(task.id, b, false); await this.deps.onChecked?.(task.id, checkedAt); return false; }
 
     const event = await this.decide(task, pr, forge);
     // Reset to base only when the tick produced an event, or the change was to a state field.
@@ -160,6 +213,7 @@ export class PrWatcher {
     // the card needs the latest `lastSeenEventAt` — but the backoff keeps growing regardless.
     this.schedule(task.id, b, event !== null || stateChanged);
     await this.deps.onFinding({ taskId: task.id, pr, event, checkedAt });
+    return event !== null || stateChanged;
   }
 
   /** Order matters: a conflicting PR cannot be merged, so conflict outranks an approval. */

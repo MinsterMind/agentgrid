@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect, useState } from "react";
-import type { Agent, Assignment, BugTask, Decision, MemoryFile, RoleDef, SessionInfo, SessionActivity } from "../types";
+import type { Agent, Assignment, BugTask, Decision, MemoryFile, PermissionRequest, RoleDef, SessionInfo, SessionActivity } from "../types";
 import { api } from "../api";
-import { PendingPrompt } from "./PendingPrompt";
+import { PendingPrompt, asPending } from "./PendingPrompt";
 import { BugPanel } from "./BugPanel";
 import { ErrorCard } from "./ErrorCard";
 import { Markdown } from "./Markdown";
@@ -20,7 +20,7 @@ function fallbackCopy(text: string): void {
   document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); } catch { /* ignore */ } ta.remove();
 }
 
-export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, onOpenTerminal, onTranscript, onDelete, hasSession, terminalSessionId, live, openTerminalRequest, activity, onSay, onReset, onRenameSession, bugTask, onBugChanged }: {
+export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, onOpenTerminal, onTranscript, onDelete, hasSession, terminalSessionId, live, openTerminalRequest, activity, onSay, onReset, onRenameSession, bugTask, onBugChanged, permission }: {
   agent: Agent | null; role: RoleDef | undefined; assignment: Assignment | null;
   onDecide: (agentId: string, toolUseId: string, d: Decision) => void; onCancel: (id: string) => void; onAck: (id: string) => void; onOpenTerminal: (id: string) => void; onTranscript?: (id: string) => void; onDelete: (id: string) => void; hasSession?: boolean;
   /** Session the Terminal tab would open; null when the agent has none yet. */ terminalSessionId?: string | null;
@@ -32,6 +32,8 @@ export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, 
   onRenameSession?: (sessionId: string, title: string) => Promise<unknown>;
   /** In-flight bug-fix task for the selected agent, if any. */ bugTask?: BugTask | null;
   onBugChanged?: (t: BugTask) => void;
+  /** An open permission request from this agent's embedded terminal — answered here like an SDK request. */
+  permission?: PermissionRequest | null;
 }) {
   const [feed, setFeed] = useState<Entry[]>([]); const [memory, setMemory] = useState<MemoryFile[]>([]);
   const [tab, setTab] = useState<"details" | "terminal">("details"); const [wide, setWide] = useState(false);
@@ -86,12 +88,13 @@ export function SidePanel({ agent, role, assignment, onDecide, onCancel, onAck, 
         </form>
       )}</div></div>
       {bugTask && <BugPanel task={bugTask} onChanged={t => onBugChanged?.(t)} onTranscript={onTranscript} />}
+      {permission && <PendingPrompt who={agent.displayName} pending={asPending(permission)} onDecide={d => onDecide(agent.id, permission.id, d)} />}
       {activity && (
         <div className={`status ${activity.phase}`} data-testid="session-status">
           <div className="st-head"><span className={`dot ${activity.phase}`} />
-            {activity.phase === "waiting" ? (activity.question ? "Asking you a question" : `Waiting for approval: ${activity.pendingTool?.name ?? "tool"}`) : activity.phase === "working" ? "Working…" : activity.phase === "idle" ? "Idle — your turn" : "No activity yet"}
+            {activity.phase === "waiting" ? "Asking you a question" : activity.phase === "working" ? (activity.runningTool ? `Running ${activity.runningTool.name}…` : "Working…") : activity.phase === "idle" ? "Idle — your turn" : "No activity yet"}
             <span className="dim" style={{ marginLeft: "auto" }}>{activity.updatedAt ? elapsed(activity.updatedAt) + " ago" : ""}</span></div>
-          {activity.pendingTool && !activity.question && <div className="st-tool">{activity.pendingTool.summary}</div>}
+          {activity.runningTool && !activity.question && <div className="st-tool">{activity.runningTool.summary}</div>}
           {activity.lastMessage && <div className="st-msg">{activity.lastMessage}</div>}
           {activity.question && (
             <div className="qbox">

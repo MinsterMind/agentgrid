@@ -8,6 +8,7 @@ import type { Agent, BugTask, GridEvent, GridState, RoleDef } from "../src/types
 
 vi.mock("../src/api", () => ({
   api: {
+    myIssues: vi.fn(async () => []), issue: vi.fn(async () => null),
     subscribe: vi.fn(),
     say: vi.fn(() => Promise.resolve({ via: "terminal" })),
     resetSession: vi.fn(() => Promise.resolve({})),
@@ -46,12 +47,12 @@ function agent(id: string, state: Agent["state"]): Agent {
   return { id, role: "coder", repo: "/tmp", displayName: id, createdAt: new Date().toISOString(), state, currentAssignmentId: null };
 }
 
-function snapshot(agents: Agent[], bugTasks: BugTask[] = []): GridState { return { roles: [role], agents, assignments: [], liveSessions: [], sessionStatuses: [], bugTasks }; }
+function snapshot(agents: Agent[], bugTasks: BugTask[] = []): GridState { return { roles: [role], agents, assignments: [], liveSessions: [], sessionStatuses: [], permissions: [], bugTasks }; }
 
 function bugTask(id: string, stage: BugTask["stage"], error: string | null = null, outcome: BugTask["outcome"] = null): BugTask {
   return {
     id, issue: { key: "PAY-42", title: "Boom", url: "u", status: "Open", priority: "High", description: "d", acceptanceCriteria: [] },
-    trackerProject: "PAY", sourceRepo: "/r", worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", baseRef: "origin/main", ticketCommits: [], verdict: null, report: null,
+    trackerProject: "PAY", sourceRepo: "/r", worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", baseRef: "origin/main", ticketCommits: [], verdict: null, report: null, plannedTests: [], testsInDiff: null, testOverride: null, conflict: null, conflictCheckError: null, queuedAt: null, queuedNote: null,
     agentId: "bugfix@w", stage, gate: null, mergePolicy: "ask", mergeMethod: "squash", approvedHead: null,
     outcome, checksRoundHead: null, pr: null, prCheckedAt: null, costUsd: 0, history: [], error, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     feedbackRounds: 0, assumptions: [], assumptionsProblem: null, assumptionsToken: null,
@@ -174,7 +175,7 @@ describe("App Escape handling", () => {
     render(<App />);
     const a = { ...agent("A", "waiting"), currentAssignmentId: "a1" };
     const asg = { id: "a1", agentId: "A", prompt: "p", createdAt: "", startedAt: null, endedAt: null, sessionId: null, state: "waiting" as const,
-      activity: "", pending: { kind: "permission" as const, toolUseId: "tu1", toolName: "Bash", input: { command: "ls" }, suggestions: [] }, outcome: null, error: null, turns: 0, costUsd: 0 };
+      activity: "", pending: { kind: "permission" as const, toolUseId: "tu1", toolName: "Bash", input: { command: "ls" }, suggestions: [], suggestedRule: "Bash(ls:*)", ruleIsBroad: false }, outcome: null, error: null, turns: 0, costUsd: 0 };
     act(() => onSnapshot({ ...snapshot([a]), assignments: [asg] }));
     (api.answer as ReturnType<typeof vi.fn>).mockRejectedValueOnce(Object.assign(new Error("no pending prompt for tu1"), { status: 409 }));
     await userEvent.click(within(screen.getByTestId("tile-request")).getByRole("button", { name: "Allow" }));

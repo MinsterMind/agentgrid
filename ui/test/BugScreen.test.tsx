@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { BugScreen } from "../src/components/BugScreen";
+import { BugScreen, mergeRows } from "../src/components/BugScreen";
 import type { BugTask } from "../src/types";
 
 const { ApiError } = vi.hoisted(() => {
@@ -17,6 +17,8 @@ const getSetup = vi.fn(async (): Promise<unknown> => SETUP);
 const bugPlan = vi.fn(async () => ({ markdown: "## Root cause\nA\n\n## Fix\nB" }));
 const bugDiff = vi.fn(async () => ({ patch: "", files: [], additions: 0, deletions: 0 }));
 const approveBug = vi.fn(async (_id: string, _m?: string) => task("implementing"));
+const resolveConflicts = vi.fn(async () => ({ ids: ["bt1", "bt2"] }));
+const myIssues = vi.fn(async (): Promise<Array<{ key: string; title: string; url: string; status: string; priority: string }>> => []);
 vi.mock("../src/api", () => ({
   ApiError,
   api: {
@@ -24,23 +26,25 @@ vi.mock("../src/api", () => ({
     approveBug: (id: string, m?: string) => (m ? approveBug(id, m) : approveBug(id)),
     requestBugChanges: vi.fn(), cancelBug: vi.fn(), retryBug: vi.fn(), listBugTasks: vi.fn(async () => []),
     addressComments: vi.fn(), dismissBug: vi.fn(),
+    myIssues: () => myIssues(), issue: vi.fn(async () => ({ key: "PAY-1", title: "Not started", url: "u", status: "Open", priority: "High", description: "", acceptanceCriteria: [] })),
+    getIntegrations: vi.fn(async () => ({ projectRepos: {} })), resolveConflicts: () => resolveConflicts(), bugPreflight: vi.fn(async () => ({ ok: true, problems: [] })), createBugTask: vi.fn(), pickFolder: vi.fn(),
   },
 }));
 
 const ISSUE = { key: "PAY-42", title: "Refresh token rotates twice", url: "https://x/PAY-42", status: "Open", priority: "High", description: "", acceptanceCriteria: [] as string[] };
 function task(stage: BugTask["stage"], extra: Partial<BugTask> = {}): BugTask {
-  return { id: "bt1", issue: ISSUE, trackerProject: "PAY", sourceRepo: "/r", worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", baseRef: "origin/main", ticketCommits: [], verdict: null, report: null, agentId: "bugfix@r",
+  return { id: "bt1", issue: ISSUE, trackerProject: "PAY", sourceRepo: "/r", worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", baseRef: "origin/main", ticketCommits: [], verdict: null, report: null, plannedTests: [], testsInDiff: null, testOverride: null, conflict: null, conflictCheckError: null, queuedAt: null, queuedNote: null, agentId: "bugfix@r",
     stage, gate: stage === "plan-review" ? { kind: "plan", openedAt: "" } : stage === "diff-review" ? { kind: "diff", openedAt: "" } : stage === "approved" ? { kind: "merge", openedAt: "" } : null,
     mergePolicy: "ask", mergeMethod: "squash", approvedHead: null, outcome: null, checksRoundHead: null, pr: null, prCheckedAt: null,
     costUsd: 0.4, history: [{ stage: "intake", at: "2026-10-05T10:00:00Z", note: "" }, { stage, at: "2026-10-05T10:05:00Z", note: "" }], error: null,
     createdAt: "", updatedAt: "2026-10-05T10:05:00Z", feedbackRounds: 0, assumptions: [], assumptionsProblem: null, assumptionsToken: null, ...extra };
 }
 
-beforeEach(() => { vi.clearAllMocks(); getSetup.mockImplementation(async () => SETUP); });
+beforeEach(() => { vi.clearAllMocks(); getSetup.mockImplementation(async () => SETUP); myIssues.mockImplementation(async () => []); });
 
 import { initial } from "../src/state/reducer";
 
-const stateWith = (tasks: BugTask[]) => ({ ...initial, bugTasks: Object.fromEntries(tasks.map(t => [t.id, t])) });
+const stateWith = (tasks: BugTask[]) => ({ ...initial, loaded: true, bugTasks: Object.fromEntries(tasks.map(t => [t.id, t])) });
 const renderScreen = (tasks: BugTask[], selectedId: string | null = tasks[0]?.id ?? null, extra = {}) => {
   const onSelect = vi.fn();
   render(<BugScreen state={stateWith(tasks) as never} selectedId={selectedId} onSelect={onSelect} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={vi.fn()} {...extra} />);
@@ -176,7 +180,7 @@ describe("BugScreen — the list", () => {
 
   it("heads the list with its count", () => {
     renderScreen([task("implementing"), task("done", { id: "bt2" })], "bt1");
-    expect(screen.getByRole("listbox").closest(".buglist")!.querySelector(".lh")).toHaveTextContent(/Bug fixes\s*2/);
+    expect(screen.getByRole("listbox").closest(".buglist")!.querySelector(".lh")).toHaveTextContent(/My bugs\s*2/);
   });
 });
 
@@ -252,4 +256,115 @@ describe("BugScreen — review fixes", () => {
   });
 });
 
+});
+
+describe("BugScreen — answering the agent", () => {
+  it("shows the bug agent's permission request in Now, and answers it there", async () => {
+    const onDecide = vi.fn();
+    const state = { ...stateWith([task("implementing")]),
+      agents: [{ id: "bugfix@r", role: "bugfix", repo: "/w", displayName: "PAY-42", createdAt: "", state: "free", currentAssignmentId: null }],
+      permissions: { pr7: { id: "pr7", agentId: "bugfix@r", source: "terminal" as const, sessionId: "s", toolName: "Bash", input: { command: "gh pr comment 7" }, suggestedRule: "Bash(gh pr:*)", ruleIsBroad: false, createdAt: "" } } };
+    render(<BugScreen state={state as never} selectedId="bt1" onSelect={vi.fn()} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={vi.fn()} onDecide={onDecide} />);
+    const now = screen.getByRole("region", { name: "Now" });
+    expect(within(now).getByTestId("pending-permission")).toHaveTextContent("gh pr comment 7");
+    await userEvent.click(within(now).getByRole("button", { name: /^allow$/i }));
+    expect(onDecide).toHaveBeenCalledWith("bugfix@r", "pr7", { kind: "allow" });
+  });
+  it("an SDK run's pending request is answered there too", async () => {
+    const onDecide = vi.fn();
+    const state = { ...stateWith([task("implementing")]),
+      agents: [{ id: "bugfix@r", role: "bugfix", repo: "/w", displayName: "PAY-42", createdAt: "", state: "waiting", currentAssignmentId: "a1" }],
+      assignments: { a1: { id: "a1", agentId: "bugfix@r", prompt: "p", createdAt: "", startedAt: null, endedAt: null, sessionId: "s", state: "waiting", activity: "", outcome: null, error: null, turns: 0, costUsd: 0,
+        pending: { kind: "permission", toolUseId: "tu1", toolName: "Bash", input: { command: "npm test" }, suggestions: [], suggestedRule: "Bash(npm test:*)", ruleIsBroad: false } } } };
+    render(<BugScreen state={state as never} selectedId="bt1" onSelect={vi.fn()} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={vi.fn()} onDecide={onDecide} />);
+    await userEvent.click(within(screen.getByRole("region", { name: "Now" })).getByRole("button", { name: "Always allow Bash(npm test:*)" }));
+    expect(onDecide).toHaveBeenCalledWith("bugfix@r", "tu1", { kind: "always" });
+  });
+});
+
+describe("BugScreen — every bug assigned to me", () => {
+  const MINE = [{ key: "PAY-1", title: "Not started", url: "u", status: "Open", priority: "High" }, { key: "PAY-42", title: "Refresh token rotates twice", url: "u", status: "Open", priority: "Low" }];
+  const keys = () => screen.getAllByRole("option").map(r => r.querySelector(".k")!.textContent);
+  it("lists every open bug assigned to me, started or not — active work first", async () => {
+    myIssues.mockResolvedValue(MINE);
+    renderScreen([task("implementing")]);
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+    expect(keys()).toEqual(["PAY-42", "PAY-1"]);
+    const unstarted = screen.getAllByRole("option")[1];
+    expect(unstarted).toHaveTextContent("Not started"); expect(unstarted).toHaveTextContent("High");
+  });
+  it("a started task whose ticket left my list sits in its own group, last", async () => {
+    myIssues.mockResolvedValue([MINE[0]]);
+    renderScreen([task("monitoring", { id: "bt9", issue: { ...ISSUE, key: "PAY-9", title: "Old one" } })], "bt9");
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+    expect(keys()).toEqual(["PAY-1", "PAY-9"]);
+    expect(screen.getByText("Not assigned to you or closed")).toBeInTheDocument();
+  });
+  // Review Focus 5
+  it("with the tracker down, started tasks still show, with the error and a Refresh", async () => {
+    myIssues.mockRejectedValue(new Error("tracker unavailable"));
+    renderScreen([task("monitoring")]);
+    expect(await screen.findByText(/tracker unavailable/)).toBeInTheDocument();
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+    myIssues.mockResolvedValue(MINE);
+    await userEvent.click(screen.getByRole("button", { name: /refresh/i }));
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+    expect(screen.queryByText(/tracker unavailable/)).toBeNull();
+  });
+  it("clicking an unstarted bug routes to its ticket", async () => {
+    myIssues.mockResolvedValue(MINE);
+    const onSelectTicket = vi.fn();
+    renderScreen([task("implementing")], "bt1", { onSelectTicket });
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+    await userEvent.click(screen.getAllByRole("option")[1]);
+    expect(onSelectTicket).toHaveBeenCalledWith("PAY-1");
+  });
+  it("a selected ticket shows its details instead of a task", async () => {
+    myIssues.mockResolvedValue(MINE);
+    renderScreen([task("implementing")], null, { selectedTicket: "PAY-1", onSelectTicket: vi.fn() });
+    expect(await screen.findByTestId("ticket-detail")).toBeInTheDocument();
+    expect(screen.getAllByRole("option")[1]).toHaveAttribute("aria-selected", "true");
+  });
+  it("the empty state shows only when there are no tasks and no assigned bugs", async () => {
+    myIssues.mockResolvedValue([MINE[0]]);
+    renderScreen([]);
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+    expect(screen.queryByText("No bug fixes yet")).toBeNull();
+  });
+});
+
+describe("mergeRows", () => {
+  it("keeps every task: a second task for the same ticket gets its own row", () => {
+    const active = task("implementing", { id: "bt3" }); const old = task("cancelled", { id: "bt1" });
+    const rows = mergeRows([{ key: "PAY-42", title: "x", url: "u", status: "Open", priority: "High" }], [{ t: active, status: "running" }, { t: old, status: "cancelled" }]);
+    expect(rows.map(r => r.task?.id)).toEqual(["bt3", "bt1"]);
+    expect(rows.every(r => r.assigned)).toBe(true);
+  });
+});
+
+describe("BugScreen — conflicts and the queue", () => {
+  const C = { files: ["a"], base: "main", detectedAt: "", returnTo: "monitoring" as const };
+  it("offers Resolve all when bugs wait at the conflict gate", async () => {
+    renderScreen([task("conflict", { gate: { kind: "conflict", openedAt: "" }, conflict: C }), task("conflict", { id: "bt2", issue: { ...ISSUE, key: "PAY-43" }, gate: { kind: "conflict", openedAt: "" }, conflict: C })]);
+    await userEvent.click(screen.getByRole("button", { name: "Resolve all 2 conflicts" }));
+    expect(resolveConflicts).toHaveBeenCalled();
+  });
+  it("no conflicts, no Resolve all; queued bugs say so in the list", () => {
+    renderScreen([task("analyzing", { queuedAt: "2026-10-07T10:00:00Z" })]);
+    expect(screen.queryByRole("button", { name: /Resolve all/ })).toBeNull();
+    expect(screen.getAllByRole("option")[0]).toHaveTextContent("Queued (1 of 1)");
+  });
+});
+
+describe("BugScreen — a link to a bug that hasn't loaded yet", () => {
+  // Found by the conflicts e2e: the tracker list arrived before the task list, and the screen
+  // "fell back" from #/bugs/bt1 to the first assigned ticket — a reload landed on the wrong bug.
+  it("doesn't fall back to another row until the task list has loaded", async () => {
+    myIssues.mockResolvedValue([{ key: "PAY-1", title: "Other", url: "u", status: "Open", priority: "High" }]);
+    const onSelect = vi.fn(); const onSelectTicket = vi.fn();
+    render(<BugScreen state={{ ...initial, loaded: false } as never} selectedId="bt1" onSelect={onSelect} onSelectTicket={onSelectTicket} onBugChanged={vi.fn()} onTranscript={vi.fn()} onOpenSettings={vi.fn()} onFixBug={vi.fn()} />);
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+    await new Promise(r => setTimeout(r, 50));                       // the fallback runs in an effect, after the list renders
+    expect(onSelectTicket).not.toHaveBeenCalled(); expect(onSelect).not.toHaveBeenCalled();
+  });
 });

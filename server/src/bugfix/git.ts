@@ -18,7 +18,9 @@ export const worktreePath = (repo: string, issueKey: string) => path.join(repo, 
 const defaultRun = (cwd: string, args: string[]) => new Promise<string>((res, rej) =>
   execFile("git", args, { cwd, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
     if (!err) { res(String(stdout)); return; }
-    const e = new Error(String(stderr).trim() || err.message) as Error & { code?: number | string | null };
+    const e = new Error(String(stderr).trim() || err.message) as Error & { code?: number | string | null; stdout?: string };
+    // Some commands answer through a non-zero exit (merge-tree: 1 = conflicts, listed on stdout).
+    e.stdout = String(stdout);
     // execFile sets `err.code` to the child's numeric exit code on a non-zero exit, or to a
     // string (e.g. 'ENOENT') on a spawn failure. Preserved on the rejection so a caller that
     // needs to tell "exit 1" apart from any other failure — `wouldConflict`, so far — doesn't
@@ -79,6 +81,42 @@ export class GitOps {
     const key = assertIssueKey(issueKey).replace(/[.]/g, "\\.");
     const out = await this.run(repo, ["log", "--oneline", "-E", "-i", `--max-count=${limit}`, `--grep=(^|[^A-Za-z0-9_-])${key}([^A-Za-z0-9_]|$)`, ref, "--"]).catch(() => "");
     return out.split("\n").map(l => l.trim()).filter(Boolean);
+  }
+
+  /** git's version as [major, minor, patch], or null when git can't be run. */
+  async gitVersion(): Promise<[number, number, number] | null> {
+    const out = await this.run(process.cwd(), ["--version"]).catch(() => "");
+    const m = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3] ?? 0)] : null;
+  }
+
+  /** The tip of `branch` on origin, read with `git ls-remote` — one cheap call, no forge quota.
+   *  Null when origin has no such branch or can't be reached. */
+  async remoteTip(repo: string, branch: string): Promise<string | null> {
+    const out = await this.run(repo, ["ls-remote", "origin", `refs/heads/${branch}`]).catch(() => "");
+    return out.trim().split(/\s+/)[0] || null;
+  }
+
+  /**
+   * The files a merge of `head` into `base` would conflict on — `git merge-tree --write-tree`, which
+   * needs no checkout and touches no worktree. [] = merges cleanly; null = couldn't tell (a missing
+   * ref, an old git, git itself missing). Exit 1 is the only "conflict" answer, as in `wouldConflict`.
+   */
+  async conflictFiles(dir: string, base: string, head: string): Promise<string[] | null> {
+    try {
+      await this.run(dir, ["merge-tree", "--write-tree", "--name-only", base, head]);
+      return [];
+    } catch (err) {
+      const e = err as { code?: number | string | null; stdout?: string };
+      if (e.code !== 1 || typeof e.stdout !== "string") return null;
+      // Line 1 is the merged tree's id; the conflicted paths follow, up to the first blank line.
+      // No tree id means git refused the question itself (a bad ref also exits 1): unknown, not conflict.
+      const all = e.stdout.split("\n");
+      if (!/^[0-9a-f]{40,64}$/.test(all[0]?.trim() ?? "")) return null;
+      const lines = all.slice(1);
+      const end = lines.findIndex(l => !l.trim());
+      return [...new Set((end === -1 ? lines : lines.slice(0, end)).map(l => l.trim()).filter(Boolean))];
+    }
   }
 
   /** `startPoint` is a ref such as `origin/develop`. `--no-track`: the task branch must not have

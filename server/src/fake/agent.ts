@@ -58,11 +58,13 @@ None — this is a fake agent used to exercise the workflow offline.
 ## Risks
 
 Nothing: the change is confined to the task's own worktree.
-`;
+\n## Regression tests\n\n- fake-fix.test.txt › the fake bug stays fixed — fails today: the fixture reproduces it\n`;
 
 /** Commit inside the worktree. `-c` rather than `config` so a machine with no git identity still works. */
 async function commitSomething(cwd: string): Promise<void> {
   await writeFile(path.join(cwd, "fake-fix.txt"), `fixed by the fake agent at ${new Date().toISOString()}\n`);
+  // The plan's regression test, so the diff gate sees a fix that carries one.
+  await writeFile(path.join(cwd, "fake-fix.test.txt"), "the fake bug stays fixed\n");
   await run("git", ["add", "-A"], { cwd });
   await run("git", ["-c", "user.email=fake@agentgrid.invalid", "-c", "user.name=AgentGrid fake agent",
     "commit", "-m", "fix: the fake agent's change"], { cwd });

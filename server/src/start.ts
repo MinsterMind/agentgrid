@@ -8,7 +8,10 @@ import { createApp } from "./api/app.js";
 import { resolveHome } from "./store/paths.js";
 import { readTranscript } from "./transcript.js";
 import { openTerminal, runInTerminal } from "./terminal.js";
-import { PtyManager, type SpawnFn } from "./pty.js";
+import { PtyManager, hookCommand, hookSettings, type SpawnFn } from "./pty.js";
+import { randomBytes } from "node:crypto";
+import { RulesStore } from "./permissions/rules.js";
+import { PermissionBroker } from "./permissions/broker.js";
 import * as nodePty from "node-pty";
 import { attachPtyWebSocket } from "./api/ws.js";
 import { listAllSessions, listLiveSessions, LiveSessionWatcher } from "./sessions.js";
@@ -18,6 +21,7 @@ import { IntegrationsStore, type Integrations } from "./bugfix/integrations.js";
 import { GitOps } from "./bugfix/git.js";
 import { makeForge } from "./bugfix/forge/index.js";
 import { AgentPrWatcher } from "./agentpr.js";
+import { ConflictWatcher } from "./bugfix/conflicts.js";
 import { mcpTracker, type TrackerProvider } from "./bugfix/tracker.js";
 import { BugFixEngine, recoverStuckBugTasks } from "./bugfix/engine.js";
 import { PrWatcher } from "./bugfix/watcher.js";
@@ -84,7 +88,13 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
 
   const store = new Store(home, defaultsDir);
   await store.init();
-  const manager = new Manager(store, fake ? { queryFn: fakeAgentQuery, buildOptions: (_r, a, e) => ({ cwd: a.repo, canUseTool: e.canUseTool, abortController: e.abortController }) } : {});
+  // Shared always-allow rules, and the broker that holds embedded terminals' permission requests.
+  const rules = new RulesStore(home); await rules.load();
+  if (rules.problem) log(`permissions: ${rules.problem}`);
+  const permissionBroker = new PermissionBroker(rules);
+  permissionBroker.on("event", e => store.emit("event", e));
+  store.permissions = () => permissionBroker.list();
+  const manager = new Manager(store, fake ? { queryFn: fakeAgentQuery, buildOptions: (_r, a, e) => ({ cwd: a.repo, canUseTool: e.canUseTool, abortController: e.abortController }), rules } : { rules });
   await manager.recoverOnStart();
 
   let rolesReloadTimer: NodeJS.Timeout | null = null;
@@ -99,12 +109,20 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const fakeSessions = fake ? { live: async () => [{ sessionId: "fake-live-bg", cwd: "/tmp", name: "Fake background task", kind: "background" as const, status: "blocked" as const, startedAt: Date.now() - 60_000, bgId: "fake1" }], history: async () => [{ sessionId: "fake-old-session", cwd: "/tmp", title: "Earlier work (fake)", lastActiveAt: Date.now() }] } : undefined;
   const fakeSpawn: SpawnFn = (_file, args, o) => nodePty.spawn("/bin/sh", ["-c", `echo "AgentGrid fake terminal (claude ${args.join(" ")})"; exec cat`], o);
   const ptys = new PtyManager(fake ? fakeSpawn : undefined);
+  // A session's open requests end with its process: nothing is left to answer them.
+  ptys.onSessionExit(sid => permissionBroker.cancelSession(sid));
+  let hookToken: string | null = null;
+  /** The agent a session belongs to — the same ownership rule the Terminal tab uses (api/ws.ts). */
+  const agentForSession = (sid: string): string | null => {
+    for (const a of store.listAgents()) if (a.resumeSessionId === sid) return a.id;
+    return store.listAssignments(Number.MAX_SAFE_INTEGER).find(x => x.sessionId === sid)?.agentId ?? null;
+  };
   store.gridPids = () => ptys.pids();
   const watcher = new LiveSessionWatcher(fakeSessions ? fakeSessions.live : listLiveSessions, live => store.setLiveSessions(live), 5000);
   watcher.start();
 
   // Follow the transcript of every session a grid agent is bound to (adopted or running), so Details/notifications work even when the work happens in the embedded terminal.
-  const statuses = new SessionStatusWatcher(st => store.setSessionStatus(st), 1500);
+  const statuses = new SessionStatusWatcher(st => { store.setSessionStatus(st); permissionBroker.reconcile(st); }, 1500);
   const syncWatched = () => {
     const want = new Map<string, string>();
     for (const a of store.listAgents()) {
@@ -144,9 +162,15 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
 
   // Fake mode: a canned tracker and forge so the whole flow can be exercised without Jira or gh.
   const fakeTracker: TrackerProvider = {
-    listMyIssues: async () => [{ key: "FAKE-1", title: "Fake bug for demos", url: "https://example.invalid/FAKE-1", status: "Open", priority: "High" }],
-    fetchIssue: async (ref: string) => ({ key: ref.split("/").pop() || "FAKE-1", title: "Fake bug for demos", url: "https://example.invalid/FAKE-1",
-      status: "Open", priority: "High", description: "A fake ticket used in fake mode.", acceptanceCriteria: ["it stops happening"] }),
+    listMyIssues: async () => [
+      { key: "FAKE-1", title: "Fake bug for demos", url: "https://example.invalid/FAKE-1", status: "Open", priority: "High" },
+      { key: "FAKE-2", title: "A second fake bug", url: "https://example.invalid/FAKE-2", status: "To Do", priority: "Medium" },
+    ],
+    fetchIssue: async (ref: string) => {
+      const key = ref.split("/").pop() || "FAKE-1";
+      return { key, title: key === "FAKE-2" ? "A second fake bug" : "Fake bug for demos", url: `https://example.invalid/${key}`,
+        status: "Open", priority: "High", description: "A fake ticket used in fake mode.", acceptanceCriteria: ["it stops happening"] };
+    },
     comment: async () => {},
   };
   // Only read the script in fake mode: it is used nowhere else, and a stale malformed value left
@@ -156,6 +180,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
 
   let wiredBugFix: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider } | undefined;
   let wiredWatcher: PrWatcher | null = null;
+  let wiredConflicts: ConflictWatcher | null = null;
   let lastCfg = cfg;
 
   /**
@@ -177,6 +202,14 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
           ...(fake ? { baseMs: 200, ceilingMs: 1_000 } : {}) })
       : null;
     wiredWatcher?.start(fake ? 100 : 1_000);
+    // Conflicts across every resting PR, from local git — no forge calls (spec 2026-10-07 §4.1).
+    wiredConflicts?.stop();
+    wiredConflicts = new ConflictWatcher({ bugs: bugStore, git: new GitOps(),
+      onFinding: f => engine.onConflictFinding(f).catch(err => log(`bugfix: conflict finding failed: ${(err as Error).message}`)),
+      onProblem: (id, m) => engine.onConflictProblem(id, m).catch(() => {}),
+      intervalMs: fake ? 500 : 60_000 });
+    engine.setConflictNudge(repo => wiredConflicts?.nudge(repo));
+    wiredConflicts.start();
     wiredBugFix = { engine, store: bugStore, integrations, tracker };
     return wiredBugFix;
   };
@@ -187,7 +220,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const agentPrs = new AgentPrWatcher({ store, forge: () => fakeForgeHandle ?? makeForge(lastCfg.forge) });
   agentPrs.start();
 
-  const app = createApp({ store, manager, submitToTerminal: (sid, text) => ptys.submit(sid, text), transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }),
+  const app = createApp({ store, manager, permissions: { broker: permissionBroker, rules }, ...(fake ? { fakePermissions: true } : {}), hookToken: () => hookToken, agentForSession, submitToTerminal: (sid, text) => ptys.submit(sid, text), transcript: (asg, agent) => readTranscript(agent.repo, asg.sessionId ?? ""), fullTranscript: (cwd, sid) => readTranscript(cwd, sid, { full: true }),
     openTerminal, runInTerminal, staticDir, browseRoot: opts.browseRoot ?? process.env.AGENTGRID_BROWSE_ROOT, ...(fakeSessions ? { sessions: fakeSessions } : {}),
     integrations,
     roleResolves: () => { try { store.getRole("bugfix"); return true; } catch { return false; } },
@@ -212,11 +245,17 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   });
   const bound = (server.address() as { port: number }).port;
   const url = `http://127.0.0.1:${bound}`;
+  // Only now is the URL known: from here on, embedded terminals ask AgentGrid for permission.
+  hookToken = randomBytes(32).toString("hex");
+  ptys.configureHook({
+    settings: hookSettings(hookCommand(process.execPath, path.join(presetsDir, "hooks", "permission-hook.mjs"), !!process.versions.electron)),
+    env: { AGENTGRID_URL: url, AGENTGRID_HOOK_TOKEN: hookToken },
+  });
   log(`AgentGrid on ${url}  (data: ${home}${staticDir ? "" : ", UI not built"})`);
   return {
     port: bound, url, home,
     ...(fakeForgeHandle ? { fakeForge: fakeForgeHandle } : {}),
     bugEngineForTest: () => wiredBugFix?.engine,
-    close: () => new Promise<void>(resolve => { watcher.stop(); statuses.stop(); agentPrs.stop(); wiredWatcher?.stop(); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }),
+    close: () => new Promise<void>(resolve => { watcher.stop(); statuses.stop(); agentPrs.stop(); wiredWatcher?.stop(); wiredConflicts?.stop(); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }),
   };
 }

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Decision, Pending } from "../types";
+import type { Decision, Pending, PermissionRequest } from "../types";
 
 interface Q { question: string; header: string; multiSelect?: boolean; options: Array<{ label: string; description: string }> }
 
@@ -16,15 +16,35 @@ export function describeRequest(toolName: string): string {
   return `wants to use ${toolName}`;
 }
 
+/** A terminal permission request, as the card's Pending — one card for both kinds of request. */
+export const asPending = (r: PermissionRequest): Pending =>
+  ({ kind: "permission", toolUseId: r.id, toolName: r.toolName, input: r.input, suggestions: [], suggestedRule: r.suggestedRule, ruleIsBroad: r.ruleIsBroad });
+
+/**
+ * "Always allow <rule>": saves the rule on the server for every agent. A broad rule (every shell command,
+ * every file change) takes a second, inline click — never a browser dialog, which would block the app.
+ * `armed`/`setArmed` live with the card, so a click anywhere else on it backs out.
+ */
+export function AlwaysAllow({ pending, onDecide, armed, setArmed, small }: { pending: Pending; onDecide: (d: Decision) => void; armed: boolean; setArmed: (v: boolean) => void; small?: boolean }) {
+  const what = pending.toolName === "Bash" ? "shell command" : "file change";
+  return (
+    <button className={`btn always ${small ? "sm" : ""} ${armed ? "d" : ""}`} title={`Saved for every agent — remove it in Settings → Always allowed`}
+      onClick={e => { e.stopPropagation(); if (pending.ruleIsBroad && !armed) { setArmed(true); return; } setArmed(false); onDecide({ kind: "always" }); }}>
+      {armed ? `Confirm: always allow every ${what}` : `Always allow ${pending.suggestedRule}`}
+    </button>
+  );
+}
+
 export function PendingPrompt({ pending, onDecide, who }: { pending: Pending; onDecide: (d: Decision) => void; who?: string }) {
+  const [armed, setArmed] = useState(false);
   if (pending.kind === "permission") {
     return (
-      <div className="qbox" data-testid="pending-permission">
+      <div className="qbox" data-testid="pending-permission" onClick={() => setArmed(false)}>
         <div className="qtitle">{who ? `${who} ${describeRequest(pending.toolName)}` : describeRequest(pending.toolName).replace(/^wants/, "Wants")}</div>
         <pre className="cmd">{summarise(pending.input)}</pre>
         <div className="row">
           <button className="btn p" onClick={() => onDecide({ kind: "allow" })}>Allow</button>
-          {pending.suggestions.length > 0 && <button className="btn" onClick={() => onDecide({ kind: "always" })}>Always allow</button>}
+          {pending.suggestedRule && <AlwaysAllow pending={pending} onDecide={onDecide} armed={armed} setArmed={setArmed} />}
           <button className="btn d" onClick={() => onDecide({ kind: "deny" })}>Deny</button>
         </div>
       </div>

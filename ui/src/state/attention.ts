@@ -1,4 +1,4 @@
-import type { Agent, Assignment, SessionActivity } from "../types";
+import type { Agent, Assignment, PermissionRequest, SessionActivity } from "../types";
 
 /** Why an agent needs you, if it does. `request`: a pending permission or question on a running task.
  *  `terminal`: its session is waiting in the embedded terminal. `asked`: it finished by asking you something. */
@@ -15,11 +15,13 @@ export function trailingQuestion(text: string | null | undefined): string | null
 /** One rule for "needs you", shared by the card, the NEEDS YOU counter, the sections and the title.
  *  The session's own log (activity) is the freshest word on a session that isn't running in the grid —
  *  it covers work continued in the terminal; a finished run's outcome is the fallback when there is no log. */
-export function attention(agent: Agent, a: Assignment | null, activity: SessionActivity | null | undefined): Attention {
+export function attention(agent: Agent, a: Assignment | null, activity: SessionActivity | null | undefined, permission?: PermissionRequest | null): Attention {
   if (agent.state === "waiting") return { kind: "request" };
+  // Claude Code really is asking (the PermissionRequest hook) — a running tool alone never is.
+  if (permission) return { kind: "request" };
   if (agent.state === "working") return null;
   if (activity && activity.phase !== "unknown") {
-    if (activity.phase === "waiting") return { kind: "terminal", text: activity.question ? `Asking you in the terminal: ${activity.question.text}` : `Needs approval in the terminal: ${activity.pendingTool?.name ?? "a tool"}` };
+    if (activity.phase === "waiting") return { kind: "terminal", text: `Asking you in the terminal: ${activity.question?.text ?? "a question"}` };
     if (activity.phase === "working") return null;
     // A dismissed run's question is history: new work on a non-adopted agent starts a fresh conversation.
     if (agent.state === "free" && !agent.resumeSessionId) return null;

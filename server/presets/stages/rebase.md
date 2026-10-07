@@ -1,5 +1,7 @@
 The pull request for {{issueKey}} conflicts with {{baseBranch}} and cannot be merged.
 
+{{conflictFiles}}
+
 {{note}}
 
 Your job in this step, in {{worktree}}:

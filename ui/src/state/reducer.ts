@@ -1,14 +1,14 @@
 import { attention } from "./attention";
-import type { Agent, AgentState, Assignment, BugTask, GridEvent, GridState, RoleDef, SessionInfo, SessionActivity } from "../types";
+import type { Agent, AgentState, Assignment, BugTask, GridEvent, GridState, PermissionRequest, RoleDef, SessionInfo, SessionActivity } from "../types";
 
-export interface UiState { roles: RoleDef[]; agents: Agent[]; assignments: Record<string, Assignment>; liveSessions: SessionInfo[]; activity: Record<string, SessionActivity>; bugTasks: Record<string, BugTask>; selectedId: string | null; connected: boolean; /** A snapshot has arrived: until then, "no agents" means "not known yet". */ loaded: boolean }
+export interface UiState { roles: RoleDef[]; agents: Agent[]; assignments: Record<string, Assignment>; liveSessions: SessionInfo[]; activity: Record<string, SessionActivity>; bugTasks: Record<string, BugTask>; /** Open permission requests from embedded terminals, by id. */ permissions: Record<string, PermissionRequest>; selectedId: string | null; connected: boolean; /** A snapshot has arrived: until then, "no agents" means "not known yet". */ loaded: boolean }
 export type Action =
   | { type: "snapshot"; state: GridState }
   | { type: "change"; event: GridEvent }
   | { type: "select"; id: string | null }
   | { type: "connected"; value: boolean };
 
-export const initial: UiState = { roles: [], agents: [], assignments: {}, liveSessions: [], activity: {}, bugTasks: {}, selectedId: null, connected: false, loaded: false };
+export const initial: UiState = { roles: [], agents: [], assignments: {}, liveSessions: [], activity: {}, bugTasks: {}, permissions: {}, selectedId: null, connected: false, loaded: false };
 
 export function reducer(s: UiState, a: Action): UiState {
   switch (a.type) {
@@ -18,6 +18,7 @@ export function reducer(s: UiState, a: Action): UiState {
         liveSessions: a.state.liveSessions ?? [],
         activity: Object.fromEntries((a.state.sessionStatuses ?? []).map(x => [x.sessionId, x])),
         bugTasks: Object.fromEntries((a.state.bugTasks ?? []).map(t => [t.id, t])),
+        permissions: Object.fromEntries((a.state.permissions ?? []).map(r => [r.id, r])),
         selectedId: a.state.agents.some(x => x.id === s.selectedId) ? s.selectedId : null };
     case "change": {
       const e = a.event;
@@ -27,6 +28,8 @@ export function reducer(s: UiState, a: Action): UiState {
       if (e.type === "assignment") return { ...s, assignments: { ...s.assignments, [e.assignment.id]: e.assignment } };
       if (e.type === "agent-removed") return { ...s, agents: s.agents.filter(x => x.id !== e.id), selectedId: s.selectedId === e.id ? null : s.selectedId };
       if (e.type === "bugtask") return { ...s, bugTasks: { ...s.bugTasks, [e.task.id]: e.task } };
+      if (e.type === "permission") return { ...s, permissions: { ...s.permissions, [e.request.id]: e.request } };
+      if (e.type === "permission-settled") { const { [e.id]: _gone, ...permissions } = s.permissions; return { ...s, permissions }; }
       if (e.type === "bugtask-removed") { const { [e.id]: _drop, ...bugTasks } = s.bugTasks; return { ...s, bugTasks }; }
       const i = s.agents.findIndex(x => x.id === e.agent.id);
       const agents = i === -1 ? [...s.agents, e.agent] : s.agents.map((x, j) => (j === i ? e.agent : x));
@@ -52,7 +55,10 @@ export const todaySpend = (s: UiState, now = new Date()): number => {
 };
 
 /** Agents that need you, for any reason (see attention.ts) — what NEEDS YOU counts and N cycles through. */
-export const needsYou = (s: UiState, agent: Agent): boolean => attention(agent, assignmentFor(s, agent), activityFor(s, agent)) !== null;
+/** The oldest open permission request from this agent's embedded terminal, if any. */
+export const permissionFor = (s: UiState, agent: Agent): PermissionRequest | null =>
+  Object.values(s.permissions).filter(r => r.agentId === agent.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0] ?? null;
+export const needsYou = (s: UiState, agent: Agent): boolean => attention(agent, assignmentFor(s, agent), activityFor(s, agent), permissionFor(s, agent)) !== null;
 export const waitingIds = (s: UiState): string[] => s.agents.filter(a => needsYou(s, a)).map(a => a.id);
 
 /** Live sessions not yet represented by a grid agent — shown as ghost tiles. */

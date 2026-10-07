@@ -34,9 +34,10 @@ export interface Agent {
   resumeSessionId?: string;
 }
 
+/** `suggestedRule`: what "Always allow" saves (permissions/rules.ts); `ruleIsBroad`: it would allow every command or file change. Questions carry "" / false. */
 export type Pending =
-  | { kind: "permission"; toolUseId: string; toolName: string; input: Record<string, unknown>; suggestions: unknown[] }
-  | { kind: "question";   toolUseId: string; toolName: "AskUserQuestion"; input: Record<string, unknown>; suggestions: unknown[] };
+  | { kind: "permission"; toolUseId: string; toolName: string; input: Record<string, unknown>; suggestions: unknown[]; suggestedRule: string; ruleIsBroad: boolean }
+  | { kind: "question";   toolUseId: string; toolName: "AskUserQuestion"; input: Record<string, unknown>; suggestions: unknown[]; suggestedRule: string; ruleIsBroad: boolean };
 
 export interface Assignment {
   id: string;            // "a<n>"
@@ -80,9 +81,18 @@ export type GridEvent =
   | { type: "sessions"; sessions: SessionInfo[] }
   | { type: "session-status"; status: SessionActivity }
   | { type: "bugtask"; task: BugTask }
-  | { type: "bugtask-removed"; id: string };
+  | { type: "bugtask-removed"; id: string }
+  | { type: "permission"; request: PermissionRequest }
+  | { type: "permission-settled"; id: string };
 
-export interface GridState { roles: RoleDef[]; agents: Agent[]; assignments: Assignment[]; liveSessions: SessionInfo[]; sessionStatuses: SessionActivity[]; bugTasks: BugTask[] }
+export interface GridState { roles: RoleDef[]; agents: Agent[]; assignments: Assignment[]; liveSessions: SessionInfo[]; sessionStatuses: SessionActivity[]; bugTasks: BugTask[]; permissions: PermissionRequest[] }
+
+/** A permission request from an embedded terminal session, waiting on a human in AgentGrid (see permissions/broker.ts).
+ *  `suggestedRule` is what "Always allow" would save; `ruleIsBroad` means it would allow every command or file change. */
+export interface PermissionRequest {
+  id: string; agentId: string; source: "sdk" | "terminal"; sessionId: string | null;
+  toolName: string; input: Record<string, unknown>; suggestedRule: string; ruleIsBroad: boolean; createdAt: string;
+}
 
 export interface DirEntry { name: string; path: string; isRepo: boolean }
 export interface DirListing { root: string; path: string; parent: string | null; entries: DirEntry[] }
@@ -114,6 +124,7 @@ export interface SessionActivity {
   lastMessage: string;
   lastPrompt: string;
   question?: { text: string; options: string[]; multiSelect: boolean };
-  pendingTool?: { name: string; summary: string };
+  /** The tool the session is running right now. Not a prompt: whether Claude Code is asking comes from the PermissionRequest hook. */
+  runningTool?: { name: string; summary: string };
   updatedAt: string;
 }

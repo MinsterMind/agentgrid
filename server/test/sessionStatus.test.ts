@@ -15,12 +15,16 @@ describe("deriveStatus", () => {
   it("assistant end_turn → idle with last message", () => {
     expect(deriveStatus("s", [user("hi"), asst([{ type: "text", text: "Done: PR #4 opened." }])])).toMatchObject({ phase: "idle", lastMessage: "Done: PR #4 opened." });
   });
-  it("tool_use without result → waiting with pendingTool; result clears it", () => {
+  // Defect #2: in auto mode a tool runs without asking, so an open tool_use is a running tool, not a prompt.
+  // Whether Claude Code is really asking comes from the PermissionRequest hook (permissions/), not from here.
+  it("tool_use without result → working with runningTool; result clears it", () => {
     const rows = [user("run tests"), asst([{ type: "tool_use", id: "t1", name: "Bash", input: { command: "npm test" } }], "tool_use")];
-    expect(deriveStatus("s", rows)).toMatchObject({ phase: "waiting", pendingTool: { name: "Bash", summary: "npm test" } });
+    const st = deriveStatus("s", rows);
+    expect(st).toMatchObject({ phase: "working", runningTool: { name: "Bash", summary: "npm test" } });
+    expect(st).not.toHaveProperty("pendingTool");
     rows.push(result("t1"));
     expect(deriveStatus("s", rows).phase).toBe("working");
-    expect(deriveStatus("s", rows).pendingTool).toBeUndefined();
+    expect(deriveStatus("s", rows).runningTool).toBeUndefined();
   });
   it("AskUserQuestion without result → question", () => {
     const rows = [user("go"), asst([{ type: "tool_use", id: "q1", name: "AskUserQuestion", input: { questions: [{ question: "Which branch?", options: [{ label: "main" }, { label: "dev" }], multiSelect: false }] } }], "tool_use")];

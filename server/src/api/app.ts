@@ -1,7 +1,10 @@
 import express, { type Request, type Response, type NextFunction } from "express";
 import { rereviewPrompt } from "../agentpr.js";
+import { timingSafeEqual } from "node:crypto";
+import type { PermissionBroker } from "../permissions/broker.js";
+import type { RulesStore } from "../permissions/rules.js";
 import path from "node:path";
-import { Store, NotFound, Conflict } from "../store/store.js";
+import { Store, NotFound, Conflict, BadRequest } from "../store/store.js";
 import { Manager } from "../runner/manager.js";
 import { sseHandler } from "./sse.js";
 import { shellQuote } from "../shell.js";
@@ -66,9 +69,16 @@ export interface AppDeps {
   killSession?: (pid: number) => void;
   /** Send a message into the session's open embedded terminal, pressing Enter for it; false when none is open. */
   submitToTerminal?: (sessionId: string, text: string) => boolean;
+  /** The always-allow rules and the broker that holds embedded terminals' permission requests. */
+  permissions?: { broker: PermissionBroker; rules: RulesStore };
+  /** The per-start secret the PermissionRequest hook must present; null until the server is listening. */
+  hookToken?: () => string | null;
+  /** Fake mode only: POST /api/fake/permission raises a terminal permission request (the real one comes from the hook). */
+  fakePermissions?: boolean;
+  /** The agent that owns a Claude Code session (adopted, or ran it), or null. */
+  agentForSession?: (sessionId: string) => string | null;
 }
 
-class BadRequest extends Error { status = 400; }
 
 function isDecision(d: unknown): d is Decision {
   if (!d || typeof d !== "object") return false;
@@ -175,9 +185,58 @@ export function createApp(deps: AppDeps) {
     if (typeof prompt !== "string" || !prompt.trim()) throw new BadRequest("prompt is required");
     res.status(201).json(await manager.assign(req.params.id as string, prompt));
   }));
+  /**
+   * Claude Code's PermissionRequest hook, from a session AgentGrid launched in its embedded terminal. Never a
+   * browser, and only with the per-start token. It waits for a human (or a rule) and answers with a decision —
+   * or with none, which makes Claude Code ask in the terminal as it always did.
+   */
+  app.post("/api/hooks/permission", wrap(async (req, res) => {
+    if (req.get("sec-fetch-site")) { res.status(403).json({ error: "not for browsers" }); return; }
+    const token = deps.hookToken?.() ?? null;
+    const given = (req.get("authorization") ?? "").replace(/^Bearer /, "");
+    if (!token || given.length !== token.length || !timingSafeEqual(Buffer.from(given), Buffer.from(token))) { res.status(401).json({ error: "bad token" }); return; }
+    const p = deps.permissions; const b = req.body ?? {};
+    const toolName = typeof b.tool_name === "string" ? b.tool_name : "";
+    const input = b.tool_input && typeof b.tool_input === "object" && !Array.isArray(b.tool_input) ? b.tool_input as Record<string, unknown> : {};
+    // The session AgentGrid launched (the hook sends it) — Claude Code's own id can differ after a resume.
+    const launched = req.get("x-agentgrid-session");
+    const sessionId = launched && /^[\w-]{1,100}$/.test(launched) ? launched : typeof b.session_id === "string" ? b.session_id : "";
+    const agentId = sessionId ? deps.agentForSession?.(sessionId) ?? null : null;
+    if (!p || !toolName || toolName === "AskUserQuestion" || !agentId) { res.json({ decision: null }); return; }
+    if (p.broker.allowed(toolName, input)) { res.json({ decision: { behavior: "allow" } }); return; }
+    const { id, decision } = p.broker.ask({ agentId, source: "terminal", sessionId, toolName, input, suggestions: Array.isArray(b.permission_suggestions) ? b.permission_suggestions : [] });
+    // The hook gave up (Claude Code killed it, or it was answered in the terminal and timed out): drop the request.
+    res.on("close", () => { if (!res.writableEnded) p.broker.cancel(id); });
+    const d = await decision;
+    if (!res.writableEnded && !res.destroyed) res.json({ decision: d });
+  }));
+  if (deps.fakePermissions && deps.permissions) {
+    const broker = deps.permissions.broker;
+    app.post("/api/fake/permission", wrap(async (req, res) => {
+      const agent = store.getAgent(String(req.body?.agentId ?? ""));
+      const command = typeof req.body?.command === "string" ? req.body.command : "echo fake";
+      const { id } = broker.ask({ agentId: agent.id, source: "terminal", sessionId: `fake-${agent.id}`, toolName: "Bash", input: { command }, suggestions: [] });
+      res.status(201).json({ id });
+    }));
+  }
+  /** The shared always-allow rules, for Settings: list them (with any problem reading the file) and remove one. */
+  const rulesOrThrow = () => { if (!deps.permissions) throw Object.assign(new Error("permissions are not wired"), { status: 501 }); return deps.permissions.rules; };
+  app.get("/api/permissions/rules", wrap(async (_req, res) => { const r = rulesOrThrow(); res.json({ rules: r.list(), problem: r.problem }); }));
+  app.delete("/api/permissions/rules", wrap(async (req, res) => {
+    const r = rulesOrThrow(); const rule = req.body?.rule;
+    if (typeof rule !== "string" || !rule.trim()) throw new BadRequest("rule is required");
+    res.json({ rules: await r.remove(rule), problem: r.problem });
+  }));
   app.post("/api/agents/:id/answer", wrap(async (req, res) => {
     const { toolUseId, decision } = req.body ?? {};
     if (typeof toolUseId !== "string" || !isDecision(decision)) throw new BadRequest("toolUseId and decision are required");
+    // An embedded terminal's request lives in the broker; an SDK run's is parked on its runner.
+    const broker = deps.permissions?.broker;
+    if (broker?.owns(toolUseId)) {
+      const open = broker.list().find(r => r.id === toolUseId);
+      if (open && open.agentId !== req.params.id) throw new NotFound(`no permission request ${toolUseId} for ${req.params.id}`);
+      await broker.answer(toolUseId, decision); res.status(204).end(); return;
+    }
     await manager.answer(req.params.id as string, toolUseId, decision); res.status(204).end();
   }));
   app.post("/api/agents/:id/cancel", wrap(async (req, res) => { await manager.cancel(req.params.id as string); res.status(204).end(); }));
@@ -344,6 +403,7 @@ export function createApp(deps: AppDeps) {
    *  `TrackerConfig` may be added without the same argument. */
   const redactIntegrations = (cfg: Integrations) => ({
     projectRepos: cfg.projectRepos,
+    ...(cfg.maxConcurrentRuns !== undefined ? { maxConcurrentRuns: cfg.maxConcurrentRuns } : {}),
     ...(cfg.forge ? { forge: cfg.forge } : {}),
     ...(cfg.tracker ? { tracker: {
       preset: cfg.tracker.preset,
@@ -379,6 +439,12 @@ export function createApp(deps: AppDeps) {
     if (mergeMethod !== undefined && !MERGE_METHODS.includes(mergeMethod)) throw new BadRequest(`mergeMethod must be one of ${MERGE_METHODS.join(", ")}`);
     res.status(201).json(await bugs().engine.intake({ issueRef: issueRef.trim(), repo, mergePolicy, mergeMethod, ...(baseBranch ? { baseBranch } : {}), ...(startAnyway === true ? { startAnyway: true } : {}) }));
   }));
+  app.post("/api/bugtasks/resolve-conflicts", wrap(async (_req, res) => res.json({ ids: await bugs().engine.resolveConflicts() })));
+  app.post("/api/bugtasks/:id/override-tests", wrap(async (req, res) => {
+    const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+    if (!reason) throw new BadRequest("say why there is no regression test");
+    res.json(await bugs().engine.overrideTests(req.params.id as string, reason));
+  }));
   app.post("/api/bugtasks/:id/close-no-change", wrap(async (req, res) => res.json(await bugs().engine.closeNoChange(req.params.id as string))));
   // `mergeMethod` is honoured only at the merge gate (`engine.mergeTask` checks the task is
   // actually "approved" before persisting it) — passing it anywhere else is simply ignored by
@@ -388,7 +454,10 @@ export function createApp(deps: AppDeps) {
     const b = bugs();
     const method = req.body?.mergeMethod;
     if (method !== undefined && !MERGE_METHODS.includes(method)) throw new BadRequest(`mergeMethod must be one of ${MERGE_METHODS.join(", ")}`);
-    res.json(method ? await b.engine.mergeTask(req.params.id as string, method) : await b.engine.approve(req.params.id as string));
+    // The gate the click was for: refused (409) if the task has since moved to another one.
+    const expect = req.body?.expect;
+    if (expect !== undefined && !["plan", "diff", "merge", "conflict"].includes(expect)) throw new BadRequest("expect must be a gate: plan, diff, merge or conflict");
+    res.json(method ? await b.engine.mergeTask(req.params.id as string, method) : await b.engine.approve(req.params.id as string, expect));
   }));
   app.post("/api/bugtasks/:id/cancel", wrap(async (req, res) => res.json(await bugs().engine.cancel(req.params.id as string))));
   app.post("/api/bugtasks/:id/retry", wrap(async (req, res) => res.json(await bugs().engine.retry(req.params.id as string))));
@@ -409,6 +478,12 @@ export function createApp(deps: AppDeps) {
     res.status(204).end();
   }));
   app.get("/api/bugfix/issues", wrap(async (_req, res) => res.json(await bugs().tracker.listMyIssues())));
+  /** One ticket, in full — the bugs view shows an unstarted bug before anything is created for it. */
+  app.get("/api/bugfix/issues/:key", wrap(async (req, res) => {
+    const key = req.params.key as string;
+    if (!/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(key)) throw new BadRequest("not a ticket key");
+    res.json(await bugs().tracker.fetchIssue(key));
+  }));
   app.get("/api/bugfix/preflight", wrap(async (req, res) => {
     const repo = req.query.repo;
     if (typeof repo !== "string" || !path.isAbsolute(repo)) throw new BadRequest("an absolute repo path is required");
@@ -419,7 +494,12 @@ export function createApp(deps: AppDeps) {
     // Only the two known top-level fields are accepted; anything else in the body is
     // deliberately dropped rather than persisted (same "pick the fields you accept"
     // convention POST /api/agents already uses), not silently merged onto disk.
-    const patch: { tracker?: unknown; forge?: unknown } = {};
+    const patch: { tracker?: unknown; forge?: unknown; maxConcurrentRuns?: number } = {};
+    if (body.maxConcurrentRuns !== undefined) {
+      const n = body.maxConcurrentRuns;
+      if (!Number.isInteger(n) || n < 1 || n > 32) throw new BadRequest("maxConcurrentRuns must be a whole number from 1 to 32");
+      patch.maxConcurrentRuns = n;
+    }
     if (body.tracker !== undefined) {
       const tracker = body.tracker;
       if (!tracker || typeof tracker !== "object" || Array.isArray(tracker)) {
@@ -464,6 +544,7 @@ export function createApp(deps: AppDeps) {
     }
     const saved = await integrationsStore().write(patch as never);
     deps.onConfigSaved?.(saved);
+    if (patch.maxConcurrentRuns !== undefined) wired?.engine.setMaxConcurrentRuns(patch.maxConcurrentRuns);
     await tryWire();
     res.json(redactIntegrations(saved));
   }));

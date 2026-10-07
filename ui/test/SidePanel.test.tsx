@@ -12,7 +12,7 @@ vi.mock("../src/api", () => ({ api: {
 const role: RoleDef = { name: "devops", avatar: "🛠️", model: "m", effort: "high", permissionMode: "default", settingSources: [], allowedTools: [], maxTurns: 1, prompt: "", description: "" };
 const agent: Agent = { id: "devops@hrns", role: "devops", repo: "/u/hrns", displayName: "Dev", createdAt: "", state: "waiting", currentAssignmentId: "a41" };
 const asg: Assignment = { id: "a41", agentId: "devops@hrns", prompt: "Restart staging", createdAt: "", startedAt: null, endedAt: null, sessionId: "s1", state: "waiting",
-  activity: "x", pending: { kind: "permission", toolUseId: "t1", toolName: "Bash", input: { command: "kubectl rollout restart" }, suggestions: [] }, outcome: null, error: null, turns: 2, costUsd: 0.3 };
+  activity: "x", pending: { kind: "permission", toolUseId: "t1", toolName: "Bash", input: { command: "kubectl rollout restart" }, suggestions: [], suggestedRule: "Bash(kubectl rollout:*)", ruleIsBroad: false }, outcome: null, error: null, turns: 2, costUsd: 0.3 };
 const fns = { onDecide: vi.fn(), onCancel: vi.fn(), onAck: vi.fn(), onOpenTerminal: vi.fn(), onDelete: vi.fn() };
 beforeEach(() => vi.clearAllMocks());
 
@@ -111,4 +111,14 @@ describe("SidePanel activity (feature: status + reply from Details)", () => {
     expect(repo).toHaveAttribute("title", "/Users/me/work/infra");
   });
 
+});
+
+describe("SidePanel terminal permission", () => {
+  it("answers the embedded terminal's request from Details", async () => {
+    const free: Agent = { ...agent, state: "free", currentAssignmentId: null, resumeSessionId: "s" };
+    render(<SidePanel agent={free} role={role} assignment={null} {...fns} permission={{ id: "pr7", agentId: "devops@hrns", source: "terminal" as const, sessionId: "s", toolName: "Bash", input: { command: "gh pr comment 7" }, suggestedRule: "Bash(gh pr:*)", ruleIsBroad: false, createdAt: "" }} />);
+    expect(screen.getByTestId("pending-permission")).toHaveTextContent("gh pr comment 7");
+    await userEvent.click(screen.getByRole("button", { name: /^allow$/i }));
+    expect(fns.onDecide).toHaveBeenCalledWith("devops@hrns", "pr7", { kind: "allow" });
+  });
 });

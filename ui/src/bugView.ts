@@ -3,7 +3,7 @@ import type { Assumption, BugStage, BugTask, Pending, SessionActivity, SetupRepo
 // Copies of the server's stage groups (types.ts there exports them as values, but the ui only
 // imports server *types*). `bugView.test.ts` pins these equal to the server's.
 export const AGENT_STAGES: BugStage[] = ["analyzing", "implementing", "opening-pr", "review-feedback", "rebase"];
-export const GATE_STAGES: BugStage[] = ["plan-review", "diff-review", "approved"];
+export const GATE_STAGES: BugStage[] = ["plan-review", "diff-review", "approved", "conflict"];
 export const SERVER_STAGES: BugStage[] = ["pushing", "creating-pr", "merging"];
 export const TERMINAL_STAGES: BugStage[] = ["done", "cancelled", "failed"];
 const UNREACHABLE = "could not check the pull request:";
@@ -13,6 +13,7 @@ const LABELS: Record<BugStage, string> = {
   "diff-review": "Diff review", "opening-pr": "Writing the PR", pushing: "Pushing the branch",
   "creating-pr": "Opening the pull request", monitoring: "Watching the PR", "review-feedback": "Addressing review",
   rebase: "Rebasing", approved: "Ready to merge", merging: "Merging", done: "Done", cancelled: "Cancelled", failed: "Failed",
+  conflict: "Conflict",
 };
 export const stageLabel = (s: BugStage): string => LABELS[s];
 
@@ -25,7 +26,7 @@ const STEPS: Array<{ id: string; label: string; stages: BugStage[] }> = [
   { id: "implement", label: "Implement", stages: ["implementing"] },
   { id: "diff", label: "Diff review", stages: ["diff-review"] },
   { id: "pr", label: "Open PR", stages: ["opening-pr", "pushing", "creating-pr"] },
-  { id: "monitor", label: "Monitor", stages: ["monitoring", "review-feedback", "rebase"] },
+  { id: "monitor", label: "Monitor", stages: ["monitoring", "review-feedback", "rebase", "conflict"] },
   { id: "merge", label: "Merge", stages: ["approved", "merging", "done"] },
 ];
 
@@ -79,6 +80,7 @@ function gateHeadline(task: BugTask): string {
   const g = task.gate;
   if (!g) return "";
   if (g.kind === "plan") return "Waiting on you: approve the plan";
+  if (g.kind === "conflict") return `Waiting on you: resolve the conflict with ${task.conflict?.base ?? task.baseBranch}`;
   if (g.kind === "diff") return g.reason === "rebase" ? "Waiting on you: review the rebased branch"
     : g.reason === "feedback" ? "Waiting on you: review the changes made for the reviewers"
     : g.reason === "external" ? "Waiting on you: review the pull request opened outside AgentGrid" : "Waiting on you: review the diff";
@@ -88,8 +90,11 @@ function gateHeadline(task: BugTask): string {
 /** `sinceKind` says how to read `since`: how long a stage has been running, how long a gate has
  *  been waiting, or when the PR was last checked — a bare "6 min ago" reads as a timestamp. */
 export interface Now { headline: string; detail?: string; since?: string; sinceKind?: "running" | "waiting" | "checked" }
-export function nowFor({ task, pending, activity }: { task: BugTask; pending: Pending | null; activity: SessionActivity | null }): Now {
+export function nowFor({ task, pending, activity, queue }: { task: BugTask; pending: Pending | null; activity: SessionActivity | null; queue?: { position: number; of: number } }): Now {
   const since = task.history.at(-1)?.at;
+  // Waiting for a slot under the agents-at-once limit (spec 2026-10-07 §5).
+  if (task.queuedAt && !TERMINAL_STAGES.includes(task.stage)) return { headline: queue ? `Queued (${queue.position} of ${queue.of})` : "Queued", detail: `${stageLabel(task.stage)} starts when an agent is free`, since: task.queuedAt, sinceKind: "waiting" };
+  if (task.stage === "conflict") return { headline: `Conflicts with ${task.conflict?.base ?? task.baseBranch}`, ...(task.conflict?.files.length ? { detail: task.conflict.files.join(", ") } : {}), since: task.gate?.openedAt || since, sinceKind: "waiting" };
   if (task.stage === "done" && task.outcome === "no-change") return { headline: "Closed — no change needed" };
   if (task.stage === "done") return { headline: task.outcome === "closed" || (!task.outcome && task.pr?.state === "CLOSED") ? "Closed without merging" : "Merged" };
   if (task.stage === "cancelled") return { headline: "Cancelled" };
@@ -101,7 +106,7 @@ export function nowFor({ task, pending, activity }: { task: BugTask; pending: Pe
   if (task.stage === "merging") return { headline: "AgentGrid is merging", since, sinceKind: "running" };
   if (task.stage === "monitoring") return { headline: task.pr ? `Watching PR #${task.pr.number}` : "Watching the PR", ...(task.prCheckedAt ? { since: task.prCheckedAt, sinceKind: "checked" as const } : {}) };
   if (task.stage === "intake") return { headline: "Setting up the worktree", since, sinceKind: "running" };
-  const raw = activity?.pendingTool?.summary || activity?.lastMessage || "";
+  const raw = activity?.runningTool?.summary || activity?.lastMessage || "";
   return { headline: stageLabel(task.stage), since, sinceKind: "running", ...(raw ? { detail: oneLine(raw) } : {}) };
 }
 
@@ -124,12 +129,16 @@ export function blockersFor({ task, pending, setup, setupError }: { task: BugTas
   if (task.stage === "failed") return [{ kind: "failed", title: `The ${stageLabel(positionStage(task))} stage failed`, ...(task.error ? { detail: task.error } : {}) }];
   const out: Blocker[] = [];
   if (task.gate) out.push({ kind: "gate", title: gateHeadline(task) });
+  // Regression tests: what stops this bug coming back (spec 2026-10-07 §3).
+  if (task.gate?.kind === "plan" && !task.verdict && (task.plannedTests ?? []).length === 0) out.push({ kind: "gate", title: "The plan names no regression test" });
+  if (task.gate?.kind === "diff" && Array.isArray(task.testsInDiff) && task.testsInDiff.length === 0 && task.testOverride?.head !== task.approvedHead) out.push({ kind: "gate", title: "No regression test in this change" });
   if (pending) out.push({ kind: "agent", title: pending.kind === "question" ? "The agent has a question for you" : `The agent wants permission to run ${pending.toolName}` });
   if (task.pr && (task.stage === "monitoring" || task.stage === "approved")) {
     if (task.pr.checks === "FAILURE" || task.pr.checks === "ERROR") out.push({ kind: "pr", title: "Checks are failing" });
     if (task.pr.reviewDecision === "CHANGES_REQUESTED") out.push({ kind: "pr", title: "Reviewers asked for changes" });
     if (task.pr.mergeable === "CONFLICTING") out.push({ kind: "pr", title: `The branch conflicts with ${task.baseBranch}` });
   }
+  if (task.conflictCheckError) out.push({ kind: "pr", title: task.conflictCheckError });
   if (task.error?.startsWith(UNREACHABLE)) out.push({ kind: "pr", title: "Could not check the pull request", detail: task.error.slice(UNREACHABLE.length).trim() });
   if (setupError) out.push({ kind: "setup", title: "Could not check setup" });
   else for (const c of setup?.checks ?? []) if (c.blocks && c.state !== "ok") out.push({ kind: "setup", title: c.detail });

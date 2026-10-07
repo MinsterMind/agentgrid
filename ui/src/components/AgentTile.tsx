@@ -1,7 +1,8 @@
 import { Activity, CheckCircle2, Hand, Moon, XCircle } from "lucide-react";
-import type { Agent, Assignment, Decision, RoleDef, SessionInfo, SessionActivity } from "../types";
+import type { Agent, Assignment, Decision, Pending, PermissionRequest, RoleDef, SessionInfo, SessionActivity } from "../types";
 import { AssignBox } from "./AssignBox";
-import { describeRequest, summarise } from "./PendingPrompt";
+import { useState } from "react";
+import { AlwaysAllow, asPending, describeRequest, summarise } from "./PendingPrompt";
 import { basename, elapsed, usd } from "../format";
 import { attention } from "../state/attention";
 import { PrLine } from "./PrLine";
@@ -16,6 +17,7 @@ export interface AgentTileProps {
   /** Stage of this agent's in-flight bug-fix task, if any. */ bugStage?: string;
   /** Answer a finished run's question in its own conversation. */ onSay?: (id: string, text: string) => void;
   /** Ask the same agent for a second look at its task's PR. */ onReReview?: (id: string) => void;
+  /** An open permission request from this agent's embedded terminal (Claude Code is asking). */ permission?: PermissionRequest | null;
 }
 
 const STATE = {
@@ -27,9 +29,9 @@ interface Q { question: string; multiSelect?: boolean; options: Array<{ label: s
 
 /** The request card on a waiting tile. It answers only what fits on a card: one permission, or
  *  one single-choice question. Anything bigger goes to the side panel rather than half-answered. */
-function TileRequest({ agent, a, onDecide, onSelect }: { agent: Agent; a: Assignment | null; onDecide?: AgentTileProps["onDecide"]; onSelect: (id: string) => void }) {
-  const p = a?.pending;
-  const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
+function TileRequest({ agent, p, onDecide, onSelect }: { agent: Agent; p: Pending | null; onDecide?: AgentTileProps["onDecide"]; onSelect: (id: string) => void }) {
+  const [armed, setArmed] = useState(false);
+  const stop = (e: { stopPropagation: () => void }) => { e.stopPropagation(); setArmed(false); };
   if (!p || !onDecide) {
     // No stopPropagation here: the card asks to be opened, so a click on it must reach the tile.
     return <div className="tile-req open" data-testid="tile-request">Waiting for you — open it to see what it needs.</div>;
@@ -42,6 +44,7 @@ function TileRequest({ agent, a, onDecide, onSelect }: { agent: Agent; a: Assign
         <div className="cmd">{summarise(p.input)}</div>
         <div className="acts">
           <button className="btn p sm" onClick={() => onDecide(agent.id, p.toolUseId, { kind: "allow" })}>Allow</button>
+          {p.suggestedRule && <AlwaysAllow small pending={p} onDecide={d => onDecide(agent.id, p.toolUseId, d)} armed={armed} setArmed={setArmed} />}
           <button className="btn d sm" onClick={() => onDecide(agent.id, p.toolUseId, { kind: "deny" })}>Deny</button>
         </div>
       </div>
@@ -65,10 +68,10 @@ function TileRequest({ agent, a, onDecide, onSelect }: { agent: Agent; a: Assign
   );
 }
 
-export function AgentTile({ agent, role, assignment, selected, index, recent, onSelect, onAssign, onDecide, live, activity, bugStage, onSay, onReReview }: AgentTileProps) {
+export function AgentTile({ agent, role, assignment, selected, index, recent, onSelect, onAssign, onDecide, live, activity, bugStage, onSay, onReReview, permission }: AgentTileProps) {
   const a = assignment;
   // An agent waiting on you is never "Idle" or "Done", wherever it waits — say so, loudly.
-  const need = attention(agent, a, activity);
+  const need = attention(agent, a, activity, permission);
   const shown = need ? "waiting" : agent.state;
   const { Icon, word } = STATE[shown];
   const line = agent.state === "free" || agent.state === "waiting" || need?.kind === "asked" ? null
@@ -81,13 +84,13 @@ export function AgentTile({ agent, role, assignment, selected, index, recent, on
       <div className="hd">
         <div className="av">{role?.avatar ?? "🤖"}</div>
         <div><div className="name">{agent.displayName} <span className="role">— {agent.role}</span>{agent.resumeSessionId && <span title="Continues an adopted Claude Code session"> 🔗</span>}</div><div className="repo">{basename(agent.repo)}</div></div>
-        {bugStage && <span className="chip" data-testid="tile-bug-stage">{bugStage}</span>}
+        {bugStage && <span className={`chip ${bugStage === "conflict" ? "conflict" : ""}`} data-testid="tile-bug-stage">{bugStage}</span>}
       </div>
       <div className={`tile-state ${shown}`} data-testid="tile-state"><Icon /> {word}{need?.kind === "terminal" ? " (terminal)" : ""}</div>
       {a && <div className="tasktitle" title={a.prompt}>{a.prompt.split("\n")[0].slice(0, 90)}</div>}
       {a?.pr && <PrLine pr={a.pr} canReReview={agent.state === "done" || agent.state === "failed"} onReReview={onReReview && (() => onReReview(agent.id))} />}
       {!a && activity?.lastPrompt && <div className="tasktitle" title={activity.lastPrompt}>{activity.lastPrompt.split("\n")[0].slice(0, 90)}</div>}
-      {agent.state === "waiting" && <TileRequest agent={agent} a={a} onDecide={onDecide} onSelect={onSelect} />}
+      {(agent.state === "waiting" || permission) && <TileRequest agent={agent} p={a?.pending ?? (permission ? asPending(permission) : null)} onDecide={onDecide} onSelect={onSelect} />}
       {need?.kind === "asked" && (
         <div className="tile-req" data-testid="tile-request" onClick={e => e.stopPropagation()}>
           <div className="msg">{need.question}</div>
@@ -97,9 +100,9 @@ export function AgentTile({ agent, role, assignment, selected, index, recent, on
       )}
       {agent.state !== "free" && need?.kind === "terminal" && <div className="act phase waiting" data-testid="tile-phase">{need.text}</div>}
       {line !== null && <div className="act">{line}</div>}
-      {agent.state === "free" && activity && activity.phase !== "unknown" && (
+      {agent.state === "free" && !permission && activity && activity.phase !== "unknown" && (
         <div className={`act phase ${activity.phase}`} data-testid="tile-phase">
-          {activity.phase === "waiting" ? (activity.question ? "Asking you a question in the terminal" : `Needs approval in the terminal: ${activity.pendingTool?.name ?? ""}`) : activity.phase === "working" ? "Working in the terminal" : "Idle — your turn"}
+          {activity.phase === "waiting" ? "Asking you a question in the terminal" : activity.phase === "working" ? `Working in the terminal${activity.runningTool ? `: ${activity.runningTool.name}` : ""}` : "Idle — your turn"}
         </div>
       )}
       {agent.state === "free" && live && <div className="act dim" data-testid="live-note">Live in {live.kind === "background" ? "the background" : "a terminal"} ({live.status}) — close it to assign, or use the Terminal tab</div>}

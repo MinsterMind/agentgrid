@@ -2,20 +2,22 @@ import { Store } from "../store/store.js";
 import { Runner, type BuildOptions, type QueryFn } from "./runner.js";
 import { buildOptions as defaultBuildOptions, realQuery } from "./sdk.js";
 import type { Assignment, Decision } from "../types.js";
+import type { RulesStore } from "../permissions/rules.js";
 
 export class Manager {
   private runners = new Map<string, Runner>();
-  private queryFn: QueryFn; private buildOptions: BuildOptions;
+  private queryFn: QueryFn; private buildOptions: BuildOptions; private rules?: RulesStore;
 
-  constructor(private store: Store, deps: { queryFn?: QueryFn; buildOptions?: BuildOptions } = {}) {
+  constructor(private store: Store, deps: { queryFn?: QueryFn; buildOptions?: BuildOptions; rules?: RulesStore } = {}) {
     this.queryFn = deps.queryFn ?? realQuery;
     this.buildOptions = deps.buildOptions ?? defaultBuildOptions;
+    this.rules = deps.rules;
   }
 
   private runner(agentId: string): Runner {
     this.store.getAgent(agentId); // throws NotFound
     let r = this.runners.get(agentId);
-    if (!r) { r = new Runner(agentId, { store: this.store, queryFn: this.queryFn, buildOptions: this.buildOptions }); this.runners.set(agentId, r); }
+    if (!r) { r = new Runner(agentId, { store: this.store, queryFn: this.queryFn, buildOptions: this.buildOptions, rules: this.rules }); this.runners.set(agentId, r); }
     return r;
   }
 

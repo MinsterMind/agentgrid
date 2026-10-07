@@ -7,7 +7,7 @@ const ALL: BugStage[] = ["intake", "analyzing", "plan-review", "implementing", "
 
 function task(stage: BugStage, extra: Partial<BugTask> = {}): BugTask {
   return { id: "bt1", issue: { key: "PAY-42", title: "T", url: "https://x", status: "Open", priority: "High", description: "", acceptanceCriteria: [] },
-    trackerProject: "PAY", sourceRepo: "/r", worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", baseRef: "origin/main", ticketCommits: [], verdict: null, report: null, agentId: "a1", stage,
+    trackerProject: "PAY", sourceRepo: "/r", worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", baseRef: "origin/main", ticketCommits: [], verdict: null, report: null, plannedTests: [], testsInDiff: null, testOverride: null, conflict: null, conflictCheckError: null, queuedAt: null, queuedNote: null, agentId: "a1", stage,
     gate: stage === "plan-review" ? { kind: "plan", openedAt: "t" } : stage === "diff-review" ? { kind: "diff", openedAt: "t" } : stage === "approved" ? { kind: "merge", openedAt: "t" } : null,
     mergePolicy: "ask", mergeMethod: "squash", approvedHead: null, outcome: null, checksRoundHead: null, pr: null, prCheckedAt: null,
     costUsd: 0, history: [{ stage: "intake", at: "2026-10-05T10:00:00Z", note: "" }, { stage, at: "2026-10-05T10:05:00Z", note: "" }],
@@ -80,8 +80,8 @@ describe("listStatus", () => {
 });
 
 describe("nowFor", () => {
-  it("agent stage: label, since the stage began, and the agent's pending tool", () => {
-    const n = nowFor({ task: task("implementing"), pending: null, activity: { sessionId: "s", phase: "working", lastMessage: "Editing", lastPrompt: "", pendingTool: { name: "Bash", summary: "npm test" }, updatedAt: "" } as never });
+  it("agent stage: label, since the stage began, and the tool it is running", () => {
+    const n = nowFor({ task: task("implementing"), pending: null, activity: { sessionId: "s", phase: "working", lastMessage: "Editing", lastPrompt: "", runningTool: { name: "Bash", summary: "npm test" }, updatedAt: "" } as never });
     expect(n).toMatchObject({ headline: "Implementing", detail: "npm test", since: "2026-10-05T10:05:00Z" });
   });
   // Review Focus 5.
@@ -92,7 +92,7 @@ describe("nowFor", () => {
     expect(n.detail!.length).toBeLessThanOrEqual(141);
   });
   it("a pending permission says the agent is waiting on you", () => {
-    const n = nowFor({ task: task("implementing"), pending: { kind: "permission", toolUseId: "u", toolName: "Bash", input: {}, suggestions: [] }, activity: null });
+    const n = nowFor({ task: task("implementing"), pending: { kind: "permission", toolUseId: "u", toolName: "Bash", input: {}, suggestions: [], suggestedRule: "Bash", ruleIsBroad: true }, activity: null });
     expect(n.headline).toMatch(/waiting on you/i);
     expect(n.detail).toMatch(/Bash/);
   });
@@ -120,8 +120,8 @@ describe("nowFor", () => {
 describe("blockersFor", () => {
   const base = { pending: null, setup: null, setupError: false };
   it("nothing blocking a running stage", () => expect(blockersFor({ ...base, task: task("implementing") })).toEqual([]));
-  it("an open gate", () => expect(blockersFor({ ...base, task: task("plan-review") })).toEqual([{ kind: "gate", title: "Waiting on you: approve the plan" }]));
-  it("a pending agent request", () => expect(blockersFor({ ...base, task: task("implementing"), pending: { kind: "question", toolUseId: "u", toolName: "AskUserQuestion", input: {}, suggestions: [] } })[0].kind).toBe("agent"));
+  it("an open gate", () => expect(blockersFor({ ...base, task: task("plan-review", { plannedTests: ["t"] }) })).toEqual([{ kind: "gate", title: "Waiting on you: approve the plan" }]));
+  it("a pending agent request", () => expect(blockersFor({ ...base, task: task("implementing"), pending: { kind: "question", toolUseId: "u", toolName: "AskUserQuestion", input: {}, suggestedRule: "", ruleIsBroad: false, suggestions: [] } })[0].kind).toBe("agent"));
   it("a failed stage carries its error", () => {
     const t = task("failed", { error: "no commits on the task branch", history: [{ stage: "intake", at: "a", note: "" }, { stage: "implementing", at: "b", note: "" }, { stage: "failed", at: "c", note: "" }] });
     expect(blockersFor({ ...base, task: t })).toEqual([{ kind: "failed", title: "The Implementing stage failed", detail: "no commits on the task branch" }]);
@@ -272,4 +272,39 @@ describe("a pull request opened outside AgentGrid", () => {
     expect(nowFor({ task: t, pending: null, activity: null }).headline).toBe("Waiting on you: review the pull request opened outside AgentGrid");
   });
 });
+});
+
+describe("blockersFor — regression tests", () => {
+  const base = { pending: null, setup: null, setupError: false };
+  it("a change-needed plan that names no regression test is a blocker at the plan gate", () => {
+    const titles = (t: ReturnType<typeof task>) => blockersFor({ ...base, task: t }).map(b => b.title);
+    expect(titles(task("plan-review", { gate: { kind: "plan", openedAt: "" }, plannedTests: [] }))).toContain("The plan names no regression test");
+    expect(titles(task("plan-review", { gate: { kind: "plan", openedAt: "" }, plannedTests: ["t"] }))).not.toContain("The plan names no regression test");
+    expect(titles(task("plan-review", { gate: { kind: "plan", openedAt: "" }, plannedTests: [], verdict: "already fixed" }))).not.toContain("The plan names no regression test");
+  });
+  it("a diff with no test file is a blocker until overridden for this head", () => {
+    const titles = (t: ReturnType<typeof task>) => blockersFor({ ...base, task: t }).map(b => b.title);
+    const diff = { gate: { kind: "diff" as const, openedAt: "" }, approvedHead: "h1" };
+    expect(titles(task("diff-review", { ...diff, testsInDiff: [] }))).toContain("No regression test in this change");
+    expect(titles(task("diff-review", { ...diff, testsInDiff: ["a.test.ts"] }))).not.toContain("No regression test in this change");
+    expect(titles(task("diff-review", { ...diff, testsInDiff: [], testOverride: { reason: "r", at: "", head: "h1" } }))).not.toContain("No regression test in this change");
+    expect(titles(task("diff-review", { ...diff, testsInDiff: null }))).not.toContain("No regression test in this change");
+  });
+});
+
+describe("conflicts and the queue", () => {
+  const C = { files: ["src/a.ts", "src/b.ts"], base: "develop", detectedAt: "2026-10-07T10:00:00Z", returnTo: "monitoring" as const };
+  it("a conflict says what it conflicts with, and which files", () => {
+    const n = nowFor({ task: task("conflict", { gate: { kind: "conflict", openedAt: "" }, conflict: C }), pending: null, activity: null });
+    expect(n.headline).toBe("Conflicts with develop"); expect(n.detail).toBe("src/a.ts, src/b.ts");
+    expect(listStatus(task("conflict", { gate: { kind: "conflict", openedAt: "" } }), false)).toBe("waiting");
+  });
+  it("a queued run says its place in line", () => {
+    const n = nowFor({ task: task("analyzing", { queuedAt: "2026-10-07T10:00:00Z" }), pending: null, activity: null, queue: { position: 2, of: 3 } });
+    expect(n.headline).toBe("Queued (2 of 3)");
+  });
+  it("a conflict check that couldn't run is a blocker", () => {
+    const b = blockersFor({ task: task("monitoring", { conflictCheckError: "Couldn't check for conflicts: could not resolve host" }), pending: null, setup: null, setupError: false });
+    expect(b.map(x => x.title)).toContain("Couldn't check for conflicts: could not resolve host");
+  });
 });

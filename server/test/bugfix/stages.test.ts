@@ -90,11 +90,11 @@ describe("Phase 2: the monitoring loop", () => {
       .toMatchObject({ stage: "review-feedback", run: "review-feedback", note: "unit-tests" });
   });
 
-  it("an approval opens the merge gate, and conflict opens a rebase", () => {
+  it("an approval opens the merge gate; a conflict waits at its own gate (spec 2026-10-07 §4.2)", () => {
     expect(nextStage(at("monitoring"), { type: "review-approved" }))
       .toMatchObject({ stage: "approved", run: null, gate: { kind: "merge" } });
     expect(nextStage(at("monitoring"), { type: "conflicting" }))
-      .toMatchObject({ stage: "rebase", run: "rebase" });
+      .toMatchObject({ stage: "conflict", run: null, gate: { kind: "conflict" } });
   });
 
   it("a PR closed without merging ends the task with a reason and no success", () => {
@@ -116,8 +116,7 @@ describe("Phase 2: the monitoring loop", () => {
       { type: "review-changes-requested", comments: "x" },
       { type: "checks-failed", checks: "x" },
       { type: "review-approved" },
-      { type: "conflicting" },
-      { type: "pr-closed" },
+      { type: "pr-closed" },   // `conflicting` has its own rule: see "the conflict gate"
     ];
     for (const event of events) {
       expect(() => nextStage(at("implementing"), event)).toThrow(/only while monitoring/i);
@@ -231,5 +230,34 @@ describe("a pull request opened outside AgentGrid", () => {
   it("requesting changes there sends the agent to address them on the PR's branch", () => {
     const atGate = task("diff-review", { gate: { kind: "diff", openedAt: "t", reason: "external" } });
     expect(nextStage(atGate, { type: "request-changes", text: "drop the debug log" })).toMatchObject({ stage: "review-feedback", run: "review-feedback" });
+  });
+});
+
+describe("the conflict gate", () => {
+  const C = (returnTo: "monitoring" | "approved") => ({ conflict: { files: ["src/a.ts"], base: "develop", detectedAt: "", returnTo } });
+  it("a conflict while resting opens the gate instead of rebasing on its own", () => {
+    for (const from of ["monitoring", "approved"] as const) {
+      const t = nextStage(task(from), { type: "conflicting", files: ["src/a.ts"], base: "develop" });
+      expect(t).toMatchObject({ stage: "conflict", run: null, gate: { kind: "conflict" } });
+      expect(t.note).toContain("src/a.ts");
+    }
+  });
+  it("approve resolves; cleared returns where it was; a repeat does nothing", () => {
+    expect(nextStage(task("conflict", C("monitoring")), { type: "approve" })).toMatchObject({ stage: "rebase", run: "rebase" });
+    expect(nextStage(task("conflict", C("approved")), { type: "conflict-cleared" })).toMatchObject({ stage: "approved", run: null, gate: { kind: "merge" } });
+    expect(nextStage(task("conflict", C("monitoring")), { type: "conflict-cleared" })).toMatchObject({ stage: "monitoring", run: null, gate: null });
+    expect(nextStage(task("conflict", C("monitoring")), { type: "conflicting", files: ["b"] })).toMatchObject({ stage: "conflict", run: null });
+  });
+  // Review Focus 1
+  it("conflict findings are refused mid-rebase, at the diff gate, and mid-fix", () => {
+    for (const s of ["rebase", "diff-review", "implementing"] as const) {
+      expect(() => nextStage(task(s), { type: "conflicting" })).toThrow();
+      expect(() => nextStage(task(s), { type: "conflict-cleared" })).toThrow();
+    }
+  });
+  it("merged or closed while in conflict ends as usual; request-changes has nothing to change", () => {
+    expect(nextStage(task("conflict", C("monitoring")), { type: "pr-merged" })).toMatchObject({ stage: "merging" });
+    expect(nextStage(task("conflict", C("monitoring")), { type: "pr-closed" })).toMatchObject({ stage: "done", outcome: "closed" });
+    expect(() => nextStage(task("conflict", C("monitoring")), { type: "request-changes", text: "x" })).toThrow();
   });
 });

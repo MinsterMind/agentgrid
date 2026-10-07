@@ -8,7 +8,9 @@ const wait = (stage: BugStage, kind: GateKind, reason?: "feedback" | "rebase" | 
 /** A server stage: the engine runs it, so `run` stays null — `run` means "dispatch an agent". */
 const serverRun = (stage: BugStage, note = ""): Transition => ({ stage, run: null, gate: null, note, error: null });
 
-const MONITORING_ONLY: BugEvent["type"][] = ["review-changes-requested", "checks-failed", "review-approved", "conflicting", "pr-closed", "pr-merged"];
+const MONITORING_ONLY: BugEvent["type"][] = ["review-changes-requested", "checks-failed", "review-approved", "pr-closed", "pr-merged"];
+/** Where a conflict can be noticed: only while a PR rests, never mid-agent-stage or at another gate. */
+const CONFLICT_FROM: BugStage[] = ["monitoring", "approved", "conflict"];
 
 /**
  * The whole Phase 1 workflow in one pure function: given where a task is and what
@@ -20,7 +22,11 @@ export function nextStage(task: BugTask, event: BugEvent): Transition {
   if (TERMINAL_STAGES.includes(task.stage) && event.type !== "retry" && !(event.type === "pr-adopted" && task.stage === "failed")) {
     throw new Conflict(`task ${task.id} is in terminal stage ${task.stage}`);
   }
-  if (MONITORING_ONLY.includes(event.type) && task.stage !== "monitoring") {
+  if (event.type === "conflicting" && !CONFLICT_FROM.includes(task.stage)) throw new Conflict(`a conflict is only noticed while the pull request rests (task is ${task.stage})`);
+  if (event.type === "conflict-cleared" && task.stage !== "conflict") throw new Conflict(`nothing to clear: the task is ${task.stage}, not in conflict`);
+  // A PR waiting at the conflict gate can still be merged or closed by someone else.
+  const endsAtConflict = task.stage === "conflict" && (event.type === "pr-merged" || event.type === "pr-closed");
+  if (MONITORING_ONLY.includes(event.type) && task.stage !== "monitoring" && !endsAtConflict) {
     throw new Conflict(`${event.type} is only while monitoring (task is ${task.stage})`);
   }
   switch (event.type) {
@@ -34,7 +40,12 @@ export function nextStage(task: BugTask, event: BugEvent): Transition {
     case "review-changes-requested": return go("review-feedback", "review-feedback", event.comments);
     case "checks-failed":            return go("review-feedback", "review-feedback", event.checks);
     case "review-approved":          return wait("approved", "merge");
-    case "conflicting":              return go("rebase", "rebase");
+    // Never a rebase on its own: the conflict waits for the human (spec 2026-10-07 §4.2).
+    case "conflicting":
+      if (task.stage === "conflict") return { stage: "conflict", run: null, gate: task.gate, note: "", error: null };
+      return { ...wait("conflict", "conflict"), note: `Conflicts with ${event.base ?? task.baseBranch}${event.files?.length ? `: ${event.files.join(", ")}` : ""}` };
+    case "conflict-cleared":
+      return task.conflict?.returnTo === "approved" ? { ...wait("approved", "merge"), note: "The conflict cleared" } : go("monitoring", null, "The conflict cleared");
     case "pr-closed":
       return { stage: "done", run: null, gate: null, note: "", outcome: "closed",
                error: "the pull request was closed without merging" };
@@ -75,6 +86,7 @@ export function nextStage(task: BugTask, event: BugEvent): Transition {
     case "approve": {
       if (!GATE_STAGES.includes(task.stage)) throw new Conflict(`cannot approve while ${task.stage}`);
       if (task.stage === "plan-review") return go("implementing", "implementing");
+      if (task.stage === "conflict") return go("rebase", "rebase");
       if (task.stage === "approved") return serverRun("merging");
       // diff-review: a feedback or rebase round already has a PR, so approving means push;
       // the first time through, it means open the PR.
@@ -83,6 +95,7 @@ export function nextStage(task: BugTask, event: BugEvent): Transition {
 
     case "request-changes": {
       if (!GATE_STAGES.includes(task.stage)) throw new Conflict(`cannot request changes while ${task.stage}`);
+      if (task.stage === "conflict") throw new Conflict("nothing to change at a conflict: resolve it, or cancel the task");
       if (task.stage === "plan-review") return go("analyzing", "analyzing", event.text);
       if (task.stage === "approved") return go("review-feedback", "review-feedback", event.text);
       const back: BugStage = task.gate?.reason === "rebase" ? "rebase"

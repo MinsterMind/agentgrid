@@ -4,10 +4,11 @@ import path from "node:path";
 import matter from "gray-matter";
 import { paths } from "./paths.js";
 import { loadRoles, ensureDefaultRoles } from "./roles.js";
-import type { Agent, Assignment, GridEvent, GridState, MemoryFile, RoleDef, SessionInfo, SessionActivity } from "../types.js";
+import type { Agent, Assignment, GridEvent, GridState, MemoryFile, RoleDef, SessionInfo, SessionActivity, PermissionRequest } from "../types.js";
 import { mergeSessions, type LiveSession } from "../sessions.js";
 
 export class NotFound extends Error { status = 404; }
+export class BadRequest extends Error { status = 400; }
 export class Conflict extends Error { status = 409; }
 
 const NAMES = ["Ada", "Rhea", "Cody", "Tess", "Dev", "Demi", "Kai", "Ravi", "Maya", "Tom", "Ira", "Max", "Nia", "Ola", "Zed"];
@@ -16,7 +17,7 @@ let seq = 0;
 // Writes to the same file are chained so two renames can never land out of order
 // relative to the in-memory update that follows each one.
 const writeChains = new Map<string, Promise<void>>();
-function writeAtomic(file: string, data: unknown): Promise<void> {
+export function writeAtomic(file: string, data: unknown): Promise<void> {
   const prev = writeChains.get(file) ?? Promise.resolve();
   const next = prev.catch(() => {}).then(async () => {
     const tmp = `${file}.${process.pid}.${++seq}.tmp`;
@@ -37,6 +38,8 @@ export class Store extends EventEmitter {
   private statuses = new Map<string, SessionActivity>();
   /** Supplied by the server when the bug-fix workflow is wired. */
   bugTasks: () => unknown[] = () => [];
+  /** Open permission requests (set by start.ts from the PermissionBroker). */
+  permissions: () => PermissionRequest[] = () => [];
 
   constructor(home: string, private defaultsDir: string) {
     super();
@@ -209,6 +212,6 @@ export class Store extends EventEmitter {
   sessionStatus(sessionId: string): SessionActivity | undefined { return this.statuses.get(sessionId); }
 
   getState(): GridState {
-    return { roles: this.listRoles(), agents: this.listAgents(), assignments: this.listAssignments(), liveSessions: this.liveSessions(), sessionStatuses: [...this.statuses.values()], bugTasks: this.bugTasks() as GridState["bugTasks"] };
+    return { roles: this.listRoles(), agents: this.listAgents(), assignments: this.listAssignments(), liveSessions: this.liveSessions(), sessionStatuses: [...this.statuses.values()], bugTasks: this.bugTasks() as GridState["bugTasks"], permissions: this.permissions() };
   }
 }

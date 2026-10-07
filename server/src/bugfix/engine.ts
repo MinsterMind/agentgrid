@@ -1,19 +1,21 @@
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { stat } from "node:fs/promises";
-import { Conflict, NotFound } from "../store/store.js";
+import { BadRequest, Conflict, NotFound } from "../store/store.js";
 import type { Store } from "../store/store.js";
 import type { Manager } from "../runner/manager.js";
 import type { Assignment } from "../types.js";
 import { BugTaskStore } from "./store.js";
 import { GitOps, branchName, worktreePath, type DiffResult } from "./git.js";
+import { testFilesIn } from "./tests.js";
+import { RunQueue } from "./queue.js";
 import { IntegrationsStore } from "./integrations.js";
 import type { ForgeAdapter } from "./forge/index.js";
 import type { TrackerProvider } from "./tracker.js";
 import { renderStagePrompt, type StageNote } from "./prompts.js";
 import { parseAssumptions } from "./assumptions.js";
 import { nextStage } from "./stages.js";
-import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask, type PrInfo } from "./types.js";
+import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask, type GateKind, type PrInfo } from "./types.js";
 import { describeComments, PR_STAGES, type PrFinding } from "./watcher.js";
 import { parseRemote } from "./forge/bitbucket.js";
 import type { MergeMethod } from "./forge/types.js";
@@ -52,6 +54,8 @@ const REVIEW_FEEDBACK_EVENTS: ReadonlySet<BugEvent["type"]> = new Set(["review-c
 export async function recoverStuckBugTasks(bugs: BugTaskStore): Promise<void> {
   for (const task of bugs.list()) {
     if (!RECOVERABLE_STAGES.includes(task.stage)) continue;
+    // Waiting for a slot is not running: nothing was dispatched, so there is nothing to fail. The next engine resumes it.
+    if (task.queuedAt) continue;
     await bugs.apply(task.id, nextStage(task, { type: "stage-failed", reason: "server restarted while this stage was running" }));
   }
 }
@@ -121,9 +125,18 @@ export class BugFixEngine {
   constructor(deps: EngineDeps) { this.deps = deps; this.role = deps.role ?? "bugfix"; }
 
   /** React to assignments finishing; safe to call more than once — a repeat call is a no-op. */
+  private maxRuns = 4;
+  private queue = new RunQueue(() => this.maxRuns);
+  /** The run cap (spec 2026-10-07 §5): raising it starts whoever now fits. */
+  setMaxConcurrentRuns(n: number): void {
+    this.maxRuns = Math.max(1, Math.min(32, Math.floor(n) || 4));
+    for (const id of this.queue.drain()) this.startQueuedDetached(id);
+  }
+
   attach(): void {
     if (this.attached) return;
     this.attached = true;
+    void this.deps.integrations.read().then(c => { if (c.maxConcurrentRuns) this.setMaxConcurrentRuns(c.maxConcurrentRuns); }).catch(() => {}).finally(() => this.resumeQueued());
     this.deps.store.on("event", e => {
       if (e?.type !== "assignment") return;
       const a = e.assignment as Assignment;
@@ -227,7 +240,38 @@ export class BugFixEngine {
     return this.advance(task.id, { type: "stage-done" });
   }
 
-  approve(taskId: string): Promise<BugTask> { return this.advance(taskId, { type: "approve" }); }
+  /** `expect`: the gate the human was looking at. A conflict can move a task out of "approved" on its
+   *  own, so a Merge click already on its way must be refused, never turned into "start a rebase". */
+  async approve(taskId: string, expect?: GateKind): Promise<BugTask> {
+    const t = this.deps.bugs.get(taskId);
+    if (expect && t.gate?.kind !== expect) {
+      throw new Conflict(`the task moved on — it is ${t.stage === "conflict" ? "in conflict with its base" : `at ${t.stage}`}, not the ${expect} gate you clicked`);
+    }
+    // A fix without a regression test can come back unnoticed: approving one takes a stated reason,
+    // given for this very diff (see overrideTests). Records from before testsInDiff never block.
+    if (t.stage === "diff-review" && Array.isArray(t.testsInDiff) && t.testsInDiff.length === 0 && t.testOverride?.head !== t.approvedHead) {
+      throw new Conflict("no regression test in this change — approve with a reason to override");
+    }
+    return this.advance(taskId, { type: "approve" });
+  }
+  /** "Resolve all N conflicts": approve every task waiting at the conflict gate. The run cap paces them. */
+  async resolveConflicts(): Promise<string[]> {
+    const ids = this.deps.bugs.list().filter(t => t.stage === "conflict").map(t => t.id);
+    const done: string[] = [];
+    for (const id of ids) { try { await this.approve(id, "conflict"); done.push(id); } catch (err) { if (!(err instanceof Conflict)) throw err; } }
+    return done;
+  }
+  /** Approve the diff although it adds no test, saying why — kept on the task and in its history. */
+  async overrideTests(taskId: string, reason: string): Promise<BugTask> {
+    const why = reason.trim();
+    if (!why) throw new BadRequest("say why there is no regression test");
+    const t = this.deps.bugs.get(taskId);
+    if (t.stage !== "diff-review") throw new Conflict(`a missing regression test is overridden at the diff gate (is ${t.stage})`);
+    const at = new Date().toISOString();
+    await this.deps.bugs.patch(taskId, { testOverride: { reason: why, at, head: t.approvedHead ?? "" },
+      history: [...t.history, { stage: t.stage, at, note: `Approved without a regression test: ${why}` }] });
+    return this.approve(taskId);
+  }
   /** At the plan gate: the plan found nothing to change (e.g. already fixed) and the human agrees. */
   async closeNoChange(taskId: string): Promise<BugTask> {
     const task = this.deps.bugs.get(taskId);
@@ -262,7 +306,8 @@ export class BugFixEngine {
     if (method && this.deps.bugs.get(taskId).stage === "approved") {
       await this.deps.bugs.patch(taskId, { mergeMethod: method });
     }
-    return this.approve(taskId);
+    // Choosing a merge method is only ever a Merge click.
+    return this.approve(taskId, method ? "merge" : undefined);
   }
 
   /** Removes a finished task and its agent. Refused while the task is still live — dismissing
@@ -275,6 +320,7 @@ export class BugFixEngine {
     // silently eaten, or it orphans the agent directory with nothing left to report it.
     await this.deps.store.archiveAgent(task.agentId).catch(err => { if (!(err instanceof NotFound)) throw err; });
     this.currentDispatch.delete(task.id);
+    this.releaseRun(task.id);
     await this.deps.bugs.remove(task.id);
   }
 
@@ -356,6 +402,26 @@ export class BugFixEngine {
    * a stale "couldn't reach the forge" note clears. Nothing here touches stage, so it needs no
    * place in `advance()`'s chain.
    */
+  private conflictNudge: ((repo: string) => void) | null = null;
+  /** Called with a repo when one of its PRs merges: the ConflictWatcher re-checks its siblings at once. */
+  setConflictNudge(fn: ((repo: string) => void) | null): void { this.conflictNudge = fn; }
+
+  /** Why a conflict check couldn't run for this task, or null once one did. */
+  async onConflictProblem(taskId: string, message: string | null): Promise<void> {
+    const t = this.deps.bugs.get(taskId);
+    if (t.conflictCheckError !== message) await this.deps.bugs.patch(taskId, { conflictCheckError: message });
+  }
+
+  /** A ConflictWatcher finding. A late one for a task that has moved on (say, Resolve was pressed
+   *  meanwhile) is simply out of date: nextStage refuses it, and that is not an error. */
+  async onConflictFinding(f: { taskId: string; event: BugEvent }): Promise<void> {
+    await this.serial(f.taskId, async () => {
+      try { await this.advanceLocked(f.taskId, f.event); }
+      catch (err) { if (!(err instanceof Conflict)) throw err; }
+      return this.deps.bugs.get(f.taskId);
+    });
+  }
+
   async onPrChecked(taskId: string, checkedAt: string): Promise<void> {
     const task = this.deps.bugs.get(taskId);
     // Cosmetic ordering only — a concurrent finding's own (newer) stamp must not be walked
@@ -457,7 +523,21 @@ export class BugFixEngine {
     // already answered from a new one (see `BugTask.checksRoundHead`). Written only now, after
     // `nextStage` accepted the transition — a refused event must leave nothing behind.
     if (event.type === "checks-failed") await this.deps.bugs.patch(taskId, { checksRoundHead: event.headSha });
+    // What conflicts, and where to return if it clears: written only once nextStage accepted the finding.
+    if (event.type === "conflicting") {
+      const files = event.files ?? current.conflict?.files ?? [];
+      await this.deps.bugs.patch(taskId, { conflict: current.stage === "conflict" && current.conflict
+        ? { ...current.conflict, files }
+        : { files, base: event.base ?? current.baseBranch, detectedAt: new Date().toISOString(), returnTo: current.stage === "approved" ? "approved" : "monitoring" } });
+    }
     let task = await this.deps.bugs.apply(taskId, t);
+    // A merge moves the base: every sibling PR in this repo may conflict now — check them right away.
+    if (event.type === "pr-merged") this.conflictNudge?.(task.sourceRepo);
+    // Kept through the rebase and its review (the diff gate shows what conflicted); forgotten once that
+    // diff is approved, the conflict clears, or the task ends.
+    const conflictOver = event.type === "conflict-cleared" || (current.stage === "conflict" && (event.type === "pr-merged" || event.type === "pr-closed"))
+      || (current.stage === "diff-review" && event.type === "approve") || TERMINAL_STAGES.includes(task.stage);
+    if (conflictOver && task.conflict) task = await this.deps.bugs.patch(taskId, { conflict: null });
     await this.settleTerminal(task);
     // A server stage is work the engine does itself: no assignment, no agent, no tokens. It
     // still reports stage-done/stage-failed, so failure and retry behave exactly as for an
@@ -466,8 +546,15 @@ export class BugFixEngine {
     // detached from the store's event listener rather than awaited there).
     if (SERVER_STAGES.includes(task.stage)) { void this.runServerStage(task); return task; }
     if (!t.run) return task;
+    // Over the cap: wait in line. The slot's release (any way a run ends) starts the next in line.
+    if (!this.queue.tryStart(task.id)) return this.deps.bugs.patch(taskId, { queuedAt: new Date().toISOString(), queuedNote: this.pendingNote.get(taskId) ?? null });
+    return this.dispatchLocked(taskId, task, t.run);
+  }
+
+  /** Run an agent stage whose slot is held; a failure to start it fails the task (and frees the slot). */
+  private async dispatchLocked(taskId: string, task: BugTask, stage: BugStage): Promise<BugTask> {
     try {
-      task = await this.runStage(task, t.run);
+      task = await this.runStage(task, stage);
     } catch (err) {
       const original = err as Error;
       try {
@@ -785,6 +872,8 @@ export class BugFixEngine {
     // task — see `currentDispatch`'s own comment for why this alone is both necessary
     // and sufficient (no separate durable-field check needed).
     if (this.currentDispatch.get(task.id) !== a.id) return;
+    // This run is over: its slot goes to the next in line while this stage is verified.
+    this.releaseRun(task.id);
 
     await bugs.patch(task.id, { costUsd: Number((task.costUsd + (a.costUsd ?? 0)).toFixed(4)) });
     await this.collectAssumptions(task.id);
@@ -851,7 +940,7 @@ export class BugFixEngine {
     if (task.stage === "analyzing") {
       const plan = await bugs.readArtifact(task.id, "plan.md");
       if (!plan?.trim()) throw new Error("the agent did not write plan.md");
-      await bugs.patch(task.id, { verdict: planVerdict(plan) });
+      await bugs.patch(task.id, { verdict: planVerdict(plan), plannedTests: regressionTests(plan) });
       return;
     }
     if (task.stage === "implementing") {
@@ -869,6 +958,7 @@ export class BugFixEngine {
       await bugs.patch(task.id, { approvedHead: await git.revParse(task.worktree) });
       await bugs.writeArtifact(task.id, "diff.patch", diff.patch);
       await bugs.writeArtifact(task.id, "diffstat.json", JSON.stringify({ files: diff.files, additions: diff.additions, deletions: diff.deletions }, null, 2));
+      await bugs.patch(task.id, { testsInDiff: testFilesIn(diff.files.map(f => f.path)) });
       return;
     }
     if (task.stage === "review-feedback") {
@@ -886,6 +976,7 @@ export class BugFixEngine {
       await bugs.patch(task.id, { approvedHead: head });
       await bugs.writeArtifact(task.id, "diff.patch", diff.patch);
       await bugs.writeArtifact(task.id, "diffstat.json", JSON.stringify({ files: diff.files, additions: diff.additions, deletions: diff.deletions }, null, 2));
+      await bugs.patch(task.id, { testsInDiff: testFilesIn(diff.files.map(f => f.path)) });
       return;
     }
     if (task.stage === "rebase") {
@@ -907,6 +998,7 @@ export class BugFixEngine {
       await bugs.patch(task.id, { approvedHead: await git.revParse(task.worktree) });
       await bugs.writeArtifact(task.id, "diff.patch", diff.patch);
       await bugs.writeArtifact(task.id, "diffstat.json", JSON.stringify({ files: diff.files, additions: diff.additions, deletions: diff.deletions }, null, 2));
+      await bugs.patch(task.id, { testsInDiff: testFilesIn(diff.files.map(f => f.path)) });
       return;
     }
     if (task.stage === "opening-pr") {
@@ -933,9 +1025,33 @@ export class BugFixEngine {
   /** A task that just reached a terminal stage owns nothing any more: drop its dispatch
    *  entry (a stale one is dead weight, and would have to be matched against forever)
    *  and release its agent. */
+  /** A run ended (or a queued task left the line): free its slot and start whoever is next. */
+  private releaseRun(taskId: string): void {
+    for (const id of this.queue.release(taskId)) this.startQueuedDetached(id);
+  }
+  private startQueuedDetached(id: string): void {
+    void this.serial(id, () => this.startQueued(id)).catch(err => console.error("[bugfix] starting a queued run failed", err));
+  }
+  /** A queued task's turn: start the agent stage it was waiting to run — if it still is. */
+  private async startQueued(id: string): Promise<BugTask> {
+    let task: BugTask;
+    try { task = this.deps.bugs.get(id); } catch { this.releaseRun(id); throw new NotFound(id); }
+    if (!task.queuedAt || !AGENT_STAGES.includes(task.stage)) { this.releaseRun(id); return task; }
+    // The note it was queued with, if this engine doesn't hold it (a restart since).
+    if (task.queuedNote && !this.pendingNote.has(id)) this.pendingNote.set(id, task.queuedNote);
+    task = await this.deps.bugs.patch(id, { queuedAt: null, queuedNote: null });
+    return this.dispatchLocked(id, task, task.stage);
+  }
+  /** After a restart: tasks that were waiting for a slot line up again, oldest first. */
+  private resumeQueued(): void {
+    const waiting = this.deps.bugs.list().filter(t => t.queuedAt && AGENT_STAGES.includes(t.stage)).sort((a, b) => a.queuedAt!.localeCompare(b.queuedAt!));
+    for (const t of waiting) if (this.queue.tryStart(t.id)) this.startQueuedDetached(t.id);
+  }
+
   private async settleTerminal(task: BugTask): Promise<void> {
     if (!TERMINAL_STAGES.includes(task.stage)) return;
     this.currentDispatch.delete(task.id);
+    this.releaseRun(task.id);
     // Best-effort, deliberately guarded: the task's transition into a terminal stage has
     // already landed and persisted by the time this runs, so a failure here (`stopAgent`'s
     // own `store.getAgent` throwing when the agent was archived out from under the task) must
@@ -984,4 +1100,19 @@ function noChangeReport(task: BugTask, evidence: string): string {
   const prior = task.ticketCommits.length ? `\n\nCommits on ${task.baseRef} that name ${task.issue.key}:\n${task.ticketCommits.map(c => `  ${c}`).join("\n")}` : "";
   return `${evidence.trim()}${prior}\n\nNothing was pushed and no pull request was opened.\n` +
     `Suggested for ${task.issue.key}: move it to Done (or "Won't fix" if it never reproduced), with a comment pointing at the evidence above.`;
+}
+
+/** The items under the plan's "Regression tests" heading — the tests that stop this bug coming back. */
+export function regressionTests(plan: string): string[] {
+  const out: string[] = [];
+  let capture = false, fence = false;
+  for (const line of plan.replace(/\r\n/g, "\n").split("\n")) {
+    if (/^\s*(```|~~~)/.test(line)) { fence = !fence; continue; }
+    if (fence) continue;
+    const h = /^#{1,3}\s+(.+?)\s*#*\s*$/.exec(line);
+    if (h) { capture = /^regression tests$/i.test(h[1].trim()); continue; }
+    const item = capture && /^\s*[-*]\s+(.+)$/.exec(line);
+    if (item) out.push(item[1].trim());
+  }
+  return out;
 }

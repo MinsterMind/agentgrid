@@ -20,10 +20,13 @@ let app: ReturnType<typeof createApp>; let bugs: BugTaskStore; let calls: string
 const fakeEngine = (bugs: BugTaskStore, calls: string[]) => ({
   preflight: async (repo: string) => { calls.push(`preflight ${repo}`); return { ok: true, problems: [] }; },
   closeNoChange: async (id: string) => { calls.push(`no-change ${id}`); return bugs.get(id); },
+  setMaxConcurrentRuns: (n: number) => { calls.push(`cap ${n}`); },
+  resolveConflicts: async () => { calls.push("resolve-all"); return ["bt1"]; },
+  overrideTests: async (id: string, reason: string) => { calls.push(`override ${id} ${reason}`); return bugs.get(id); },
   intake: async (input: { issueRef: string; repo: string; baseBranch?: string; startAnyway?: boolean }) => { calls.push(`intake ${input.issueRef}${input.baseBranch ? ` base=${input.baseBranch}` : ""}${input.startAnyway ? " anyway" : ""}`);
     if (input.issueRef === "PAY-1") throw Object.assign(new Error("PAY-1 may already be fixed"), { status: 409, code: "already-on-base" });
     return bugs.create({ issue: ISSUE, trackerProject: "PAY", sourceRepo: input.repo, worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", baseRef: "origin/main", ticketCommits: [], agentId: "bugfix@w", mergePolicy: "ask", mergeMethod: "squash" }); },
-  approve: async (id: string) => { calls.push(`approve ${id}`); return bugs.get(id); },
+  approve: async (id: string, expect?: string) => { calls.push(`approve ${id}${expect ? ` expect=${expect}` : ""}`); return bugs.get(id); },
   requestChanges: async (id: string, text: string) => { calls.push(`changes ${id} ${text}`); return bugs.get(id); },
   cancel: async (id: string) => { calls.push(`cancel ${id}`); return bugs.get(id); },
   retry: async (id: string) => { calls.push(`retry ${id}`); return bugs.get(id); },
@@ -59,6 +62,19 @@ describe("bug task routes", () => {
     expect(refused.body).toEqual({ error: "PAY-1 may already be fixed", code: "already-on-base" });
     await request(app).post("/api/bugtasks/bt1/close-no-change").expect(200);
     expect(calls).toContain("no-change bt1");
+  });
+
+  it("reads one ticket for the bugs view, refusing a key that isn't one", async () => {
+    expect((await request(app).get("/api/bugfix/issues/PAY-42").expect(200)).body).toMatchObject({ key: "PAY-42", title: "Boom" });
+    await request(app).get("/api/bugfix/issues/..%2Fx").expect(400);
+    await request(app).get("/api/bugfix/issues/PAY 42").expect(400);
+  });
+
+  it("approving a diff without a test needs a reason", async () => {
+    await request(app).post("/api/bugtasks").send({ issueRef: "PAY-42", repo: "/r" });
+    await request(app).post("/api/bugtasks/bt1/override-tests").send({}).expect(400);
+    await request(app).post("/api/bugtasks/bt1/override-tests").send({ reason: "docs only" }).expect(200);
+    expect(calls).toContain("override bt1 docs only");
   });
 
   it("serves the plan markdown and the computed diff", async () => {
@@ -98,6 +114,28 @@ describe("bug task routes", () => {
     const saved = await request(app).put("/api/integrations").send({ forge: { preset: "github" } }).expect(200);
     expect(saved.body.forge).toEqual({ preset: "github" });
     expect((await request(app).get("/api/integrations")).body.forge).toEqual({ preset: "github" });
+  });
+
+  it("the agents-at-once cap: a whole number from 1 to 32, saved and applied", async () => {
+    await request(app).put("/api/integrations").send({ maxConcurrentRuns: 0 }).expect(400);
+    await request(app).put("/api/integrations").send({ maxConcurrentRuns: 2.5 }).expect(400);
+    await request(app).put("/api/integrations").send({ maxConcurrentRuns: 33 }).expect(400);
+    const saved = await request(app).put("/api/integrations").send({ maxConcurrentRuns: 8 }).expect(200);
+    expect(saved.body.maxConcurrentRuns).toBe(8);
+    expect(calls).toContain("cap 8");
+    expect((await request(app).get("/api/integrations")).body.maxConcurrentRuns).toBe(8);
+  });
+
+  it("Resolve all approves every bug waiting at the conflict gate", async () => {
+    expect((await request(app).post("/api/bugtasks/resolve-conflicts").expect(200)).body).toEqual({ ids: ["bt1"] });
+    expect(calls).toContain("resolve-all");
+  });
+
+  it("approve passes the gate the click was for, and rejects an unknown one", async () => {
+    await request(app).post("/api/bugtasks").send({ issueRef: "PAY-42", repo: "/r" });
+    await request(app).post("/api/bugtasks/bt1/approve").send({ expect: "conflict" }).expect(200);
+    expect(calls).toContain("approve bt1 expect=conflict");
+    await request(app).post("/api/bugtasks/bt1/approve").send({ expect: "nonsense" }).expect(400);
   });
 
   it("returns a single bug task by id", async () => {

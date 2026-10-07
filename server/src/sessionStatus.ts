@@ -4,7 +4,7 @@ import { transcriptPath } from "./transcript.js";
 import type { SessionPhase, SessionActivity } from "./types.js";
 export type { SessionPhase, SessionActivity };
 
-const summarise = (input: any): string => String(input?.command ?? input?.file_path ?? input?.pattern ?? input?.description ?? Object.values(input ?? {}).find(v => typeof v === "string") ?? "").slice(0, 160);
+export const summarise = (input: any): string => String(input?.command ?? input?.file_path ?? input?.pattern ?? input?.description ?? Object.values(input ?? {}).find(v => typeof v === "string") ?? "").slice(0, 160);
 
 /** Pure: derive status from the parsed JSONL rows (newest last). */
 export function deriveStatus(sessionId: string, rows: any[]): SessionActivity {
@@ -28,7 +28,8 @@ export function deriveStatus(sessionId: string, rows: any[]): SessionActivity {
         if (b.type === "text" && b.text?.trim()) lastMessage = b.text.trim();
         if (b.type === "tool_use") openTools.set(b.id, { name: b.name, input: b.input ?? {} });
       }
-      phase = openTools.size > 0 ? "waiting" : e.message?.stop_reason === "end_turn" ? "idle" : "working";
+      // Only a question waits on the human here; an open tool is running (auto mode never asks for it).
+      phase = openTools.size > 0 ? ([...openTools.values()].some(t => t.name === "AskUserQuestion") ? "waiting" : "working") : e.message?.stop_reason === "end_turn" ? "idle" : "working";
     }
   }
   const out: SessionActivity = { sessionId, phase, lastMessage: lastMessage.slice(0, 2000), lastPrompt: lastPrompt.slice(0, 500), updatedAt };
@@ -37,7 +38,7 @@ export function deriveStatus(sessionId: string, rows: any[]): SessionActivity {
     if (pending.name === "AskUserQuestion") {
       const q = pending.input?.questions?.[0];
       if (q) out.question = { text: String(q.question ?? ""), options: (q.options ?? []).map((o: any) => String(o.label ?? o)), multiSelect: Boolean(q.multiSelect) };
-    } else out.pendingTool = { name: pending.name, summary: summarise(pending.input) };
+    } else out.runningTool = { name: pending.name, summary: summarise(pending.input) };
   }
   return out;
 }
@@ -73,7 +74,7 @@ export class SessionStatusWatcher {
       w.sig = sig;
       const status = await readSessionStatus(w.cwd, sid, this.claudeHome);
       if (!status) continue;
-      const changed = !w.status || w.status.phase !== status.phase || w.status.lastMessage !== status.lastMessage || JSON.stringify(w.status.question) !== JSON.stringify(status.question) || JSON.stringify(w.status.pendingTool) !== JSON.stringify(status.pendingTool);
+      const changed = !w.status || w.status.phase !== status.phase || w.status.lastMessage !== status.lastMessage || JSON.stringify(w.status.question) !== JSON.stringify(status.question) || JSON.stringify(w.status.runningTool) !== JSON.stringify(status.runningTool);
       w.status = status;
       if (changed) this.onChange(status);
     }

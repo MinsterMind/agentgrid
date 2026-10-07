@@ -422,3 +422,88 @@ describe("PrWatcher: a PR opened outside AgentGrid", () => {
     expect(calls).toEqual([]);
   });
 });
+
+describe("PrWatcher — one listing call per repo (spec 2026-10-07 §6)", () => {
+  async function threeTasks() {
+    const bugs = new BugTaskStore(await mkdtemp(path.join(tmpdir(), "ag-watch-")));
+    await bugs.init();
+    for (const n of [1, 2, 3]) {
+      const t = await bugs.create({ issue: { ...issue, key: `W-${n}` }, trackerProject: "W", sourceRepo: "/r", worktree: `/r/.worktrees/bugfix-W-${n}`,
+        branch: `bugfix/W-${n}`, baseBranch: "main", agentId: `ag${n}`, mergePolicy: "ask", mergeMethod: "squash" } as never);
+      await bugs.patch(t.id, { stage: "monitoring", pr: pr({ number: n, lastSeenEventAt: `t${n}`, headSha: `h${n}` }) });
+    }
+    return bugs;
+  }
+  const listing = (over: Record<number, Partial<PrInfo>> = {}, drop: number[] = []) =>
+    [1, 2, 3].filter(n => !drop.includes(n)).map(n => pr({ number: n, lastSeenEventAt: `t${n}`, headSha: `h${n}`, ...(over[n] ?? {}) }));
+  function forge(list: () => { prs: PrInfo[] } | { unavailable: string }, get: (n: number) => PrLookup) {
+    const calls = { list: 0, get: [] as number[] };
+    const f: ForgeAdapter = { ...forgeWith([{ found: pr() }]),
+      listOpenPrs: async () => { calls.list++; return list(); },
+      getPr: async (_r: string, n: number) => { calls.get.push(n); return get(n); } };
+    return { f, calls };
+  }
+
+  it("nothing changed: one listing, no per-PR reads", async () => {
+    const bugs = await threeTasks();
+    const { f, calls } = forge(() => ({ prs: listing() }), n => ({ found: pr({ number: n }) }));
+    await new PrWatcher({ bugs, forge: f, onFinding: () => {} }).poll();
+    expect(calls).toEqual({ list: 1, get: [] });
+  });
+  it("a PR whose listing moved is read on its own", async () => {
+    const bugs = await threeTasks();
+    const { f, calls } = forge(() => ({ prs: listing({ 2: { lastSeenEventAt: "t2-later" } }) }), n => ({ found: pr({ number: n, lastSeenEventAt: "t2-later", headSha: `h${n}` }) }));
+    await new PrWatcher({ bugs, forge: f, onFinding: () => {} }).poll();
+    expect(calls).toEqual({ list: 1, get: [2] });
+  });
+  // Review Focus 5
+  it("a PR gone from the open list is looked up once — and found merged", async () => {
+    const bugs = await threeTasks();
+    const { found, onFinding } = collect();
+    const { f, calls } = forge(() => ({ prs: listing({}, [3]) }), n => ({ found: pr({ number: n, state: "MERGED", headSha: `h${n}` }) }));
+    await new PrWatcher({ bugs, forge: f, onFinding }).poll();
+    expect(calls).toEqual({ list: 1, get: [3] });
+    expect(found.map(x => x.event)).toEqual([{ type: "pr-merged" }]);
+  });
+  // Final review #2: GitHub's updatedAt needn't move when CI finishes — compare what the listing carries.
+  it("a build that goes red is noticed even when updatedAt didn't move", async () => {
+    const bugs = await threeTasks();
+    const { found, onFinding } = collect();
+    const red = { lastSeenEventAt: "t1", headSha: "h1", checks: "FAILURE" };
+    const { f, calls } = forge(() => ({ prs: listing({ 1: red }) }), n => ({ found: pr({ number: n, ...red }) }));
+    await new PrWatcher({ bugs, forge: f, onFinding }).poll();
+    expect(calls.get).toEqual([1]);
+    expect(found.map(x => x.event?.type)).toEqual(["checks-failed"]);
+  });
+  it("what a listing doesn't carry (checks, mergeable on Bitbucket) isn't a change — unless checks were still running", async () => {
+    const bugs = await threeTasks();
+    await bugs.patch(bugs.list()[2].id, { pr: pr({ number: 3, lastSeenEventAt: "t3", headSha: "h3", checks: "PENDING" }) });
+    const { f, calls } = forge(() => ({ prs: listing({ 1: { checks: null, mergeable: null }, 2: { checks: null, mergeable: null }, 3: { checks: null, mergeable: null } }) }),
+      n => ({ found: pr({ number: n, lastSeenEventAt: `t${n}`, headSha: `h${n}`, checks: "PENDING" }) }));
+    await new PrWatcher({ bugs, forge: f, onFinding: () => {} }).poll();
+    expect(calls.get).toEqual([3]);                    // only the PR whose CI we were waiting on
+  });
+  // Final review #3
+  it("a read that finds nothing new lets the repo's polling slow down", async () => {
+    const bugs = await threeTasks();
+    let t = 0;
+    const { f, calls } = forge(() => ({ prs: listing({ 2: { reviewDecision: "APPROVED" } }) }), n => ({ found: pr({ number: n, lastSeenEventAt: `t${n}`, headSha: `h${n}` }) }));
+    const w = new PrWatcher({ bugs, forge: f, onFinding: () => {}, now: () => t, jitter: ms => ms, baseMs: 1000, ceilingMs: 8000 });
+    await w.poll(); t = 1000; await w.poll(); t = 2000; await w.poll();
+    expect(calls.list).toBe(2);                         // due at 0 and 1000, then not until 3000 — it backed off
+  });
+  it("a PR the listing doesn't show is read on its own schedule, not every sweep", async () => {
+    const bugs = await threeTasks();
+    let t = 0;
+    const { f, calls } = forge(() => ({ prs: listing({}, [3]) }), n => ({ found: pr({ number: n, lastSeenEventAt: `t${n}`, headSha: `h${n}` }) }));
+    const w = new PrWatcher({ bugs, forge: f, onFinding: () => {}, now: () => t, jitter: ms => ms, baseMs: 1000, ceilingMs: 8000 });
+    await w.poll(); t = 1000; await w.poll(); t = 2000; await w.poll(); t = 2500; await w.poll();
+    expect(calls.get).toEqual([3, 3]);                  // at 0 and 1000, then its own backoff (next due at 3000)
+  });
+  it("a listing that fails falls back to reading each PR", async () => {
+    const bugs = await threeTasks();
+    const { f, calls } = forge(() => ({ unavailable: "rate limited" }), n => ({ found: pr({ number: n, lastSeenEventAt: `t${n}`, headSha: `h${n}` }) }));
+    await new PrWatcher({ bugs, forge: f, onFinding: () => {} }).poll();
+    expect(calls.list).toBe(1); expect(calls.get.sort()).toEqual([1, 2, 3]);
+  });
+});

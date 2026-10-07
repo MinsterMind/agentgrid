@@ -42,7 +42,9 @@ Compare against origin/develop, never a local branch: \`git log --oneline origin
    Then these headings:
    - Root cause
    - Fix (files and what changes in each)
-   - Test strategy (how we will know it is fixed)
+   - Regression tests — a list, one item per test: the test file › the case's name — what it asserts —
+     why it fails on today's code. These are what stop this bug coming back, so name real files in this
+     repo. With "no change needed", name the existing test that already covers it (or say none exists).
    - Risks and anything you are unsure about
 Keep it under 400 words; the human reads this before approving.
 

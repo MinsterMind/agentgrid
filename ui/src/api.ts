@@ -1,3 +1,4 @@
+import type { TrackerIssue } from "./types";
 import type { Agent, Assignment, BugTask, Decision, DirListing, GridEvent, GridState, Integrations, IssueSummary, MemoryFile, SessionInfo, SetupReport } from "./types";
 
 export interface TranscriptEntry { ts: string; role: "user" | "assistant"; kind: "text" | "tool_use" | "tool_result"; text: string; tool?: string; input?: unknown }
@@ -42,6 +43,9 @@ export const api = {
   ack: (id: string) => call<void>("POST", `/api/agents/${encodeURIComponent(id)}/ack`),
   openTerminal: (id: string) => call<{ command: string; opened: boolean }>("POST", `/api/agents/${encodeURIComponent(id)}/open-terminal`),
   say: (id: string, text: string) => call<{ via: "terminal" | "assignment" }>("POST", `/api/agents/${encodeURIComponent(id)}/say`, { text }),
+  issue: (key: string) => call<TrackerIssue>("GET", `/api/bugfix/issues/${encodeURIComponent(key)}`),
+  listRules: () => call<{ rules: Array<{ rule: string; addedAt: string }>; problem: string | null }>("GET", "/api/permissions/rules"),
+  removeRule: (rule: string) => call<{ rules: Array<{ rule: string; addedAt: string }>; problem: string | null }>("DELETE", "/api/permissions/rules", { rule }),
   rereview: (id: string) => call<Assignment>("POST", `/api/agents/${encodeURIComponent(id)}/rereview`),
   resetSession: (id: string) => call<Agent>("POST", `/api/agents/${encodeURIComponent(id)}/reset`),
   memory: (id: string) => call<MemoryFile[]>("GET", `/api/agents/${encodeURIComponent(id)}/memory`),
@@ -56,10 +60,14 @@ export const api = {
   transcript: (assignmentId: string) => call<Array<{ ts: string; role: string; kind: string; text: string }>>("GET", `/api/assignments/${assignmentId}/transcript`),
   listBugTasks: () => call<BugTask[]>("GET", "/api/bugtasks"),
   createBugTask: (input: { issueRef: string; repo: string; mergePolicy?: "ask" | "auto"; mergeMethod?: string; baseBranch?: string; startAnyway?: boolean }) => call<BugTask>("POST", "/api/bugtasks", input),
+  resolveConflicts: () => call<{ ids: string[] }>("POST", "/api/bugtasks/resolve-conflicts"),
+  overrideTests: (id: string, reason: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/override-tests`, { reason }),
   closeBugNoChange: (id: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/close-no-change`),
   bugPlan: (id: string) => call<{ markdown: string }>("GET", `/api/bugtasks/${encodeURIComponent(id)}/plan`),
   bugDiff: (id: string) => call<{ patch: string; files: Array<{ path: string; additions: number; deletions: number }>; additions: number; deletions: number }>("GET", `/api/bugtasks/${encodeURIComponent(id)}/diff`),
-  approveBug: (id: string, mergeMethod?: MergeMethod) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/approve`, mergeMethod ? { mergeMethod } : undefined),
+  /** `expect`: the gate this click was for — the server refuses it if the task has moved to another (409). */
+  approveBug: (id: string, mergeMethod?: MergeMethod, expect?: "plan" | "diff" | "merge" | "conflict") =>
+    call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/approve`, mergeMethod || expect ? { ...(mergeMethod ? { mergeMethod } : {}), ...(expect ? { expect } : {}) } : undefined),
   requestBugChanges: (id: string, text: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/request-changes`, { text }),
   cancelBug: (id: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/cancel`),
   retryBug: (id: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/retry`),

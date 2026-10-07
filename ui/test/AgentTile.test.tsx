@@ -32,8 +32,8 @@ describe("AgentTile", () => {
     expect(tile).toHaveTextContent("Bash: kubectl get pods");
     expect(tile).toHaveTextContent("#a41"); expect(tile).toHaveTextContent("$0.31");
   });
-  const permission = { kind: "permission" as const, toolUseId: "tu1", toolName: "Bash", input: { command: "kubectl rollout restart deploy/api" }, suggestions: [{}] };
-  const oneQuestion = { kind: "question" as const, toolUseId: "tu2", toolName: "AskUserQuestion" as const, suggestions: [],
+  const permission = { kind: "permission" as const, toolUseId: "tu1", toolName: "Bash", input: { command: "kubectl rollout restart deploy/api" }, suggestions: [{}], suggestedRule: "Bash(kubectl rollout:*)", ruleIsBroad: false };
+  const oneQuestion = { kind: "question" as const, toolUseId: "tu2", toolName: "AskUserQuestion" as const, suggestions: [], suggestedRule: "", ruleIsBroad: false,
     input: { questions: [{ question: "Which env?", header: "Env", options: [{ label: "staging", description: "" }, { label: "prod", description: "" }] }] } };
 
   it("names every state in words", () => {
@@ -55,7 +55,8 @@ describe("AgentTile", () => {
     await userEvent.click(within(card).getByRole("button", { name: "Deny" }));
     expect(onDecide).toHaveBeenCalledWith("devops@hrns", "tu1", { kind: "deny" });
     expect(onSelect).not.toHaveBeenCalled();                          // Review Focus 1: the tile underneath is not selected
-    expect(within(card).queryByRole("button", { name: /always/i })).toBeNull();
+    // Always allow is offered on the card too, naming the rule it saves (spec 2026-10-06 §3.3)
+    expect(within(card).getByRole("button", { name: "Always allow Bash(kubectl rollout:*)" })).toBeInTheDocument();
   });
 
   it("answers a single one-choice question with its options", async () => {
@@ -118,11 +119,12 @@ describe("AgentTile asking you", () => {
     await userEvent.type(within(card).getByRole("textbox", { name: /reply/i }), "yes{Enter}");
     expect(onSay).toHaveBeenCalledWith("devops@hrns", "yes");
   });
-  it("a done agent whose terminal is waiting on approval says Needs you, not Done", () => {
-    render(<AgentTile {...base} agent={agent("done")} assignment={asg({ state: "done", outcome: "ok" })}
-      activity={{ sessionId: "s", phase: "waiting", lastMessage: "", lastPrompt: "", updatedAt: "", pendingTool: { name: "Bash", summary: "gh pr comment 7" } }} />);
+  it("a done agent whose terminal is asking for approval says Needs you, not Done", () => {
+    render(<AgentTile {...base} onDecide={vi.fn()} agent={agent("done")} assignment={asg({ state: "done", outcome: "ok" })}
+      activity={{ sessionId: "s", phase: "working", lastMessage: "", lastPrompt: "", updatedAt: "", runningTool: { name: "Bash", summary: "gh pr comment 7" } }}
+      permission={{ id: "pr1", agentId: "devops@hrns", source: "terminal", sessionId: "s", toolName: "Bash", input: { command: "gh pr comment 7" }, suggestedRule: "Bash(gh pr:*)", ruleIsBroad: false, createdAt: "" }} />);
     expect(screen.getByTestId("tile-state")).toHaveTextContent("Needs you");
-    expect(screen.getByTestId("tile-phase")).toHaveTextContent("Needs approval in the terminal: Bash");
+    expect(screen.getByTestId("tile-request")).toHaveTextContent("gh pr comment 7");
   });
 });
 
@@ -160,9 +162,10 @@ describe("AgentTile task line", () => {
     const title = screen.getByTestId("tile-devops@hrns").querySelector(".tasktitle")!;
     expect(title).toHaveTextContent("Rotate the refresh token"); expect(title).not.toHaveTextContent("add tests");
     rerender(<AgentTile {...base} agent={{ ...agent("free", null), resumeSessionId: "s" }} assignment={null}
-      activity={{ sessionId: "s", phase: "waiting", lastMessage: "", lastPrompt: "deploy staging", updatedAt: "", pendingTool: { name: "Bash", summary: "kubectl apply" } }} />);
+      activity={{ sessionId: "s", phase: "working", lastMessage: "", lastPrompt: "deploy staging", updatedAt: "", runningTool: { name: "Bash", summary: "kubectl apply" } }} />);
     expect(screen.getByTestId("tile-devops@hrns").querySelector(".tasktitle")).toHaveTextContent("deploy staging");
-    expect(screen.getByTestId("tile-phase")).toHaveTextContent("Needs approval in the terminal: Bash");
+    expect(screen.getByTestId("tile-phase")).toHaveTextContent("Working in the terminal: Bash");
+    expect(screen.getByTestId("tile-state")).toHaveTextContent("Idle");   // a running tool is not a prompt
   });
 
   // I3
@@ -174,12 +177,26 @@ describe("AgentTile task line", () => {
   });
 
   // I4
-  it("an idle agent waiting on you in its terminal says Needs you, not Idle", () => {
+  it("an idle agent whose terminal is asking for permission says Needs you, not Idle", () => {
     render(<AgentTile {...base} agent={{ ...agent("free", null), resumeSessionId: "s" }} assignment={null}
-      activity={{ sessionId: "s", phase: "waiting", lastMessage: "", lastPrompt: "", updatedAt: "", pendingTool: { name: "Bash", summary: "x" } }} />);
+      activity={{ sessionId: "s", phase: "working", lastMessage: "", lastPrompt: "", updatedAt: "", runningTool: { name: "Bash", summary: "x" } }}
+      permission={{ id: "pr1", agentId: "devops@hrns", source: "terminal", sessionId: "s", toolName: "Bash", input: { command: "x" }, suggestedRule: "Bash(x:*)", ruleIsBroad: false, createdAt: "" }} />);
     const st = screen.getByTestId("tile-state");
     expect(st).toHaveTextContent("Needs you");
     expect(st).toHaveClass("waiting");
   });
 
+});
+
+describe("AgentTile terminal permission", () => {
+  it("answers a terminal session's request right on the card — Allow, Always allow <rule>, Deny", async () => {
+    const onDecide = vi.fn();
+    render(<AgentTile {...base} onDecide={onDecide} agent={agent("done")} assignment={asg({ state: "done", outcome: "ok" })} permission={{ id: "pr7", agentId: "devops@hrns", source: "terminal" as const, sessionId: "s", toolName: "Bash", input: { command: "gh pr comment 7" }, suggestedRule: "Bash(gh pr:*)", ruleIsBroad: false, createdAt: "" }} />);
+    const card = screen.getByTestId("tile-request");
+    expect(card).toHaveTextContent("gh pr comment 7");
+    await userEvent.click(within(card).getByRole("button", { name: "Allow" }));
+    expect(onDecide).toHaveBeenCalledWith("devops@hrns", "pr7", { kind: "allow" });
+    await userEvent.click(within(card).getByRole("button", { name: "Always allow Bash(gh pr:*)" }));
+    expect(onDecide).toHaveBeenLastCalledWith("devops@hrns", "pr7", { kind: "always" });
+  });
 });

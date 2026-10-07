@@ -1,5 +1,16 @@
 import * as nodePty from "node-pty";
 import { stripForgeSecrets } from "./env.js";
+import { shellQuote } from "./shell.js";
+
+/** The shell command Claude Code runs for AgentGrid's permission hook. In the packaged app the
+ *  executable is Electron, which only behaves as plain Node with ELECTRON_RUN_AS_NODE. */
+export function hookCommand(execPath: string, hookFile: string, electron: boolean): string {
+  return `${electron ? "ELECTRON_RUN_AS_NODE=1 " : ""}${shellQuote(execPath)} ${shellQuote(hookFile)}`;
+}
+/** The `--settings` JSON that installs the hook for one embedded session only — the user's own settings are untouched. */
+export function hookSettings(command: string): string {
+  return JSON.stringify({ hooks: { PermissionRequest: [{ matcher: "*", hooks: [{ type: "command", command, timeout: 86400 }] }] } });
+}
 
 /** The slice of node-pty's IPty we use — lets tests substitute a fake. */
 export interface PtyLike {
@@ -40,7 +51,15 @@ const realSpawn: SpawnFn = (file, args, opts) => nodePty.spawn(file, args, opts)
  */
 export class PtyManager {
   private entries = new Map<string, Entry>();
+  private hook: { settings: string; env: Record<string, string> } | null = null;
+  private exitCbs: Array<(sessionId: string) => void> = [];
   constructor(private spawn: SpawnFn = realSpawn) {}
+
+  /** From now on, `claude --resume` launches ask AgentGrid for permission through the hook (see permissions/).
+   *  `claude attach` is left alone: attaching cannot change a running background session's hooks. */
+  configureHook(h: { settings: string; env: Record<string, string> } | null): void { this.hook = h; }
+  /** Called with the session id whenever a session's claude process ends. */
+  onSessionExit(cb: (sessionId: string) => void): void { this.exitCbs.push(cb); }
 
   isOpen(sessionId: string): boolean { return this.entries.has(sessionId); }
   /** Pids of the claude processes this manager is running (so they can be told apart from foreign terminals). */
@@ -49,7 +68,9 @@ export class PtyManager {
   attach(sessionId: string, opts: OpenOptions, onData: (d: string) => void, onEnd: (reason: string) => void): Handle {
     let entry = this.entries.get(sessionId);
     if (!entry) {
-      const pty = this.spawn("claude", opts.argv, { name: "xterm-256color", cols: opts.cols, rows: opts.rows, cwd: opts.cwd, env: cleanEnv() });
+      const hook = opts.argv[0] === "--resume" ? this.hook : null;
+      const pty = this.spawn("claude", hook ? [...opts.argv, "--settings", hook.settings] : opts.argv,
+        { name: "xterm-256color", cols: opts.cols, rows: opts.rows, cwd: opts.cwd, env: hook ? { ...cleanEnv(), ...hook.env, AGENTGRID_SESSION_ID: sessionId } : cleanEnv() });
       entry = { pty, viewer: null, tail: "" };
       this.entries.set(sessionId, entry);
       const e0 = entry;
@@ -58,6 +79,7 @@ export class PtyManager {
         this.entries.delete(sessionId);
         entry!.viewer?.onEnd(`claude exited (${exitCode})`);
         entry!.viewer = null;
+        for (const cb of this.exitCbs) { try { cb(sessionId); } catch { /* a listener must not break the others */ } }
       });
     } else {
       entry.pty.resize(opts.cols, opts.rows);
