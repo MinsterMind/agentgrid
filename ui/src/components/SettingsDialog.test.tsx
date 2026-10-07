@@ -442,3 +442,33 @@ describe("SettingsDialog — Ticket statuses", () => {
     expect(await within(sec as HTMLElement).findByText(/status sync isn't supported/)).toBeTruthy();
   });
 });
+
+describe("Settings — spending (spec 2026-10-09 §4–§6)", () => {
+  it("loads, edits and saves auto-resolve, the quiet period, a stage model and the daily limit", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report({}));
+    vi.spyOn(api, "getIntegrations").mockResolvedValue({ projectRepos: {}, autoResolveConflicts: true, commentQuietMinutes: 10 } as never);
+    const put = vi.spyOn(api, "putIntegrations").mockResolvedValue({ projectRepos: {} } as never);
+    render(<SettingsDialog onClose={() => {}} />);
+    const auto = await screen.findByLabelText(/Resolve conflicts automatically/);
+    await waitFor(() => expect((auto as HTMLInputElement).checked).toBe(true));
+    await waitFor(() => expect((screen.getByLabelText(/Wait for reviewers/) as HTMLInputElement).value).toBe("10"));
+    await userEvent.click(auto);
+    const quiet = screen.getByLabelText(/Wait for reviewers/);
+    await userEvent.clear(quiet); await userEvent.type(quiet, "0");
+    await userEvent.selectOptions(screen.getByLabelText("Model for Change"), "Opus");
+    await userEvent.click(screen.getByLabelText(/Limit bug-fix spending per day/));
+    const limit = screen.getByLabelText("Daily limit ($)");
+    await userEvent.clear(limit); await userEvent.type(limit, "20");
+    await userEvent.click(screen.getByRole("button", { name: "Set spending" }));
+    await waitFor(() => expect(put).toHaveBeenCalledWith({ autoResolveConflicts: false, commentQuietMinutes: 0, dailyBudgetUsd: 20, stageModels: { implementing: { model: "claude-opus-5" } } }));
+    expect(await screen.findByText("Saved.")).toBeInTheDocument();
+  });
+  it("shows each step's default model, and no limit when none is set", async () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report({}));
+    vi.spyOn(api, "getIntegrations").mockResolvedValue({ projectRepos: {} } as never);
+    render(<SettingsDialog onClose={() => {}} />);
+    expect(await screen.findByLabelText("Model for Plan")).toHaveValue("claude-opus-5");
+    expect(screen.getByLabelText("Model for PR description")).toHaveValue("claude-haiku-4-5-20251001");
+    expect((screen.getByLabelText(/Limit bug-fix spending per day/) as HTMLInputElement).checked).toBe(false);
+  });
+});
