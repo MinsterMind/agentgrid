@@ -7,7 +7,7 @@ const ALL: BugStage[] = ["intake", "analyzing", "plan-review", "implementing", "
 
 function task(stage: BugStage, extra: Partial<BugTask> = {}): BugTask {
   return { id: "bt1", issue: { key: "PAY-42", title: "T", url: "https://x", status: "Open", priority: "High", description: "", acceptanceCriteria: [] },
-    trackerProject: "PAY", sourceRepo: "/r", worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", baseRef: "origin/main", ticketCommits: [], verdict: null, report: null, plannedTests: [], testsInDiff: null, testOverride: null, conflict: null, conflictCheckError: null, queuedAt: null, queuedNote: null, agentId: "a1", stage,
+    trackerProject: "PAY", sourceRepo: "/r", worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", baseRef: "origin/main", ticketCommits: [], verdict: null, report: null, plannedTests: [], testsInDiff: null, testOverride: null, conflict: null, conflictCheckError: null, queuedAt: null, queuedNote: null, trackerSyncError: null, agentId: "a1", stage,
     gate: stage === "plan-review" ? { kind: "plan", openedAt: "t" } : stage === "diff-review" ? { kind: "diff", openedAt: "t" } : stage === "approved" ? { kind: "merge", openedAt: "t" } : null,
     mergePolicy: "ask", mergeMethod: "squash", approvedHead: null, outcome: null, checksRoundHead: null, pr: null, prCheckedAt: null,
     costUsd: 0, history: [{ stage: "intake", at: "2026-10-05T10:00:00Z", note: "" }, { stage, at: "2026-10-05T10:05:00Z", note: "" }],
@@ -306,5 +306,12 @@ describe("conflicts and the queue", () => {
   it("a conflict check that couldn't run is a blocker", () => {
     const b = blockersFor({ task: task("monitoring", { conflictCheckError: "Couldn't check for conflicts: could not resolve host" }), pending: null, setup: null, setupError: false });
     expect(b.map(x => x.title)).toContain("Couldn't check for conflicts: could not resolve host");
+  });
+});
+
+describe("blockersFor — the tracker's status", () => {
+  it("a status move that failed shows on the card", () => {
+    const b = blockersFor({ task: task("monitoring", { trackerSyncError: "Couldn't move PAY-42 to In Review: no such transition" }), pending: null, setup: null, setupError: false });
+    expect(b.map(x => x.title)).toContain("Couldn't move PAY-42 to In Review: no such transition");
   });
 });

@@ -4,8 +4,9 @@ import { api } from "../api";
 import { blockersFor, isNew, listStatus, nowFor, orderAssumptions, pipelineFor, stageLabel, type Blocker, type ListStatus, type StepState } from "../bugView";
 import { elapsed, relativeTime, usd } from "../format";
 import { activityFor, assignmentFor, permissionFor, type UiState } from "../state/reducer";
-import type { BugTask, Decision, IssueSummary, SetupReport } from "../types";
+import type { BugTask, Decision, IssueList, IssueSummary, SetupReport } from "../types";
 import { TicketDetail } from "./TicketDetail";
+import { BulkStart } from "./BulkStart";
 import { PendingPrompt, asPending } from "./PendingPrompt";
 import { BugGates } from "./BugGates";
 import { DiffView, hunksFor } from "./DiffView";
@@ -70,16 +71,30 @@ export function mergeRows(issues: IssueSummary[] | null, tasks: Array<{ t: BugTa
 }
 
 /** My open bugs from the tracker: loaded on open, every 5 minutes and on Refresh; the last good list survives an error. */
-function useMyIssues() {
-  const [issues, setIssues] = useState<IssueSummary[] | null>(null);
+/**
+ * My open bugs, from the server's tracker cache (spec 2026-10-08 §3): the first read answers at once
+ * from the cache; newer lists arrive as events (`live`); Refresh asks the server to re-read. A tracker
+ * error keeps the last list and says why.
+ */
+function useMyIssues(live: IssueList | null) {
+  const [list, setList] = useState<IssueList | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [asking, setAsking] = useState(false);
   const load = useCallback(() => {
-    setLoading(true);
-    api.myIssues().then(v => { setIssues(v); setErr(null); }).catch(e => setErr((e as Error).message)).finally(() => setLoading(false));
+    api.myIssues().then(v => { setList(v); setErr(null); }).catch(e => setErr((e as Error).message));
   }, []);
-  useEffect(() => { load(); const t = setInterval(load, 5 * 60_000); return () => clearInterval(t); }, [load]);
-  return { issues, err, loading, refresh: load };
+  // Ask again every minute: the server answers from its cache and re-reads the tracker once the list is stale.
+  useEffect(() => { load(); const t = setInterval(load, 60_000); return () => clearInterval(t); }, [load]);
+  const refresh = useCallback(() => {
+    setAsking(true);
+    void api.refreshIssues().catch(() => {}).then(() => load()).finally(() => setAsking(false));
+  }, [load]);
+  // The newer of what we fetched and what the server pushed: a higher generation (the cache was cleared —
+  // a tracker change) wins outright, even before it has a time; then the later fetch.
+  const newer = (a: IssueList, b: IssueList) => (a.generation ?? 0) !== (b.generation ?? 0) ? (a.generation ?? 0) > (b.generation ?? 0) : (a.fetchedAt ?? "") >= (b.fetchedAt ?? "");
+  const cur = live && (!list || newer(live, list)) ? live : list;
+  return { issues: cur ? cur.issues : null, fetchedAt: cur?.fetchedAt ?? null, refreshing: asking || !!cur?.refreshing,
+    err: err ?? cur?.error ?? null, refresh };
 }
 
 export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscript, onOpenSettings, onFixBug, onDecide, selectedTicket = null, onSelectTicket, onStarted }: {
@@ -91,7 +106,7 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
   /** A ticket was just started from its view. */ onStarted?: (t: BugTask) => void;
 }) {
   const now = useNow();
-  const mine = useMyIssues();
+  const mine = useMyIssues(state.tracker ?? null);
   const agentWaiting = (t: BugTask) => {
     const ag = state.agents.find(a => a.id === t.agentId);
     return !!ag && (!!assignmentFor(state, ag)?.pending || !!permissionFor(state, ag));
@@ -106,6 +121,14 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
   const queued = useMemo(() => Object.values(state.bugTasks).filter(t => t.queuedAt && !TERMINAL.includes(t.stage)).sort((a, b) => a.queuedAt!.localeCompare(b.queuedAt!)), [state.bugTasks]);
   const queueOf = (t: BugTask) => { const i = queued.findIndex(q => q.id === t.id); return i === -1 ? undefined : { position: i + 1, of: queued.length }; };
   const conflicts = tasks.filter(x => x.t.stage === "conflict").length;
+  // Bugs ticked for "start many" (spec 2026-10-08 §5.1): only assigned ones not started yet.
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const startable = rows.filter(r => !r.task && r.assigned);
+  const pickedRows = startable.filter(r => picked.has(r.key));
+  // Once a run starts, its bugs stop being "not started" — keep the panel on what was sent, until Done.
+  const [running, setRunning] = useState<IssueSummary[] | null>(null);
+  const bulkShown = running ?? (pickedRows.length ? pickedRows.map(r => ({ key: r.key, title: r.title, url: "", status: "", priority: r.priority ?? "" })) : null);
+  const toggle = (key: string) => setPicked(x => { const n = new Set(x); if (n.has(key)) n.delete(key); else n.add(key); return n; });
   const [resolving, setResolving] = useState(false);
   const resolveAll = () => { setResolving(true); void api.resolveConflicts().catch(() => {}).finally(() => setResolving(false)); };
 
@@ -149,7 +172,14 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
     <div className="bugscreen" data-testid="bug-screen">
       <aside className="buglist">
         <div className="lh"><span>My bugs</span><span className="mono">{rows.length}</span>
-          <button className="btn sm" aria-label="Refresh from the tracker" title="Refresh from the tracker" disabled={mine.loading} onClick={mine.refresh}><RefreshCw /></button></div>
+          {mine.fetchedAt && <span className="help updated" title={new Date(mine.fetchedAt).toLocaleString()}>updated {relativeTime(mine.fetchedAt, now)}</span>}
+          <button className="btn sm" aria-label={mine.refreshing ? "Refreshing…" : "Refresh from the tracker"} title={mine.refreshing ? "Refreshing…" : "Refresh from the tracker"} disabled={mine.refreshing} onClick={mine.refresh}><RefreshCw className={mine.refreshing ? "spin" : ""} /></button></div>
+        {startable.length > 0 && (
+          <div className="row pick-row">
+            {pickedRows.length < startable.length && <button className="btn sm" onClick={() => setPicked(new Set(startable.map(r => r.key)))}>Select all not started ({startable.length})</button>}
+            {pickedRows.length > 0 && <button className="btn sm" onClick={() => setPicked(new Set())}>Clear</button>}
+          </div>
+        )}
         {conflicts > 0 && <button className="btn p resolve-all" disabled={resolving} title="Rebase every conflicted bug onto its base — the agents-at-once limit paces them, and you review each result" onClick={resolveAll}><GitMerge /> Resolve all {conflicts} conflict{conflicts === 1 ? "" : "s"}</button>}
         {mine.err && <div className="warnline"><TriangleAlert /> Couldn't refresh from the tracker: {mine.err}{mine.issues ? " — showing the last list." : ""}</div>}
         <ul role="listbox" aria-label="Bug fixes" onKeyDown={e => {
@@ -160,8 +190,10 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
             const sel = isShown(r);
             const head = i === firstUnassigned ? <li role="presentation" className="group">Not assigned to you or closed</li> : null;
             if (!r.task) return [head, (
-              <li key={r.key} role="option" aria-selected={sel} tabIndex={sel ? 0 : -1} className="bugrow" data-status="todo"
+              <li key={r.key} role="option" aria-selected={sel} tabIndex={sel ? 0 : -1} className={`bugrow ${r.assigned ? "pickable" : ""}`} data-status="todo"
                 onClick={() => open(r)} onKeyDown={e => { if (e.key === "Enter") open(r); }}>
+                {r.assigned && <input type="checkbox" className="pick" aria-label={`Select ${r.key}`} checked={picked.has(r.key)}
+                  onClick={e => e.stopPropagation()} onChange={() => toggle(r.key)} />}
                 <span className="k">{r.key}</span>
                 <span className="t" title={r.title}>{r.title}</span>
                 <span className="s todo">{r.priority && <span className={`chip ${/highest|critical|blocker/i.test(r.priority) ? "red" : /high/i.test(r.priority) ? "amber" : ""}`}>{r.priority}</span>} Not started</span>
@@ -182,7 +214,9 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
         </ul>
         <div className="lfoot"><kbd>↑</kbd> <kbd>↓</kbd> move · <kbd>⏎</kbd> open</div>
       </aside>
-      {task || (shown && !ticket && !selectedTicket)
+      {bulkShown
+        ? <BulkStart selected={bulkShown} batches={state.batches ?? {}} onStarted={() => setRunning(r => r ?? bulkShown)} onClose={() => { setRunning(null); setPicked(new Set()); }} />
+        : task || (shown && !ticket && !selectedTicket)
         ? <BugDetail key={(task ?? shown)!.id} task={(task ?? shown)!} state={state} now={now} onBugChanged={onBugChanged} onTranscript={onTranscript} onOpenSettings={onOpenSettings} onDecide={onDecide} />
         : (ticket ?? selectedTicket) ? <TicketDetail key={ticket ?? selectedTicket!} ticketKey={(ticket ?? selectedTicket)!} onStarted={onStarted} /> : null}
     </div>

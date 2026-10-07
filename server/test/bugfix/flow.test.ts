@@ -58,8 +58,8 @@ describe("the whole bug-fix flow, offline in fake mode", () => {
       const url = running.url;
 
       // The fake tracker offers one issue; launch a task against the real repo.
-      const issues = await get<{ key: string }[]>(`${url}/api/bugfix/issues`);
-      expect(issues[0].key).toBe("FAKE-1");
+      const issues = await get<{ issues: Array<{ key: string }> }>(`${url}/api/bugfix/issues`);
+      expect(issues.issues[0].key).toBe("FAKE-1");
 
       const created = await post<BugTask>(`${url}/api/bugtasks`, { issueRef: "FAKE-1", repo });
       expect(created.stage).not.toBe("failed");

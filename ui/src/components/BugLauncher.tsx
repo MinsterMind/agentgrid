@@ -20,7 +20,7 @@ export function BugLauncher({ onCreated, onClose, onOpenSettings }: { onCreated?
   }, []);
   useEffect(() => {
     let live = true;
-    api.myIssues().then(v => { if (live) setIssues(v); }).catch(e => { if (live) setIssuesErr((e as Error).message); });
+    api.myIssues().then(v => { if (live) setIssues(v.issues); }).catch(e => { if (live) setIssuesErr((e as Error).message); });
     return () => { live = false; };
   }, []);
 

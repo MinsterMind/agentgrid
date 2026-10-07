@@ -9,13 +9,15 @@ import { BugTaskStore } from "./store.js";
 import { GitOps, branchName, worktreePath, type DiffResult } from "./git.js";
 import { testFilesIn } from "./tests.js";
 import { RunQueue } from "./queue.js";
+import type { TrackerCache } from "./trackerCache.js";
+import type { Moment } from "./trackerSync.js";
 import { IntegrationsStore } from "./integrations.js";
 import type { ForgeAdapter } from "./forge/index.js";
 import type { TrackerProvider } from "./tracker.js";
 import { renderStagePrompt, type StageNote } from "./prompts.js";
 import { parseAssumptions } from "./assumptions.js";
 import { nextStage } from "./stages.js";
-import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask, type GateKind, type PrInfo } from "./types.js";
+import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask, type GateKind, type PrInfo, type TrackerIssue } from "./types.js";
 import { describeComments, PR_STAGES, type PrFinding } from "./watcher.js";
 import { parseRemote } from "./forge/bitbucket.js";
 import type { MergeMethod } from "./forge/types.js";
@@ -64,6 +66,8 @@ export interface EngineDeps {
   store: Store; bugs: BugTaskStore; manager: Manager; git: GitOps;
   integrations: IntegrationsStore; tracker: TrackerProvider; forge: ForgeAdapter | null;
   presetsDir: string; role?: string;
+  /** Tracker reads, cached (spec 2026-10-08 §3.3); a started ticket is re-read. */
+  trackerCache?: TrackerCache;
 }
 
 /**
@@ -164,7 +168,8 @@ export class BugFixEngine {
 
   /** `baseBranch`: the branch to cut from and target (default: origin's integration branch).
    *  `startAnyway`: start even though commits on the base already name the ticket. */
-  async intake(input: { issueRef: string; repo: string; mergePolicy?: "ask" | "auto"; mergeMethod?: "squash" | "merge" | "rebase"; baseBranch?: string; startAnyway?: boolean }): Promise<BugTask> {
+  /** `issue` / `fetched`: what a batch already did for this ticket — read it from the tracker, fetched its repo — so it isn't repeated per ticket. */
+  async intake(input: { issueRef: string; repo: string; mergePolicy?: "ask" | "auto"; mergeMethod?: "squash" | "merge" | "rebase"; baseBranch?: string; startAnyway?: boolean; issue?: TrackerIssue; fetched?: boolean }): Promise<BugTask> {
     const { git, bugs, store, tracker, integrations, forge } = this.deps;
     // Without a pollable forge, `opening-pr` can never be verified (see `verify`), so a
     // gitlab/custom repo would otherwise burn two agent stages and a human gate before
@@ -173,11 +178,11 @@ export class BugFixEngine {
     if (!forge) throw new Conflict("no forge configured — this workflow needs one to open and verify pull requests");
     if (!(await git.hasRemote(input.repo))) throw new Conflict("this repo has no `origin` remote");
 
-    const issue = await tracker.fetchIssue(input.issueRef);
+    const issue = input.issue ?? await tracker.fetchIssue(input.issueRef);
     const branch = branchName(issue.key);
     // Cut from origin's tip after a fetch — never a local branch, which goes stale or, in a gitflow
     // repo, can sit at the first commit with no code in it (PULSEAI-414).
-    await git.fetch(input.repo).catch((err: Error) => { throw new Conflict(`could not fetch from origin: ${err.message}`); });
+    if (!input.fetched) await git.fetch(input.repo).catch((err: Error) => { throw new Conflict(`could not fetch from origin: ${err.message}`); });
     const picked = input.baseBranch?.trim();
     if (picked && !(await git.remoteBranches(input.repo)).includes(picked)) throw new Conflict(`origin has no branch "${picked}"`);
     const baseBranch = picked || await git.integrationBranch(input.repo);
@@ -232,11 +237,13 @@ export class BugFixEngine {
     const project = issue.key.split("-")[0] ?? issue.key;
     await integrations.rememberRepo(project, input.repo);
 
+    this.deps.trackerCache?.invalidate(issue.key);
     const task = await bugs.create({
       issue, trackerProject: project, sourceRepo: input.repo, worktree,
       branch, baseBranch, baseRef, ticketCommits, agentId: agent.id,
       mergePolicy: input.mergePolicy ?? "ask", mergeMethod: input.mergeMethod ?? "squash",
     });
+    this.sync?.moment(task.id, "started");
     return this.advance(task.id, { type: "stage-done" });
   }
 
@@ -402,6 +409,10 @@ export class BugFixEngine {
    * a stale "couldn't reach the forge" note clears. Nothing here touches stage, so it needs no
    * place in `advance()`'s chain.
    */
+  private sync: { moment(taskId: string, m: Moment): void } | null = null;
+  /** Moves the ticket on the tracker at each workflow moment (spec 2026-10-08 §4.3). */
+  setTrackerSync(s: { moment(taskId: string, m: Moment): void } | null): void { this.sync = s; }
+
   private conflictNudge: ((repo: string) => void) | null = null;
   /** Called with a repo when one of its PRs merges: the ConflictWatcher re-checks its siblings at once. */
   setConflictNudge(fn: ((repo: string) => void) | null): void { this.conflictNudge = fn; }
@@ -478,7 +489,7 @@ export class BugFixEngine {
     if (pr.state === "CLOSED") {
       return bugs.patch(taskId, { error: `Pull request #${n} for ${task.branch} was opened outside AgentGrid and then closed without merging. Retry to open a new one, or cancel the fix.` });
     }
-    const announce = () => tracker.comment(task.issue.key, `Fix in progress — pull request: ${pr.url}`).catch(() => {});
+    const announce = () => { this.sync?.moment(taskId, "prOpened"); return tracker.comment(task.issue.key, `Fix in progress — pull request: ${pr.url}`).catch(() => {}); };
     let head: string | null = null;
     try { head = await git.revParse(task.worktree); } catch { /* worktree gone: compare against the PR alone */ }
     // An adapter that cannot report the PR's head leaves only the worktree to go on.
@@ -531,6 +542,10 @@ export class BugFixEngine {
         : { files, base: event.base ?? current.baseBranch, detectedAt: new Date().toISOString(), returnTo: current.stage === "approved" ? "approved" : "monitoring" } });
     }
     let task = await this.deps.bugs.apply(taskId, t);
+    // How it ended, for the ticket's status: merged, closed without merging, or no change needed.
+    if (task.stage === "done" && current.stage !== "done" && task.outcome) {
+      this.sync?.moment(taskId, task.outcome === "merged" ? "merged" : task.outcome === "closed" ? "closed" : "noChange");
+    }
     // A merge moves the base: every sibling PR in this repo may conflict now — check them right away.
     if (event.type === "pr-merged") this.conflictNudge?.(task.sourceRepo);
     // Kept through the rebase and its review (the diff gate shows what conflicted); forgotten once that
@@ -725,6 +740,7 @@ export class BugFixEngine {
     }
     if (created.found.state !== "OPEN") throw new Error(`pull request #${created.found.number} is ${created.found.state.toLowerCase()}, not open`);
     await bugs.patchPr(task.id, created.found, new Date().toISOString());
+    this.sync?.moment(task.id, "prOpened");
     await tracker.comment(task.issue.key, `Fix in progress — pull request: ${created.found.url}`).catch(() => {});
   }
 

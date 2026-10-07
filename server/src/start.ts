@@ -22,6 +22,9 @@ import { GitOps } from "./bugfix/git.js";
 import { makeForge } from "./bugfix/forge/index.js";
 import { AgentPrWatcher } from "./agentpr.js";
 import { ConflictWatcher } from "./bugfix/conflicts.js";
+import { TrackerCache } from "./bugfix/trackerCache.js";
+import { TrackerSync } from "./bugfix/trackerSync.js";
+import { BatchStarter } from "./bugfix/batch.js";
 import { mcpTracker, type TrackerProvider } from "./bugfix/tracker.js";
 import { BugFixEngine, recoverStuckBugTasks } from "./bugfix/engine.js";
 import { PrWatcher } from "./bugfix/watcher.js";
@@ -49,6 +52,9 @@ export interface StartOptions {
   fakePrScript?: ScriptedStep[];
   log?: (msg: string) => void;
 }
+
+/** Fake mode only: every status move the fake tracker was asked to make (tests read it). */
+export const fakeTrackerMoves: Array<{ key: string; name: string }> = [];
 
 export interface RunningServer {
   port: number; url: string; home: string;
@@ -172,15 +178,23 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         status: "Open", priority: "High", description: "A fake ticket used in fake mode.", acceptanceCriteria: ["it stops happening"] };
     },
     comment: async () => {},
+    fetchIssues: async (keys: string[]) => ({ issues: await Promise.all(keys.map(k => fakeTracker.fetchIssue(k))), missing: [] }),
+    listTransitions: async () => [{ id: "11", name: "Start Progress", to: "In Progress" }, { id: "21", name: "Submit for Review", to: "In Review" }, { id: "31", name: "Done", to: "Done" }],
+    transition: async (key: string, name: string) => {
+      const to = { "Start Progress": "In Progress", "Submit for Review": "In Review", Done: "Done" }[name];
+      fakeTrackerMoves.push({ key, name });
+      return to ? { ok: true as const, status: to } : { ok: false as const, error: `no transition named "${name}"` };
+    },
   };
   // Only read the script in fake mode: it is used nowhere else, and a stale malformed value left
   // in a real deployment's environment would otherwise throw here and stop the server booting.
   const fakePrScript = fake ? (opts.fakePrScript ?? parseFakePrScript(process.env.AGENTGRID_FAKE_PR_SCRIPT)) : undefined;
   const fakeForgeHandle = fake ? fakeForge(fakePrScript ?? []) : null;
 
-  let wiredBugFix: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider } | undefined;
+  let wiredBugFix: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider; trackerCache?: TrackerCache; batches?: BatchStarter } | undefined;
   let wiredWatcher: PrWatcher | null = null;
   let wiredConflicts: ConflictWatcher | null = null;
+  let wiredCache: TrackerCache | null = null;
   let lastCfg = cfg;
 
   /**
@@ -193,7 +207,16 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     const tracker = fake ? fakeTracker : (config.tracker ? mcpTracker(config.tracker, presetsDir) : null);
     if (!tracker) return null;
     const forge = fakeForgeHandle ?? makeForge(config.forge);
-    const engine = new BugFixEngine({ store, bugs: bugStore, manager, git: new GitOps(), integrations, tracker, forge, presetsDir });
+    // Tracker reads are model runs: answer from a cache that refreshes itself (spec 2026-10-08 §3.3).
+    await wiredCache?.flush().catch(() => {});
+    wiredCache = new TrackerCache({ tracker, file: path.join(home, "tracker-cache.json"),
+      identity: fake ? "fake" : JSON.stringify([config.tracker?.preset, config.tracker?.toolPrefix, config.tracker?.hints ?? ""]) });
+    await wiredCache.load();
+    wiredCache.on("event", e => store.emit("event", e));
+    const trackerCache = wiredCache;
+    const engine = new BugFixEngine({ store, bugs: bugStore, manager, git: new GitOps(), integrations, tracker, forge, presetsDir, trackerCache });
+    // Tickets move through the user's workflow as the fix goes on (spec 2026-10-08 §4).
+    engine.setTrackerSync(new TrackerSync({ tracker, bugs: bugStore, statusMap: async () => (await integrations.read()).statusMap }));
     engine.attach();
     wiredWatcher?.stop();
     wiredWatcher = forge
@@ -210,7 +233,10 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       intervalMs: fake ? 500 : 60_000 });
     engine.setConflictNudge(repo => wiredConflicts?.nudge(repo));
     wiredConflicts.start();
-    wiredBugFix = { engine, store: bugStore, integrations, tracker };
+    const batches = new BatchStarter({ engine, git: new GitOps(), tracker, cache: trackerCache,
+      activeTaskFor: key => bugStore.list().find(t => t.issue.key.toUpperCase() === key && !["done", "cancelled", "failed"].includes(t.stage))?.id ?? null });
+    batches.on("event", e => store.emit("event", e));
+    wiredBugFix = { engine, store: bugStore, integrations, tracker, trackerCache, batches };
     return wiredBugFix;
   };
 
@@ -256,6 +282,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     port: bound, url, home,
     ...(fakeForgeHandle ? { fakeForge: fakeForgeHandle } : {}),
     bugEngineForTest: () => wiredBugFix?.engine,
-    close: () => new Promise<void>(resolve => { watcher.stop(); statuses.stop(); agentPrs.stop(); wiredWatcher?.stop(); wiredConflicts?.stop(); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }),
+    // The tracker cache reaches disk before the server goes — a clear() after a tracker change included.
+    close: async () => { await wiredCache?.flush().catch(() => {}); return new Promise<void>(resolve => { watcher.stop(); statuses.stop(); agentPrs.stop(); wiredWatcher?.stop(); wiredConflicts?.stop(); rolesWatcher.close(); ptys.closeAll(); server.close(() => resolve()); }); },
   };
 }

@@ -1334,6 +1334,53 @@ describe("a click meant for one gate never acts on another", () => {
   });
 });
 
+describe("the ticket's status follows the work", () => {
+  it("reports each moment: started at intake, PR opened, and how it ended", async () => {
+    const moments: string[] = [];
+    engine.setTrackerSync({ moment: (_id: string, m: string) => { moments.push(m); } } as never);
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    expect(moments).toEqual(["started"]);
+    await bugs.writeArtifact(t.id, "plan.md", "Verdict: no change needed — fixed by abc\n## Regression tests\n- t\n");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    await engine.closeNoChange(t.id);
+    expect(moments).toEqual(["started", "noChange"]);
+  });
+  it("PR opened", async () => {
+    const moments: string[] = [];
+    engine.setTrackerSync({ moment: (_id: string, m: string) => { moments.push(m); } } as never);
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(t.id, "plan.md", "# Plan");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "plan-review");
+    await engine.approve(t.id);
+    gitState.commits = 1;
+    await finishStage(); await until(() => bugs.get(t.id).stage === "diff-review");
+    await engine.approve(t.id);
+    await bugs.writeArtifact(t.id, "pr-body.md", "PR body");
+    await finishStage(); await until(() => bugs.get(t.id).stage === "monitoring");
+    expect(moments).toEqual(["started", "prOpened"]);
+  });
+  it("PR opened, then merged", async () => {
+    const moments: string[] = [];
+    const { engine: e2, bugs: b2 } = await onMonitoringTask();
+    // the harness opened the PR before we could listen: listen now, and merge
+    e2.setTrackerSync({ moment: (_id: string, m: string) => { moments.push(m); } } as never);
+    forge.state = "MERGED";                                   // the forge confirms the merge when re-read
+    await e2.onPrFinding({ taskId: "bt1", pr: { ...b2.get("bt1").pr!, state: "MERGED" }, event: { type: "pr-merged" } });
+    await until(() => b2.get("bt1").stage === "done", 2000);
+    expect(moments).toEqual(["merged"]);
+  });
+});
+
+describe("intake with what a batch already has", () => {
+  it("uses the ticket it's given and skips the fetch it was told is done", async () => {
+    let read = 0; (engine as any).deps.tracker.fetchIssue = async (ref: string) => { read++; return { ...ISSUE, key: ref }; };
+    const t = await engine.intake({ issueRef: "PAY-42", repo, issue: { ...ISSUE, key: "PAY-42", title: "From the batch" }, fetched: true });
+    expect(t.issue.title).toBe("From the batch");
+    expect(read).toBe(0);
+    expect(gitFake.calls).not.toContain("fetch");
+  });
+});
+
 describe("Resolve all conflicts", () => {
   it("approves only the tasks waiting at the conflict gate", async () => {
     const { engine, bugs } = await onMonitoringTask();

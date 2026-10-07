@@ -16,7 +16,8 @@ describe("startServer with the bug-fix workflow", () => {
       expect(state.roles.map((r: { name: string }) => r.name)).toContain("bugfix");
       expect(state.bugTasks).toEqual([]);
       const issues = await (await fetch(`${running.url}/api/bugfix/issues`)).json();
-      expect(issues[0]).toMatchObject({ key: "FAKE-1" });                 // fake tracker
+      expect(issues.issues[0]).toMatchObject({ key: "FAKE-1" });          // fake tracker, through the cache
+      expect(issues.fetchedAt).toEqual(expect.any(String));
       const pre = await (await fetch(`${running.url}/api/bugfix/preflight?repo=${encodeURIComponent(home)}`)).json();
       expect(pre).toHaveProperty("ok");
     } finally { await running.close(); }

@@ -18,6 +18,9 @@ import type { BugFixEngine } from "../bugfix/engine.js";
 import type { BugTaskStore } from "../bugfix/store.js";
 import type { IntegrationsStore, Integrations } from "../bugfix/integrations.js";
 import type { TrackerProvider } from "../bugfix/tracker.js";
+import type { TrackerCache } from "../bugfix/trackerCache.js";
+import { MOMENTS } from "../bugfix/trackerSync.js";
+import type { BatchStarter } from "../bugfix/batch.js";
 import type { ForgeAdapter } from "../bugfix/forge/types.js";
 import { discoverMcpServers } from "../bugfix/mcp-discovery.js";
 import { buildSetupReport } from "../bugfix/setup.js";
@@ -26,7 +29,7 @@ export interface AppDeps {
   store: Store;
   manager: Manager;
   /** Bug-fix workflow; absent when the feature is not configured (routes answer 501). */
-  bugs?: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider };
+  bugs?: { engine: BugFixEngine; store: BugTaskStore; integrations: IntegrationsStore; tracker: TrackerProvider; trackerCache?: TrackerCache; batches?: BatchStarter };
   /** The config store, needed with or without an engine: an unconfigured machine must still
    *  be able to read and write its own integrations.json. */
   integrations?: IntegrationsStore;
@@ -404,6 +407,7 @@ export function createApp(deps: AppDeps) {
   const redactIntegrations = (cfg: Integrations) => ({
     projectRepos: cfg.projectRepos,
     ...(cfg.maxConcurrentRuns !== undefined ? { maxConcurrentRuns: cfg.maxConcurrentRuns } : {}),
+    ...(cfg.statusMap !== undefined ? { statusMap: cfg.statusMap } : {}),
     ...(cfg.forge ? { forge: cfg.forge } : {}),
     ...(cfg.tracker ? { tracker: {
       preset: cfg.tracker.preset,
@@ -438,6 +442,25 @@ export function createApp(deps: AppDeps) {
     if (mergePolicy !== undefined && !MERGE_POLICIES.includes(mergePolicy)) throw new BadRequest(`mergePolicy must be one of ${MERGE_POLICIES.join(", ")}`);
     if (mergeMethod !== undefined && !MERGE_METHODS.includes(mergeMethod)) throw new BadRequest(`mergeMethod must be one of ${MERGE_METHODS.join(", ")}`);
     res.status(201).json(await bugs().engine.intake({ issueRef: issueRef.trim(), repo, mergePolicy, mergeMethod, ...(baseBranch ? { baseBranch } : {}), ...(startAnyway === true ? { startAnyway: true } : {}) }));
+  }));
+  /** Start many tickets at once (spec 2026-10-08 §5.2): 202 with a batch id; progress arrives as `batch` events. */
+  app.post("/api/bugtasks/batch", wrap(async (req, res) => {
+    const b = bugs();
+    if (!b.batches) throw Object.assign(new Error("starting many isn't available"), { status: 501 });
+    const items = req.body?.items;
+    if (!Array.isArray(items) || items.length === 0) throw new BadRequest("items must list the tickets to start");
+    if (items.length > 500) throw new BadRequest("at most 500 tickets per request — send the rest in another");
+    for (const it of items) {
+      if (!it || typeof it.issueRef !== "string" || !it.issueRef.trim() || typeof it.repo !== "string" || !path.isAbsolute(it.repo)) throw new BadRequest("each item needs an issueRef and an absolute repo path");
+      if (it.baseBranch !== undefined && (typeof it.baseBranch !== "string" || !/^[A-Za-z0-9._/-]{1,200}$/.test(it.baseBranch))) throw new BadRequest("baseBranch must be a branch name");
+    }
+    const anyway = Array.isArray(req.body?.startAnyway) ? req.body.startAnyway.filter((k: unknown) => typeof k === "string") : [];
+    res.status(202).json({ batchId: b.batches.start(items.map((it: { issueRef: string; repo: string; baseBranch?: string }) => ({ issueRef: it.issueRef.trim(), repo: it.repo, ...(it.baseBranch ? { baseBranch: it.baseBranch } : {}) })), anyway) });
+  }));
+  app.get("/api/bugtasks/batch/:batchId", wrap(async (req, res) => {
+    const st = bugs().batches?.get(req.params.batchId as string);
+    if (!st) throw new NotFound(`batch ${req.params.batchId}`);
+    res.json(st);
   }));
   app.post("/api/bugtasks/resolve-conflicts", wrap(async (_req, res) => res.json({ ids: await bugs().engine.resolveConflicts() })));
   app.post("/api/bugtasks/:id/override-tests", wrap(async (req, res) => {
@@ -477,12 +500,39 @@ export function createApp(deps: AppDeps) {
     await bugs().engine.dismiss(req.params.id as string);
     res.status(204).end();
   }));
-  app.get("/api/bugfix/issues", wrap(async (_req, res) => res.json(await bugs().tracker.listMyIssues())));
+  // My open bugs, from the tracker cache: at once, refreshed behind the scenes (spec 2026-10-08 §3.4).
+  // The very first read has nothing to show yet, so it waits for it.
+  app.get("/api/bugfix/issues", wrap(async (_req, res) => {
+    const b = bugs();
+    if (!b.trackerCache) return res.json({ issues: await b.tracker.listMyIssues(), fetchedAt: new Date().toISOString(), refreshing: false, error: null, generation: 0 });
+    const now = b.trackerCache.myIssues();
+    res.json(now.fetchedAt === null ? await b.trackerCache.refresh() : now);
+  }));
+  /** A ticket's available workflow transitions, for Settings → Ticket statuses. Cached an hour per project. */
+  const transitionsByProject = new Map<string, { at: number; list: unknown }>();
+  app.get("/api/bugfix/transitions", wrap(async (req, res) => {
+    const key = typeof req.query.key === "string" ? req.query.key : "";
+    if (!/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(key)) throw new BadRequest("a ticket key like PAY-42 is required");
+    const b = bugs();
+    if (!b.tracker.listTransitions) { res.status(501).json({ error: "status sync isn't supported for this tracker (its preset has no listTransitions/transition)" }); return; }
+    const project = key.split("-")[0].toUpperCase();
+    const hit = transitionsByProject.get(project);
+    if (hit && Date.now() - hit.at < 3_600_000) { res.json(hit.list); return; }
+    const list = await b.tracker.listTransitions(key);
+    transitionsByProject.set(project, { at: Date.now(), list });
+    res.json(list);
+  }));
+  app.post("/api/bugfix/issues/refresh", wrap(async (_req, res) => {
+    const b = bugs();
+    if (b.trackerCache) void b.trackerCache.refresh();
+    res.status(202).json({});
+  }));
   /** One ticket, in full — the bugs view shows an unstarted bug before anything is created for it. */
   app.get("/api/bugfix/issues/:key", wrap(async (req, res) => {
     const key = req.params.key as string;
     if (!/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(key)) throw new BadRequest("not a ticket key");
-    res.json(await bugs().tracker.fetchIssue(key));
+    const b = bugs();
+    res.json(b.trackerCache ? await b.trackerCache.issue(key) : await b.tracker.fetchIssue(key));
   }));
   app.get("/api/bugfix/preflight", wrap(async (req, res) => {
     const repo = req.query.repo;
@@ -494,7 +544,23 @@ export function createApp(deps: AppDeps) {
     // Only the two known top-level fields are accepted; anything else in the body is
     // deliberately dropped rather than persisted (same "pick the fields you accept"
     // convention POST /api/agents already uses), not silently merged onto disk.
-    const patch: { tracker?: unknown; forge?: unknown; maxConcurrentRuns?: number } = {};
+    const patch: { tracker?: unknown; forge?: unknown; maxConcurrentRuns?: number; statusMap?: unknown } = {};
+    if (body.statusMap !== undefined) {
+      const m = body.statusMap;
+      const bad = (why: string) => { throw new BadRequest(`statusMap: ${why}`); };
+      if (!m || typeof m !== "object" || Array.isArray(m)) bad("must be an object of projects");
+      for (const [project, moments] of Object.entries(m)) {
+        if (!/^[A-Z][A-Z0-9_]*$/.test(project)) bad(`"${project}" is not a project key like PAY`);
+        if (!moments || typeof moments !== "object" || Array.isArray(moments)) bad(`${project} must map moments to transitions`);
+        for (const [moment, v] of Object.entries(moments as Record<string, unknown>)) {
+          if (!(MOMENTS as string[]).includes(moment)) bad(`"${moment}" is not one of ${MOMENTS.join(", ")}`);
+          const t = v as { transition?: unknown; to?: unknown };
+          const okStr = (x: unknown) => typeof x === "string" && x.trim().length > 0 && x.length <= 100;
+          if (!t || typeof t !== "object" || !okStr(t.transition) || !okStr(t.to)) bad(`${project}.${moment} needs a transition and the status it leads to`);
+        }
+      }
+      patch.statusMap = m;
+    }
     if (body.maxConcurrentRuns !== undefined) {
       const n = body.maxConcurrentRuns;
       if (!Number.isInteger(n) || n < 1 || n > 32) throw new BadRequest("maxConcurrentRuns must be a whole number from 1 to 32");
@@ -544,6 +610,8 @@ export function createApp(deps: AppDeps) {
     }
     const saved = await integrationsStore().write(patch as never);
     deps.onConfigSaved?.(saved);
+    // A different tracker: its bugs aren't the old one's — never show those (Review Focus 4).
+    if (patch.tracker !== undefined) wired?.trackerCache?.clear();
     if (patch.maxConcurrentRuns !== undefined) wired?.engine.setMaxConcurrentRuns(patch.maxConcurrentRuns);
     await tryWire();
     res.json(redactIntegrations(saved));

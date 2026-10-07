@@ -2,18 +2,23 @@ import { test, expect } from "@playwright/test";
 
 test("spawn → assign → answer permission → ack", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByTestId(/^tile-/)).toHaveCount(0);           // no agents yet (live-session ghost tiles may exist)
+  // The e2e server is shared and specs run in parallel: other specs' agents may already be on the grid,
+  // so this one names its own agent and counts from what the title said before.
+  await page.waitForLoadState("networkidle");
+  const before = Number((await page.title()).match(/^\((\d+)\)/)?.[1] ?? 0);
   await page.getByRole("button", { name: "New agent" }).click();
   await page.getByPlaceholder("/Users/you/project").fill("/tmp");
+  await page.getByLabel("Name").fill("Smoke");
   await page.getByRole("button", { name: "Create agent" }).click();
 
-  const tile = page.getByTestId(/^tile-/).first();
+  const tile = page.getByTestId(/^tile-/).filter({ hasText: "Smoke" });
   await expect(tile).toHaveAttribute("data-state", "free");
   await tile.getByPlaceholder(/assign work/i).fill("say hello");
   await tile.getByPlaceholder(/assign work/i).press("Enter");
 
   await expect(tile).toHaveAttribute("data-state", "waiting");
-  await expect(page).toHaveTitle("(1) AgentGrid");
+  await expect(page).toHaveTitle(`(${before + 1}) AgentGrid`);
+  await tile.click({ position: { x: 20, y: 20 } });                      // select it, so its details show its request
   await expect(page.getByTestId("pending-permission")).toContainText("echo hi");
   // Answered right on the tile — the request card shows the exact command first.
   const request = tile.getByTestId("tile-request");
@@ -22,9 +27,9 @@ test("spawn → assign → answer permission → ack", async ({ page }) => {
 
   await expect(tile).toHaveAttribute("data-state", "done");
   await expect(tile).toContainText("All done (fake).");
-  await page.getByRole("button", { name: /Ack/ }).click();
+  await page.getByTestId("side-panel").getByRole("button", { name: /Ack/ }).click();
   await expect(tile).toHaveAttribute("data-state", "free");
-  await expect(page).toHaveTitle("AgentGrid");
+  await expect(page).toHaveTitle(before ? `(${before}) AgentGrid` : "AgentGrid");
 });
 
 test("spawn dialog browses folders confined to the browse root", async ({ page }) => {

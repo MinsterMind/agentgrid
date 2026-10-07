@@ -307,6 +307,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             </section>
           )}
 
+          <TicketStatuses />
+
           <AgentsAtOnce />
 
           <AlwaysAllowed />
@@ -376,6 +378,74 @@ function AgentsAtOnce() {
         {!ok && <span className="errtext">Between 1 and 32</span>}
         {saved && <span className="oktext">{saved}</span>}
         {err && <span className="errtext">{err}</span>}
+      </div>
+    </section>
+  );
+}
+
+type Moment = "started" | "prOpened" | "merged" | "closed" | "noChange";
+const MOMENT_LABEL: Array<[Moment, string]> = [["started", "when a fix starts"], ["prOpened", "when the PR opens"], ["merged", "when it merges"], ["closed", "when the PR is closed without merging"], ["noChange", "when no change is needed"]];
+type Move = { transition: string; to: string };
+type Map_ = Record<string, Partial<Record<Moment, Move>>>;
+
+/** Which status each moment of a fix moves the ticket to, per project — from the workflow's real transitions (spec 2026-10-08 §4.2). */
+function TicketStatuses() {
+  const [projects, setProjects] = useState<string[]>([]);
+  const [map, setMap] = useState<Map_>({});
+  const [sample, setSample] = useState<Record<string, string>>({});
+  const [options, setOptions] = useState<Record<string, Array<{ id: string; name: string; to: string }>>>({});
+  const [errs, setErrs] = useState<Record<string, string>>({});
+  const [saved, setSaved] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    void Promise.all([api.getIntegrations().catch(() => ({ projectRepos: {} } as never)), api.listBugTasks().catch(() => [])]).then(([i, tasks]) => {
+      if (!live) return;
+      const sm = ((i as { statusMap?: Map_ }).statusMap ?? {}) as Map_;
+      const ps = [...new Set([...Object.keys((i as { projectRepos?: Record<string, string> }).projectRepos ?? {}), ...Object.keys(sm)])].sort();
+      setProjects(ps); setMap(sm);
+      // The latest ticket of each project is a good sample: its workflow is the project's.
+      const latest: Record<string, string> = {};
+      for (const t of [...(tasks as Array<{ trackerProject: string; issue: { key: string }; createdAt: string }>)].sort((a, b) => b.createdAt.localeCompare(a.createdAt))) latest[t.trackerProject] ??= t.issue.key;
+      setSample(Object.fromEntries(ps.map(p => [p, latest[p] ?? ""])));
+    });
+    return () => { live = false; };
+  }, []);
+  const load = (p: string) => api.transitions(sample[p]).then(list => { setOptions(o => ({ ...o, [p]: list })); setErrs(e => ({ ...e, [p]: "" })); }).catch(e => setErrs(x => ({ ...x, [p]: (e as Error).message })));
+  const choose = (p: string, m: Moment, name: string) => {
+    const t = (options[p] ?? []).find(o => o.name === name) ?? (map[p]?.[m]?.transition === name ? { name, to: map[p]![m]!.to } : null);
+    setMap(cur => { const next = { ...cur, [p]: { ...(cur[p] ?? {}) } }; if (t) next[p]![m] = { transition: t.name, to: t.to }; else delete next[p]![m]; return next; });
+    setSaved(null);
+  };
+  const save = () => api.putIntegrations({ statusMap: Object.fromEntries(Object.entries(map).filter(([, v]) => Object.keys(v).length)) } as never).then(() => setSaved("Saved.")).catch(e => setSaved((e as Error).message));
+  return (
+    <section className="sec">
+      <div className="sec-head"><h4><Ticket />Ticket statuses</h4><p className="why">Move each ticket through your workflow as its fix goes on. Pick, per project, what each moment does — from the transitions your workflow really has. Anything left unset doesn't touch the ticket.</p></div>
+      <div className="sec-body">
+        {projects.length === 0 && <p className="help">Projects appear here once you've fixed a bug in them.</p>}
+        {projects.map(p => (
+          <div key={p} className="statusmap">
+            <div className="row">
+              <span className="mono"><b>{p}</b></span>
+              <label className="help" htmlFor={`sample-${p}`}>Sample ticket for {p}</label>
+              <input id={`sample-${p}`} className="input mono" style={{ width: 120 }} value={sample[p] ?? ""} placeholder={`${p}-123`} onChange={e => setSample(x => ({ ...x, [p]: e.target.value }))} />
+              <button className="btn sm" aria-label={`Load transitions for ${p}`} disabled={!/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(sample[p] ?? "")} onClick={() => void load(p)}>Load transitions</button>
+            </div>
+            {errs[p] && <div className="errtext">{errs[p]}</div>}
+            {(options[p] || map[p]) && MOMENT_LABEL.map(([m, label]) => {
+              const opts = options[p] ?? (map[p]?.[m] ? [{ id: "", name: map[p]![m]!.transition, to: map[p]![m]!.to }] : []);
+              return (
+                <div key={m} className="row">
+                  <label className="help" htmlFor={`sm-${p}-${m}`} style={{ minWidth: 220 }}>{p}: {label}</label>
+                  <select id={`sm-${p}-${m}`} className="input" value={map[p]?.[m]?.transition ?? ""} onChange={e => choose(p, m, e.target.value)}>
+                    <option value="">Don't change the status</option>
+                    {opts.map(o => <option key={o.name} value={o.name}>→ {o.to} ({o.name})</option>)}
+                  </select>
+                </div>
+              );
+            })}
+          </div>
+        ))}
+        {projects.length > 0 && <div className="row"><button className="btn sm" onClick={() => void save()}>Save statuses</button>{saved && <span className="help">{saved}</span>}</div>}
       </div>
     </section>
   );

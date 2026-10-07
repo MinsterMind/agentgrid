@@ -11,6 +11,8 @@ import { IntegrationsStore } from "../../src/bugfix/integrations.js";
 import { makeFakeQuery } from "../helpers/fakeQuery.js";
 import { until } from "../helpers/until.js";
 import { createBugFixTestApp } from "./realEngineApp.js";
+import { TrackerCache } from "../../src/bugfix/trackerCache.js";
+import { BatchStarter } from "../../src/bugfix/batch.js";
 import type { BugTask, TrackerIssue } from "../../src/bugfix/types.js";
 
 const ISSUE: TrackerIssue = { key: "PAY-42", title: "Boom", url: "https://x/PAY-42", status: "Open", priority: "High", description: "d", acceptanceCriteria: [] };
@@ -98,9 +100,27 @@ describe("bug task routes", () => {
   });
 
   it("lists my issues and runs preflight", async () => {
-    expect((await request(app).get("/api/bugfix/issues").expect(200)).body[0].key).toBe("PAY-42");
+    expect((await request(app).get("/api/bugfix/issues").expect(200)).body).toMatchObject({ issues: [{ key: "PAY-42" }], fetchedAt: expect.any(String), refreshing: false, error: null });
     expect((await request(app).get("/api/bugfix/preflight").query({ repo: "/r" }).expect(200)).body).toEqual({ ok: true, problems: [] });
     await request(app).get("/api/bugfix/preflight").expect(400);
+  });
+
+  it("with the tracker cache: answers from it, refreshes on request, and forgets it when the tracker changes", async () => {
+    let listed = 0;
+    const tracker = { listMyIssues: async () => { listed++; return [{ key: "PAY-42", title: "Boom", url: "u", status: "Open", priority: "High" }]; }, fetchIssue: async () => ISSUE, comment: async () => {} };
+    const cache = new TrackerCache({ tracker, file: path.join(home, "tracker-cache.json"), writeEveryMs: 0 });
+    const store = new Store(home, path.resolve("roles")); await store.init();
+    const integrations = new IntegrationsStore(home);
+    const a = createApp({ store, manager: new Manager(store, { queryFn: makeFakeQuery().queryFn }), integrations,
+      bugs: { engine: fakeEngine(bugs, calls) as never, store: bugs, integrations, tracker, trackerCache: cache } });
+    expect((await request(a).get("/api/bugfix/issues").expect(200)).body.issues[0].key).toBe("PAY-42");   // first ever: waits for it
+    await request(a).get("/api/bugfix/issues").expect(200);
+    expect(listed).toBe(1);                                                                              // then from the cache
+    await request(a).post("/api/bugfix/issues/refresh").expect(202);
+    await until(() => listed === 2);
+    // Review Focus 4: a new tracker must not show the old one's bugs
+    await request(a).put("/api/integrations").send({ tracker: { preset: "jira", toolPrefix: "mcp__other" } }).expect(200);
+    expect(cache.myIssues().fetchedAt).toBeNull();
   });
 
   it("rejects a non-absolute repo path for preflight, same as it does for POST /api/bugtasks", async () => {
@@ -136,6 +156,41 @@ describe("bug task routes", () => {
     await request(app).post("/api/bugtasks/bt1/approve").send({ expect: "conflict" }).expect(200);
     expect(calls).toContain("approve bt1 expect=conflict");
     await request(app).post("/api/bugtasks/bt1/approve").send({ expect: "nonsense" }).expect(400);
+  });
+
+  it("reads a ticket's workflow transitions for Settings; says when the tracker can't", async () => {
+    await request(app).get("/api/bugfix/transitions").query({ key: "PAY 1" }).expect(400);
+    const r = await request(app).get("/api/bugfix/transitions").query({ key: "PAY-42" }).expect(501);
+    expect(r.body.error).toMatch(/status sync isn't supported for this tracker/);
+    const store = new Store(home, path.resolve("roles")); await store.init();
+    const tracker = { listMyIssues: async () => [], fetchIssue: async () => ISSUE, comment: async () => {},
+      listTransitions: async () => [{ id: "11", name: "Start Progress", to: "In Progress" }] };
+    const a = createApp({ store, manager: new Manager(store, { queryFn: makeFakeQuery().queryFn }), bugs: { engine: fakeEngine(bugs, calls) as never, store: bugs, integrations: new IntegrationsStore(home), tracker } });
+    expect((await request(a).get("/api/bugfix/transitions").query({ key: "PAY-42" }).expect(200)).body).toEqual([{ id: "11", name: "Start Progress", to: "In Progress" }]);
+  });
+
+  it("the status map: projects, the five moments, a transition and its target — validated, saved", async () => {
+    const ok = { PAY: { started: { transition: "Start Progress", to: "In Progress" }, merged: { transition: "Done", to: "Done" } } };
+    await request(app).put("/api/integrations").send({ statusMap: { pay: ok.PAY } }).expect(400);
+    await request(app).put("/api/integrations").send({ statusMap: { PAY: { launched: { transition: "x", to: "y" } } } }).expect(400);
+    await request(app).put("/api/integrations").send({ statusMap: { PAY: { started: "Start Progress" } } }).expect(400);
+    await request(app).put("/api/integrations").send({ statusMap: ok }).expect(200);
+    expect((await request(app).get("/api/integrations")).body.statusMap).toEqual(ok);
+  });
+
+  it("start many: validates the list, runs it in the background, and reports where it is", async () => {
+    const store = new Store(home, path.resolve("roles")); await store.init();
+    const tracker = { listMyIssues: async () => [], fetchIssue: async (k: string) => ({ ...ISSUE, key: k }), comment: async () => {} };
+    const engine = fakeEngine(bugs, calls);
+    const batches = new BatchStarter({ engine: engine as never, git: { fetch: async () => {} } as never, tracker, cache: null });
+    const a = createApp({ store, manager: new Manager(store, { queryFn: makeFakeQuery().queryFn }), bugs: { engine: engine as never, store: bugs, integrations: new IntegrationsStore(home), tracker, batches } });
+    await request(a).post("/api/bugtasks/batch").send({ items: [] }).expect(400);
+    await request(a).post("/api/bugtasks/batch").send({ items: Array.from({ length: 501 }, (_, i) => ({ issueRef: `PAY-${i + 1}`, repo: "/r" })) }).expect(400);
+    await request(a).post("/api/bugtasks/batch").send({ items: [{ issueRef: "PAY-1", repo: "relative/r" }] }).expect(400);
+    const r = await request(a).post("/api/bugtasks/batch").send({ items: [{ issueRef: "PAY-42", repo: "/r" }] }).expect(202);
+    for (let i = 0; i < 200 && !(await request(a).get(`/api/bugtasks/batch/${r.body.batchId}`)).body.finished; i++) await new Promise(res => setTimeout(res, 5));
+    expect((await request(a).get(`/api/bugtasks/batch/${r.body.batchId}`)).body).toMatchObject({ total: 1, done: 1, started: [{ key: "PAY-42" }] });
+    await request(a).get("/api/bugtasks/batch/nope").expect(404);
   });
 
   it("returns a single bug task by id", async () => {

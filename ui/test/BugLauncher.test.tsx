@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BugLauncher } from "../src/components/BugLauncher";
 
-const myIssues = vi.fn(async () => [{ key: "PAY-42", title: "Refresh token rotates twice", url: "u", status: "Open", priority: "High" }]);
+const myIssues = vi.fn(async () => ({ issues: [{ key: "PAY-42", title: "Refresh token rotates twice", url: "u", status: "Open", priority: "High" }], fetchedAt: "t", refreshing: false, error: null }));
 type Pre = { ok: boolean; problems: string[]; remote?: string | null; baseBranch?: string | null; branches?: string[] };
 const bugPreflight = vi.fn(async (_repo: string): Promise<Pre> => ({ ok: true, problems: [] as string[] }));
 const createBugTask = vi.fn(async (i: { issueRef: string; repo: string; baseBranch?: string; startAnyway?: boolean }): Promise<object> => ({ id: "bt1", ...i }));

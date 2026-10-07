@@ -406,3 +406,39 @@ describe("SettingsDialog — agents at once", () => {
     expect(put).toHaveBeenCalledWith({ maxConcurrentRuns: 8 });
   });
 });
+
+describe("SettingsDialog — Ticket statuses", () => {
+  const base = () => {
+    vi.spyOn(api, "getSetup").mockResolvedValue(report());
+    vi.spyOn(api, "listRules").mockResolvedValue({ rules: [], problem: null });
+    vi.spyOn(api, "listBugTasks").mockResolvedValue([{ id: "bt3", trackerProject: "PAY", issue: { key: "PAY-42" }, createdAt: "2026-10-08T10:00:00Z" }] as never);
+  };
+  it("loads a project's real transitions and saves which moment makes which move", async () => {
+    base();
+    vi.spyOn(api, "getIntegrations").mockResolvedValue({ projectRepos: { PAY: "/r/pay" } } as never);
+    vi.spyOn(api, "transitions").mockResolvedValue([{ id: "11", name: "Start Progress", to: "In Progress" }, { id: "21", name: "Submit for Review", to: "In Review" }]);
+    const put = vi.spyOn(api, "putIntegrations").mockResolvedValue({ projectRepos: {} });
+    render(<SettingsDialog onClose={() => {}} />);
+    const sec = (await screen.findByRole("heading", { name: /ticket statuses/i })).closest("section")!;
+    const key = await within(sec as HTMLElement).findByLabelText("Sample ticket for PAY");
+    await waitFor(() => expect(key).toHaveValue("PAY-42"));               // the latest PAY task
+    await userEvent.click(within(sec as HTMLElement).getByRole("button", { name: "Load transitions for PAY" }));
+    const started = await within(sec as HTMLElement).findByLabelText("PAY: when a fix starts");
+    expect(within(started as HTMLElement).getByRole("option", { name: "→ In Progress (Start Progress)" })).toBeTruthy();
+    expect(within(started as HTMLElement).getByRole("option", { name: "Don't change the status" })).toBeTruthy();
+    await userEvent.selectOptions(started, "Start Progress");
+    await userEvent.selectOptions(within(sec as HTMLElement).getByLabelText("PAY: when the PR opens"), "Submit for Review");
+    await userEvent.click(within(sec as HTMLElement).getByRole("button", { name: "Save statuses" }));
+    expect(put).toHaveBeenCalledWith({ statusMap: { PAY: { started: { transition: "Start Progress", to: "In Progress" }, prOpened: { transition: "Submit for Review", to: "In Review" } } } });
+  });
+  it("says so when the tracker can't move tickets", async () => {
+    base();
+    vi.spyOn(api, "getIntegrations").mockResolvedValue({ projectRepos: { PAY: "/r/pay" } } as never);
+    vi.spyOn(api, "transitions").mockRejectedValue(new Error("status sync isn't supported for this tracker"));
+    render(<SettingsDialog onClose={() => {}} />);
+    const sec = (await screen.findByRole("heading", { name: /ticket statuses/i })).closest("section")!;
+    await waitFor(() => expect(within(sec as HTMLElement).getByLabelText("Sample ticket for PAY")).toHaveValue("PAY-42"));
+    await userEvent.click(within(sec as HTMLElement).getByRole("button", { name: "Load transitions for PAY" }));
+    expect(await within(sec as HTMLElement).findByText(/status sync isn't supported/)).toBeTruthy();
+  });
+});
