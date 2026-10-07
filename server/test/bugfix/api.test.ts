@@ -26,7 +26,7 @@ const fakeEngine = (bugs: BugTaskStore, calls: string[]) => ({
   intake: async (input: { issueRef: string; repo: string; baseBranch?: string; startAnyway?: boolean }) => { calls.push(`intake ${input.issueRef}${input.baseBranch ? ` base=${input.baseBranch}` : ""}${input.startAnyway ? " anyway" : ""}`);
     if (input.issueRef === "PAY-1") throw Object.assign(new Error("PAY-1 may already be fixed"), { status: 409, code: "already-on-base" });
     return bugs.create({ issue: ISSUE, trackerProject: "PAY", sourceRepo: input.repo, worktree: "/w", branch: "bugfix/PAY-42", baseBranch: "main", baseRef: "origin/main", ticketCommits: [], agentId: "bugfix@w", mergePolicy: "ask", mergeMethod: "squash" }); },
-  approve: async (id: string) => { calls.push(`approve ${id}`); return bugs.get(id); },
+  approve: async (id: string, expect?: string) => { calls.push(`approve ${id}${expect ? ` expect=${expect}` : ""}`); return bugs.get(id); },
   requestChanges: async (id: string, text: string) => { calls.push(`changes ${id} ${text}`); return bugs.get(id); },
   cancel: async (id: string) => { calls.push(`cancel ${id}`); return bugs.get(id); },
   retry: async (id: string) => { calls.push(`retry ${id}`); return bugs.get(id); },
@@ -129,6 +129,13 @@ describe("bug task routes", () => {
   it("Resolve all approves every bug waiting at the conflict gate", async () => {
     expect((await request(app).post("/api/bugtasks/resolve-conflicts").expect(200)).body).toEqual({ ids: ["bt1"] });
     expect(calls).toContain("resolve-all");
+  });
+
+  it("approve passes the gate the click was for, and rejects an unknown one", async () => {
+    await request(app).post("/api/bugtasks").send({ issueRef: "PAY-42", repo: "/r" });
+    await request(app).post("/api/bugtasks/bt1/approve").send({ expect: "conflict" }).expect(200);
+    expect(calls).toContain("approve bt1 expect=conflict");
+    await request(app).post("/api/bugtasks/bt1/approve").send({ expect: "nonsense" }).expect(400);
   });
 
   it("returns a single bug task by id", async () => {

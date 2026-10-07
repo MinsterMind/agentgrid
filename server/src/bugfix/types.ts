@@ -72,6 +72,9 @@ export interface BugTask {
   conflictCheckError: string | null;
   /** Set while the task's next agent stage waits for a free slot (the run cap); null when running or resting. */
   queuedAt: string | null;
+  /** The instructions a queued stage will run with (a request-changes note, reviewer comments) — kept on
+   *  the task while it waits, so a restart can't start it without them. Null otherwise. */
+  queuedNote: { text: string; trusted: boolean } | null;
   agentId: string;
   stage: BugStage;
   gate: { kind: GateKind; openedAt: string; reason?: "feedback" | "rebase" | "external" } | null;

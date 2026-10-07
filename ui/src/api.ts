@@ -65,7 +65,9 @@ export const api = {
   closeBugNoChange: (id: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/close-no-change`),
   bugPlan: (id: string) => call<{ markdown: string }>("GET", `/api/bugtasks/${encodeURIComponent(id)}/plan`),
   bugDiff: (id: string) => call<{ patch: string; files: Array<{ path: string; additions: number; deletions: number }>; additions: number; deletions: number }>("GET", `/api/bugtasks/${encodeURIComponent(id)}/diff`),
-  approveBug: (id: string, mergeMethod?: MergeMethod) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/approve`, mergeMethod ? { mergeMethod } : undefined),
+  /** `expect`: the gate this click was for — the server refuses it if the task has moved to another (409). */
+  approveBug: (id: string, mergeMethod?: MergeMethod, expect?: "plan" | "diff" | "merge" | "conflict") =>
+    call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/approve`, mergeMethod || expect ? { ...(mergeMethod ? { mergeMethod } : {}), ...(expect ? { expect } : {}) } : undefined),
   requestBugChanges: (id: string, text: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/request-changes`, { text }),
   cancelBug: (id: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/cancel`),
   retryBug: (id: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/retry`),

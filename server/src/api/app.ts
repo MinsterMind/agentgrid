@@ -454,7 +454,10 @@ export function createApp(deps: AppDeps) {
     const b = bugs();
     const method = req.body?.mergeMethod;
     if (method !== undefined && !MERGE_METHODS.includes(method)) throw new BadRequest(`mergeMethod must be one of ${MERGE_METHODS.join(", ")}`);
-    res.json(method ? await b.engine.mergeTask(req.params.id as string, method) : await b.engine.approve(req.params.id as string));
+    // The gate the click was for: refused (409) if the task has since moved to another one.
+    const expect = req.body?.expect;
+    if (expect !== undefined && !["plan", "diff", "merge", "conflict"].includes(expect)) throw new BadRequest("expect must be a gate: plan, diff, merge or conflict");
+    res.json(method ? await b.engine.mergeTask(req.params.id as string, method) : await b.engine.approve(req.params.id as string, expect));
   }));
   app.post("/api/bugtasks/:id/cancel", wrap(async (req, res) => res.json(await bugs().engine.cancel(req.params.id as string))));
   app.post("/api/bugtasks/:id/retry", wrap(async (req, res) => res.json(await bugs().engine.retry(req.params.id as string))));

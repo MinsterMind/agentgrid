@@ -1290,6 +1290,22 @@ describe("at most N bug-fix agents at once", () => {
     await until(() => fake.calls.length === 2, 2000);
     expect(fake.calls[1].prompt).toContain("PAY-44"); expect(bugs.get(c.id).queuedAt).toBeNull();
   });
+  // Final review #1: the note lived only in memory; a queue makes "queued across a restart" likely.
+  it("a queued stage keeps its instructions across a restart", async () => {
+    engine.setMaxConcurrentRuns(1);
+    const a = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.writeArtifact(a.id, "plan.md", "Verdict: change needed\n## Regression tests\n- t\n");
+    fake.emit(success("done")); fake.end(); await until(() => bugs.get(a.id).stage === "plan-review", 2000);
+    await engine.intake({ issueRef: "PAY-43", repo });                 // takes the only slot
+    await engine.requestChanges(a.id, "use the existing retry helper");
+    expect(bugs.get(a.id)).toMatchObject({ stage: "analyzing", queuedAt: expect.any(String) });
+    const before = fake.calls.length;
+    const engine2 = new BugFixEngine({ ...(engine as any).deps });      // a restart: nothing in memory
+    engine2.setMaxConcurrentRuns(4); engine2.attach();
+    await until(() => fake.calls.length > before, 2000);
+    expect(fake.calls.at(-1)!.prompt).toContain("use the existing retry helper");
+    expect(bugs.get(a.id).queuedNote).toBeNull();
+  });
   it("a restart leaves queued tasks queued, and the next engine resumes them", async () => {
     engine.setMaxConcurrentRuns(1);
     await engine.intake({ issueRef: "PAY-42", repo });
@@ -1302,6 +1318,19 @@ describe("at most N bug-fix agents at once", () => {
     engine2.attach();
     await until(() => fake.calls.length > before, 2000);
     expect(fake.calls.at(-1)!.prompt).toContain("PAY-43");
+  });
+});
+
+describe("a click meant for one gate never acts on another", () => {
+  // Final review #4: a conflict can move a task out of "approved" on its own; a Merge click that was
+  // already on its way must not become "start a rebase".
+  it("approve names the gate it was for, and is refused when the task has moved to another", async () => {
+    const { engine, bugs } = await onMonitoringTask();
+    await engine.onConflictFinding({ taskId: "bt1", event: { type: "conflicting", files: ["a"], base: "main" } });
+    await expect(engine.approve("bt1", "merge")).rejects.toThrow(/moved on|conflict/i);
+    expect(bugs.get("bt1").stage).toBe("conflict");
+    await expect(engine.mergeTask("bt1", "squash")).rejects.toThrow(/moved on|conflict/i);
+    expect((await engine.approve("bt1", "conflict")).stage).toBe("rebase");
   });
 });
 

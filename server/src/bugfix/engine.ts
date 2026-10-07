@@ -15,7 +15,7 @@ import type { TrackerProvider } from "./tracker.js";
 import { renderStagePrompt, type StageNote } from "./prompts.js";
 import { parseAssumptions } from "./assumptions.js";
 import { nextStage } from "./stages.js";
-import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask, type PrInfo } from "./types.js";
+import { AGENT_STAGES, RECOVERABLE_STAGES, SERVER_STAGES, TERMINAL_STAGES, type BugEvent, type BugStage, type BugTask, type GateKind, type PrInfo } from "./types.js";
 import { describeComments, PR_STAGES, type PrFinding } from "./watcher.js";
 import { parseRemote } from "./forge/bitbucket.js";
 import type { MergeMethod } from "./forge/types.js";
@@ -240,8 +240,13 @@ export class BugFixEngine {
     return this.advance(task.id, { type: "stage-done" });
   }
 
-  async approve(taskId: string): Promise<BugTask> {
+  /** `expect`: the gate the human was looking at. A conflict can move a task out of "approved" on its
+   *  own, so a Merge click already on its way must be refused, never turned into "start a rebase". */
+  async approve(taskId: string, expect?: GateKind): Promise<BugTask> {
     const t = this.deps.bugs.get(taskId);
+    if (expect && t.gate?.kind !== expect) {
+      throw new Conflict(`the task moved on — it is ${t.stage === "conflict" ? "in conflict with its base" : `at ${t.stage}`}, not the ${expect} gate you clicked`);
+    }
     // A fix without a regression test can come back unnoticed: approving one takes a stated reason,
     // given for this very diff (see overrideTests). Records from before testsInDiff never block.
     if (t.stage === "diff-review" && Array.isArray(t.testsInDiff) && t.testsInDiff.length === 0 && t.testOverride?.head !== t.approvedHead) {
@@ -253,7 +258,7 @@ export class BugFixEngine {
   async resolveConflicts(): Promise<string[]> {
     const ids = this.deps.bugs.list().filter(t => t.stage === "conflict").map(t => t.id);
     const done: string[] = [];
-    for (const id of ids) { try { await this.approve(id); done.push(id); } catch (err) { if (!(err instanceof Conflict)) throw err; } }
+    for (const id of ids) { try { await this.approve(id, "conflict"); done.push(id); } catch (err) { if (!(err instanceof Conflict)) throw err; } }
     return done;
   }
   /** Approve the diff although it adds no test, saying why — kept on the task and in its history. */
@@ -301,7 +306,8 @@ export class BugFixEngine {
     if (method && this.deps.bugs.get(taskId).stage === "approved") {
       await this.deps.bugs.patch(taskId, { mergeMethod: method });
     }
-    return this.approve(taskId);
+    // Choosing a merge method is only ever a Merge click.
+    return this.approve(taskId, method ? "merge" : undefined);
   }
 
   /** Removes a finished task and its agent. Refused while the task is still live — dismissing
@@ -541,7 +547,7 @@ export class BugFixEngine {
     if (SERVER_STAGES.includes(task.stage)) { void this.runServerStage(task); return task; }
     if (!t.run) return task;
     // Over the cap: wait in line. The slot's release (any way a run ends) starts the next in line.
-    if (!this.queue.tryStart(task.id)) return this.deps.bugs.patch(taskId, { queuedAt: new Date().toISOString() });
+    if (!this.queue.tryStart(task.id)) return this.deps.bugs.patch(taskId, { queuedAt: new Date().toISOString(), queuedNote: this.pendingNote.get(taskId) ?? null });
     return this.dispatchLocked(taskId, task, t.run);
   }
 
@@ -1031,7 +1037,9 @@ export class BugFixEngine {
     let task: BugTask;
     try { task = this.deps.bugs.get(id); } catch { this.releaseRun(id); throw new NotFound(id); }
     if (!task.queuedAt || !AGENT_STAGES.includes(task.stage)) { this.releaseRun(id); return task; }
-    task = await this.deps.bugs.patch(id, { queuedAt: null });
+    // The note it was queued with, if this engine doesn't hold it (a restart since).
+    if (task.queuedNote && !this.pendingNote.has(id)) this.pendingNote.set(id, task.queuedNote);
+    task = await this.deps.bugs.patch(id, { queuedAt: null, queuedNote: null });
     return this.dispatchLocked(id, task, task.stage);
   }
   /** After a restart: tasks that were waiting for a slot line up again, oldest first. */

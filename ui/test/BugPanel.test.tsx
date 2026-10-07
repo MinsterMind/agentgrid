@@ -18,7 +18,7 @@ const { ApiError } = vi.hoisted(() => {
 const bugPlan = vi.fn(async () => ({ markdown: "# Root cause\nThe token is rotated twice." }));
 const bugDiff = vi.fn(async () => ({ patch: "diff --git a/x b/x\n@@ -0,0 +1 @@\n+added line\n", additions: 3, deletions: 1,
   files: [{ path: "src/auth/session.ts", additions: 2, deletions: 1 }, { path: "test/session.test.ts", additions: 1, deletions: 0 }] }));
-const approveBug = vi.fn(async (_id: string, _mergeMethod?: string) => task("implementing"));
+const approveBug = vi.fn(async (_id: string, _mergeMethod?: string, _expect?: string) => task("implementing"));
 const requestBugChanges = vi.fn(async (_id: string, _text: string) => task("analyzing"));
 const cancelBug = vi.fn(async (_id: string) => task("cancelled"));
 const retryBug = vi.fn(async (_id: string) => task("implementing"));
@@ -31,7 +31,7 @@ vi.mock("../src/api", () => ({
   ApiError,
   api: {
     bugPlan: () => bugPlan(), bugDiff: () => bugDiff(),
-    approveBug: (id: string, mergeMethod?: string) => (mergeMethod ? approveBug(id, mergeMethod) : approveBug(id)), requestBugChanges: (id: string, t: string) => requestBugChanges(id, t),
+    approveBug: (id: string, mergeMethod?: string, expect?: string) => (expect ? approveBug(id, mergeMethod, expect) : mergeMethod ? approveBug(id, mergeMethod) : approveBug(id)), requestBugChanges: (id: string, t: string) => requestBugChanges(id, t),
     cancelBug: (id: string) => cancelBug(id), retryBug: (id: string) => retryBug(id),
     listBugTasks: () => listBugTasks(),
     addressComments: (id: string, text?: string) => addressComments(id, text),
@@ -521,7 +521,7 @@ describe("BugPanel — conflict gate", () => {
     const gate = screen.getByTestId("gate-conflict");
     expect(gate).toHaveTextContent("Conflicts with develop"); expect(gate).toHaveTextContent("src/a.ts");
     await userEvent.click(within(gate).getByRole("button", { name: "Resolve conflict" }));
-    expect(approveBug).toHaveBeenCalledWith("bt1");
+    expect(approveBug).toHaveBeenCalledWith("bt1", undefined, "conflict");   // refused if the task moved on
   });
 });
 
