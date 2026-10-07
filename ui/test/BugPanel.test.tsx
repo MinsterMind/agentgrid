@@ -25,6 +25,7 @@ const retryBug = vi.fn(async (_id: string) => task("implementing"));
 const listBugTasks = vi.fn(async (): Promise<BugTask[]> => []);
 const addressComments = vi.fn(async (_id: string, _text?: string) => task("review-feedback"));
 const dismissBug = vi.fn(async (_id: string) => undefined);
+const overrideTests = vi.fn(async (_id: string, _r: string) => task("opening-pr"));
 const closeBugNoChange = vi.fn(async (_id: string) => task("done", { outcome: "no-change" }));
 vi.mock("../src/api", () => ({
   ApiError,
@@ -36,6 +37,7 @@ vi.mock("../src/api", () => ({
     addressComments: (id: string, text?: string) => addressComments(id, text),
     dismissBug: (id: string) => dismissBug(id),
     closeBugNoChange: (id: string) => closeBugNoChange(id),
+    overrideTests: (id: string, r: string) => overrideTests(id, r),
   },
 }));
 
@@ -486,3 +488,28 @@ describe("errors as cards everywhere", () => {
   });
 });
 
+describe("BugPanel — regression tests", () => {
+  it("the plan gate lists the tests that will stop the bug coming back", async () => {
+    render(<BugPanel task={task("plan-review", { plannedTests: ["test/a.test.ts › rotates once"] })} onChanged={vi.fn()} />);
+    expect(await screen.findByText("Tests that will stop this coming back")).toBeInTheDocument();
+    expect(screen.getByText("test/a.test.ts › rotates once")).toBeInTheDocument();
+  });
+  it("a diff with no test: Create PR is disabled, and approving needs a reason", async () => {
+    const onChanged = vi.fn();
+    render(<BugPanel task={task("diff-review", { testsInDiff: [], approvedHead: "h1" })} onChanged={onChanged} />);
+    expect(await screen.findByText("No regression test in this change")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create PR" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Approve without a test…" }));
+    const send = screen.getByRole("button", { name: "Approve without a test" });
+    expect(send).toBeDisabled();
+    await userEvent.type(screen.getByLabelText("Why there is no regression test"), "docs-only change");
+    await userEvent.click(send);
+    expect(overrideTests).toHaveBeenCalledWith("bt1", "docs-only change");
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+  });
+  it("a diff with tests says which, and approves as usual", async () => {
+    render(<BugPanel task={task("diff-review", { testsInDiff: ["src/a.test.ts"], approvedHead: "h1" })} onChanged={vi.fn()} />);
+    expect(await screen.findByText(/Tests in this change: src\/a\.test\.ts/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create PR" })).not.toBeDisabled());
+  });
+});

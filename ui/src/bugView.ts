@@ -124,6 +124,9 @@ export function blockersFor({ task, pending, setup, setupError }: { task: BugTas
   if (task.stage === "failed") return [{ kind: "failed", title: `The ${stageLabel(positionStage(task))} stage failed`, ...(task.error ? { detail: task.error } : {}) }];
   const out: Blocker[] = [];
   if (task.gate) out.push({ kind: "gate", title: gateHeadline(task) });
+  // Regression tests: what stops this bug coming back (spec 2026-10-07 §3).
+  if (task.gate?.kind === "plan" && !task.verdict && (task.plannedTests ?? []).length === 0) out.push({ kind: "gate", title: "The plan names no regression test" });
+  if (task.gate?.kind === "diff" && Array.isArray(task.testsInDiff) && task.testsInDiff.length === 0 && task.testOverride?.head !== task.approvedHead) out.push({ kind: "gate", title: "No regression test in this change" });
   if (pending) out.push({ kind: "agent", title: pending.kind === "question" ? "The agent has a question for you" : `The agent wants permission to run ${pending.toolName}` });
   if (task.pr && (task.stage === "monitoring" || task.stage === "approved")) {
     if (task.pr.checks === "FAILURE" || task.pr.checks === "ERROR") out.push({ kind: "pr", title: "Checks are failing" });

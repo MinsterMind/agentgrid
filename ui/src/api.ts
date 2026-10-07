@@ -60,6 +60,7 @@ export const api = {
   transcript: (assignmentId: string) => call<Array<{ ts: string; role: string; kind: string; text: string }>>("GET", `/api/assignments/${assignmentId}/transcript`),
   listBugTasks: () => call<BugTask[]>("GET", "/api/bugtasks"),
   createBugTask: (input: { issueRef: string; repo: string; mergePolicy?: "ask" | "auto"; mergeMethod?: string; baseBranch?: string; startAnyway?: boolean }) => call<BugTask>("POST", "/api/bugtasks", input),
+  overrideTests: (id: string, reason: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/override-tests`, { reason }),
   closeBugNoChange: (id: string) => call<BugTask>("POST", `/api/bugtasks/${encodeURIComponent(id)}/close-no-change`),
   bugPlan: (id: string) => call<{ markdown: string }>("GET", `/api/bugtasks/${encodeURIComponent(id)}/plan`),
   bugDiff: (id: string) => call<{ patch: string; files: Array<{ path: string; additions: number; deletions: number }>; additions: number; deletions: number }>("GET", `/api/bugtasks/${encodeURIComponent(id)}/diff`),

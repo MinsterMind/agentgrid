@@ -120,7 +120,7 @@ describe("nowFor", () => {
 describe("blockersFor", () => {
   const base = { pending: null, setup: null, setupError: false };
   it("nothing blocking a running stage", () => expect(blockersFor({ ...base, task: task("implementing") })).toEqual([]));
-  it("an open gate", () => expect(blockersFor({ ...base, task: task("plan-review") })).toEqual([{ kind: "gate", title: "Waiting on you: approve the plan" }]));
+  it("an open gate", () => expect(blockersFor({ ...base, task: task("plan-review", { plannedTests: ["t"] }) })).toEqual([{ kind: "gate", title: "Waiting on you: approve the plan" }]));
   it("a pending agent request", () => expect(blockersFor({ ...base, task: task("implementing"), pending: { kind: "question", toolUseId: "u", toolName: "AskUserQuestion", input: {}, suggestedRule: "", ruleIsBroad: false, suggestions: [] } })[0].kind).toBe("agent"));
   it("a failed stage carries its error", () => {
     const t = task("failed", { error: "no commits on the task branch", history: [{ stage: "intake", at: "a", note: "" }, { stage: "implementing", at: "b", note: "" }, { stage: "failed", at: "c", note: "" }] });
@@ -272,4 +272,22 @@ describe("a pull request opened outside AgentGrid", () => {
     expect(nowFor({ task: t, pending: null, activity: null }).headline).toBe("Waiting on you: review the pull request opened outside AgentGrid");
   });
 });
+});
+
+describe("blockersFor — regression tests", () => {
+  const base = { pending: null, setup: null, setupError: false };
+  it("a change-needed plan that names no regression test is a blocker at the plan gate", () => {
+    const titles = (t: ReturnType<typeof task>) => blockersFor({ ...base, task: t }).map(b => b.title);
+    expect(titles(task("plan-review", { gate: { kind: "plan", openedAt: "" }, plannedTests: [] }))).toContain("The plan names no regression test");
+    expect(titles(task("plan-review", { gate: { kind: "plan", openedAt: "" }, plannedTests: ["t"] }))).not.toContain("The plan names no regression test");
+    expect(titles(task("plan-review", { gate: { kind: "plan", openedAt: "" }, plannedTests: [], verdict: "already fixed" }))).not.toContain("The plan names no regression test");
+  });
+  it("a diff with no test file is a blocker until overridden for this head", () => {
+    const titles = (t: ReturnType<typeof task>) => blockersFor({ ...base, task: t }).map(b => b.title);
+    const diff = { gate: { kind: "diff" as const, openedAt: "" }, approvedHead: "h1" };
+    expect(titles(task("diff-review", { ...diff, testsInDiff: [] }))).toContain("No regression test in this change");
+    expect(titles(task("diff-review", { ...diff, testsInDiff: ["a.test.ts"] }))).not.toContain("No regression test in this change");
+    expect(titles(task("diff-review", { ...diff, testsInDiff: [], testOverride: { reason: "r", at: "", head: "h1" } }))).not.toContain("No regression test in this change");
+    expect(titles(task("diff-review", { ...diff, testsInDiff: null }))).not.toContain("No regression test in this change");
+  });
 });

@@ -50,6 +50,9 @@ export function BugGates({ task, onChanged, onTranscript }: { task: BugTask; onC
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [mergeMethod, setMergeMethod] = useState<MergeMethod>(task.mergeMethod);
+  const [overriding, setOverriding] = useState(false); const [why, setWhy] = useState("");
+  // The diff adds no test, and no reason was given for this very commit (spec 2026-10-07 §3.3).
+  const noTest = task.gate?.kind === "diff" && Array.isArray(task.testsInDiff) && task.testsInDiff.length === 0 && task.testOverride?.head !== task.approvedHead;
   // The select's own override, only — it must NOT track every prop update (an SSE-refreshed
   // `task` for the SAME task shouldn't clobber what the human just picked), but it MUST reset
   // when the panel is repointed at a DIFFERENT task: SidePanel keeps one BugPanel mounted
@@ -117,6 +120,12 @@ export function BugGates({ task, onChanged, onTranscript }: { task: BugTask; onC
           {planErr
             ? <div className="err">{planErr}</div>
             : (plan === null ? <div className="skeleton" aria-label="Loading the plan"><div /><div /><div /></div> : <PlanView markdown={plan} />)}
+          {(task.plannedTests ?? []).length > 0 && (
+            <div className="planned-tests" data-testid="planned-tests">
+              <h5>Tests that will stop this coming back</h5>
+              <ul>{task.plannedTests.map(t => <li key={t}>{t}</li>)}</ul>
+            </div>
+          )}
           {task.verdict && (
             <div className="verdict" data-testid="gate-verdict">
               <b>The plan found nothing to change.</b> <span>{task.verdict}</span>
@@ -179,8 +188,22 @@ export function BugGates({ task, onChanged, onTranscript }: { task: BugTask; onC
               </li>
             ))}
           </ul>
+          {Array.isArray(task.testsInDiff) && task.testsInDiff.length > 0 && <p className="hint ok" data-testid="tests-in-diff">Tests in this change: {task.testsInDiff.join(", ")}</p>}
+          {noTest && (
+            <div className="warnline" data-testid="no-test">
+              <b>No regression test in this change</b> — without one, this bug can come back unnoticed.
+              {!overriding && <button className="btn sm" disabled={busy} onClick={() => setOverriding(true)}>Approve without a test…</button>}
+            </div>
+          )}
+          {noTest && overriding && (
+            <form className="row override" onSubmit={e => { e.preventDefault(); void act(() => api.overrideTests(task.id, why.trim())); }}>
+              <textarea autoFocus aria-label="Why there is no regression test" rows={2} value={why} placeholder="Why is there no regression test?" onChange={e => setWhy(e.target.value)} />
+              <button className="btn p sm" type="submit" disabled={busy || !why.trim()}>Approve without a test</button>
+              <button className="btn sm" type="button" onClick={() => setOverriding(false)}>Cancel</button>
+            </form>
+          )}
           <div className="row">
-            <button className="btn p" disabled={busy || !diffReady} onClick={() => act(() => api.approveBug(task.id))}>{task.gate?.reason ? "Approve" : "Create PR"}</button>
+            <button className="btn p" disabled={busy || !diffReady || noTest} title={noTest ? "This change has no regression test — approve without one, giving a reason" : undefined} onClick={() => act(() => api.approveBug(task.id))}>{task.gate?.reason ? "Approve" : "Create PR"}</button>
             <button className="btn" disabled={busy} onClick={() => setAsking(true)}>Request changes…</button>
             <button className="btn d" disabled={busy} onClick={() => act(() => api.cancelBug(task.id))}>Cancel task</button>
           </div>
