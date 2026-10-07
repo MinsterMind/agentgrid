@@ -422,3 +422,53 @@ describe("PrWatcher: a PR opened outside AgentGrid", () => {
     expect(calls).toEqual([]);
   });
 });
+
+describe("PrWatcher — one listing call per repo (spec 2026-10-07 §6)", () => {
+  async function threeTasks() {
+    const bugs = new BugTaskStore(await mkdtemp(path.join(tmpdir(), "ag-watch-")));
+    await bugs.init();
+    for (const n of [1, 2, 3]) {
+      const t = await bugs.create({ issue: { ...issue, key: `W-${n}` }, trackerProject: "W", sourceRepo: "/r", worktree: `/r/.worktrees/bugfix-W-${n}`,
+        branch: `bugfix/W-${n}`, baseBranch: "main", agentId: `ag${n}`, mergePolicy: "ask", mergeMethod: "squash" } as never);
+      await bugs.patch(t.id, { stage: "monitoring", pr: pr({ number: n, lastSeenEventAt: `t${n}`, headSha: `h${n}` }) });
+    }
+    return bugs;
+  }
+  const listing = (over: Record<number, Partial<PrInfo>> = {}, drop: number[] = []) =>
+    [1, 2, 3].filter(n => !drop.includes(n)).map(n => pr({ number: n, lastSeenEventAt: `t${n}`, headSha: `h${n}`, ...(over[n] ?? {}) }));
+  function forge(list: () => { prs: PrInfo[] } | { unavailable: string }, get: (n: number) => PrLookup) {
+    const calls = { list: 0, get: [] as number[] };
+    const f: ForgeAdapter = { ...forgeWith([{ found: pr() }]),
+      listOpenPrs: async () => { calls.list++; return list(); },
+      getPr: async (_r: string, n: number) => { calls.get.push(n); return get(n); } };
+    return { f, calls };
+  }
+
+  it("nothing changed: one listing, no per-PR reads", async () => {
+    const bugs = await threeTasks();
+    const { f, calls } = forge(() => ({ prs: listing() }), n => ({ found: pr({ number: n }) }));
+    await new PrWatcher({ bugs, forge: f, onFinding: () => {} }).poll();
+    expect(calls).toEqual({ list: 1, get: [] });
+  });
+  it("a PR whose listing moved is read on its own", async () => {
+    const bugs = await threeTasks();
+    const { f, calls } = forge(() => ({ prs: listing({ 2: { lastSeenEventAt: "t2-later" } }) }), n => ({ found: pr({ number: n, lastSeenEventAt: "t2-later", headSha: `h${n}` }) }));
+    await new PrWatcher({ bugs, forge: f, onFinding: () => {} }).poll();
+    expect(calls).toEqual({ list: 1, get: [2] });
+  });
+  // Review Focus 5
+  it("a PR gone from the open list is looked up once — and found merged", async () => {
+    const bugs = await threeTasks();
+    const { found, onFinding } = collect();
+    const { f, calls } = forge(() => ({ prs: listing({}, [3]) }), n => ({ found: pr({ number: n, state: "MERGED", headSha: `h${n}` }) }));
+    await new PrWatcher({ bugs, forge: f, onFinding }).poll();
+    expect(calls).toEqual({ list: 1, get: [3] });
+    expect(found.map(x => x.event)).toEqual([{ type: "pr-merged" }]);
+  });
+  it("a listing that fails falls back to reading each PR", async () => {
+    const bugs = await threeTasks();
+    const { f, calls } = forge(() => ({ unavailable: "rate limited" }), n => ({ found: pr({ number: n, lastSeenEventAt: `t${n}`, headSha: `h${n}` }) }));
+    await new PrWatcher({ bugs, forge: f, onFinding: () => {} }).poll();
+    expect(calls.list).toBe(1); expect(calls.get.sort()).toEqual([1, 2, 3]);
+  });
+});

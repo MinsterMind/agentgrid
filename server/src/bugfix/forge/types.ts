@@ -39,6 +39,9 @@ export interface ForgeAdapter {
   /** Events strictly after `since`, oldest first. Never throws; returns [] when unreadable. */
   listReviewEvents(repoDir: string, number: number, since: string): Promise<ReviewEvent[]>;
   merge(repoDir: string, number: number, method: MergeMethod): Promise<MergeResult>;
+  /** Every open AgentGrid PR in the repo, in as few calls as the forge allows — what lets ~1000 PRs be
+   *  watched within API limits (spec 2026-10-07 §6). Optional: without it the watcher polls per PR. */
+  listOpenPrs?(repoDir: string): Promise<{ prs: PrInfo[] } | { unavailable: string }>;
 }
 
 export type Runner = (cmd: string, args: string[], cwd?: string) => Promise<{ stdout: string; stderr?: string; code: number }>;

@@ -125,6 +125,15 @@ export function githubAdapter(run: Runner): ForgeAdapter {
       return { found: toPrInfo(parsed) };
     },
 
+    /** My open PRs in one `gh pr list` (paged internally, 100 per page). */
+    async listOpenPrs(repoDir: string) {
+      const r = await run("gh", ["pr", "list", "--state", "open", "--author", "@me", "--limit", "1000", "--json", FIELDS], repoDir);
+      if (r.code !== 0) return { unavailable: (r.stderr ?? r.stdout ?? "").trim() || `gh exited ${r.code}` };
+      let rows: any[];
+      try { rows = JSON.parse(r.stdout || "[]"); } catch { return { unavailable: "gh pr list returned something that isn't JSON" }; }
+      return { prs: (Array.isArray(rows) ? rows : []).filter(looksLikePr).map(toPrInfo) };
+    },
+
     async listReviewEvents(repoDir: string, number: number, since: string): Promise<ReviewEvent[]> {
       // `gh pr view --json reviews,comments` builds its author objects from GraphQL, whose
       // Bot.login carries no `[bot]` suffix and no bot field at all on a per-review/per-comment

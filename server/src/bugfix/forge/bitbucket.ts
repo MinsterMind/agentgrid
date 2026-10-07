@@ -325,6 +325,27 @@ export function bitbucketAdapter(deps: BitbucketDeps): ForgeAdapter {
       return lookupByNumber(repoDir, number);
     },
 
+    /** Open bugfix/ PRs, 50 per page. A listing carries no checks or conflicts: the watcher reads one PR
+     *  in full only when its listed view moved, and conflicts come from local git (conflicts.ts). */
+    async listOpenPrs(repoDir: string) {
+      const slug = await resolveRepo(repoDir);
+      if (!slug.ok) return { unavailable: slug.reason };
+      const q = 'source.branch.name ~ "bugfix/" AND state="OPEN"';
+      let path: string | null = `/repositories/${encodeURIComponent(slug.workspace)}/${encodeURIComponent(slug.slug)}/pullrequests?pagelen=50&q=${encodeURIComponent(q)}`;
+      const prs: PrInfo[] = [];
+      for (let page = 0; path && page < 50; page++) {
+        const r = await api(path);
+        if (r.kind === "no-token") return { unavailable: "BITBUCKET_API_TOKEN is not set" };
+        if (r.kind === "refused") return { unavailable: "Bitbucket refused the request (token not accepted)" };
+        if (r.kind === "missing") return { unavailable: "Bitbucket returned 404 listing pull requests" };
+        if (r.kind === "unavailable") return { unavailable: r.message };
+        for (const pr of Array.isArray(r.body?.values) ? r.body.values : []) if (looksLikePr(pr)) prs.push(toPrInfo(pr, null, null));
+        const next = typeof r.body?.next === "string" ? r.body.next : null;
+        path = next && next.startsWith(API) ? next.slice(API.length) : null;
+      }
+      return { prs };
+    },
+
     async listReviewEvents(repoDir: string, number: number, since: string): Promise<ReviewEvent[]> {
       const slug = await resolveRepo(repoDir);
       if (!slug.ok) return [];

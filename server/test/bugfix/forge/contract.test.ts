@@ -130,3 +130,40 @@ describe("findPr falls back from open to any state on every adapter", () => {
     expect(listCalls.some(c => !c.includes('state="OPEN"'))).toBe(true);
   });
 });
+
+describe("listOpenPrs — one call per repo, not per PR (spec 2026-10-07 §6)", () => {
+  it("github: one gh pr list for my open PRs", async () => {
+    const calls: string[] = [];
+    const f = githubAdapter(async (cmd, args) => {
+      calls.push([cmd, ...args].join(" "));
+      return { stdout: JSON.stringify([
+        { number: 1, url: "https://github.com/a/b/pull/1", state: "OPEN", updatedAt: "t1", headRefOid: "h1", reviewDecision: "APPROVED", mergeable: "MERGEABLE" },
+        { number: 2, url: "https://github.com/a/b/pull/2", state: "OPEN", updatedAt: "t2", headRefOid: "h2" },
+      ]), code: 0 };
+    });
+    const r = await f.listOpenPrs!("/repo") as { prs: Array<{ number: number }> };
+    expect(r.prs.map(p => p.number)).toEqual([1, 2]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatch(/^gh pr list --state open --author @me --limit 1000 --json /);
+    expect(await githubAdapter(async () => ({ stdout: "", stderr: "gh: not logged in", code: 1 })).listOpenPrs!("/repo")).toEqual({ unavailable: "gh: not logged in" });
+  });
+
+  it("bitbucket: pages through the open bugfix/ PRs, one listing per page", async () => {
+    const calls: string[] = [];
+    const row = (id: number) => ({ id, state: "OPEN", title: "t", updated_on: `t${id}`, links: { html: { href: `https://bitbucket.org/acme/payments/pull-requests/${id}` } },
+      source: { branch: { name: `bugfix/X-${id}` }, commit: { hash: `h${id}` } }, destination: { branch: { name: "main" } }, participants: [] });
+    const f = bitbucketAdapter({
+      username: "me@example.com", token: () => "t", gitRemoteUrl: async () => "git@bitbucket.org:acme/payments.git", sshHostname: async (h: string) => h,
+      fetchFn: (async (url: any) => {
+        const u = decodeURIComponent(String(url)); calls.push(u);
+        if (u.includes("page=2")) return new Response(JSON.stringify({ values: [row(3)] }), { status: 200 });
+        return new Response(JSON.stringify({ values: [row(1), row(2)], next: "https://api.bitbucket.org/2.0/repositories/acme/payments/pullrequests?page=2" }), { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+    const r = await f.listOpenPrs!("/repo") as { prs: Array<{ number: number; checks: unknown; mergeable: unknown }> };
+    expect(r.prs.map(p => p.number)).toEqual([1, 2, 3]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toContain('source.branch.name ~ "bugfix/"'); expect(calls[0]).toContain('state="OPEN"');
+    expect(r.prs[0]).toMatchObject({ checks: null, mergeable: null });     // not in a listing: read per PR when it changed
+  });
+});

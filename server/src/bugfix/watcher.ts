@@ -103,9 +103,11 @@ export class PrWatcher {
     const watched = bugs.list().filter(t => WATCHED_STAGES.includes(t.stage) && t.pr);
     const orphans = bugs.list().filter(awaitsExternalPr);
     const live = new Set([...watched, ...orphans].map(t => t.id));
-    for (const id of [...this.backoff.keys()]) if (!live.has(id)) this.backoff.delete(id);
+    const liveRepos = new Set(watched.map(t => `repo:${t.sourceRepo}`));
+    for (const id of [...this.backoff.keys()]) if (!live.has(id) && !liveRepos.has(id)) this.backoff.delete(id);
 
-    for (const task of watched) {
+    if (forge.listOpenPrs) await this.sweepByRepo(watched, forge);
+    else for (const task of watched) {
       const b = this.backoff.get(task.id) ?? { dueAt: this.now(), intervalMs: this.baseMs, failures: 0, warned: false };
       if (this.now() < b.dueAt) { this.backoff.set(task.id, b); continue; }
       await this.tick(task, b, forge);
@@ -117,6 +119,38 @@ export class PrWatcher {
       const found = await forge.findPr(task.sourceRepo, task.branch).catch(() => null);
       this.schedule(task.id, b, false);
       if (found) await this.deps.onFinding({ taskId: task.id, pr: found, event: null, external: true, checkedAt });
+    }
+  }
+
+  /**
+   * One listing call per repo instead of one read per PR (spec 2026-10-07 §6). A PR is read on its own
+   * only when its listed view moved (new activity, head or review) or it left the open list (merged or
+   * closed — never read as "nothing changed"). A failed listing falls back to per-PR reads this once.
+   */
+  private async sweepByRepo(watched: BugTask[], forge: ForgeAdapter): Promise<void> {
+    const byRepo = new Map<string, BugTask[]>();
+    for (const t of watched) byRepo.set(t.sourceRepo, [...(byRepo.get(t.sourceRepo) ?? []), t]);
+    for (const [repo, tasks] of byRepo) {
+      const key = `repo:${repo}`;
+      const rb = this.backoff.get(key) ?? { dueAt: this.now(), intervalMs: this.baseMs, failures: 0, warned: false };
+      if (this.now() < rb.dueAt) { this.backoff.set(key, rb); continue; }
+      const listed = await forge.listOpenPrs!(repo);
+      const per = (t: BugTask): Backoff => this.backoff.get(t.id) ?? { dueAt: this.now(), intervalMs: this.baseMs, failures: 0, warned: false };
+      if ("unavailable" in listed) {
+        for (const t of tasks) await this.tick(t, per(t), forge);
+        this.schedule(key, rb, false);
+        continue;
+      }
+      const byNumber = new Map(listed.prs.map(p => [p.number, p]));
+      let changed = false;
+      for (const t of tasks) {
+        const now = byNumber.get(t.pr!.number);
+        const same = now && now.lastSeenEventAt === t.pr!.lastSeenEventAt && now.headSha === t.pr!.headSha && now.reviewDecision === t.pr!.reviewDecision;
+        if (same) { await this.deps.onChecked?.(t.id, new Date(this.now()).toISOString()); continue; }
+        changed = true;
+        await this.tick(t, per(t), forge);
+      }
+      this.schedule(key, rb, changed);
     }
   }
 
