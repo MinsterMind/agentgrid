@@ -89,6 +89,8 @@ export interface BugTask {
   commentsNote: string | null;
   /** Picked up from work already in progress elsewhere (spec 2026-10-09 §3). */
   imported: boolean;
+  /** Origin's tip when the last round started: the one commit a force-push after it may replace. */
+  leaseHead: string | null;
   /** The last status move on the tracker that failed (shown on the card); cleared by the next success. */
   trackerSyncError: string | null;
   agentId: string;

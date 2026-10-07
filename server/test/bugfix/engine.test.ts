@@ -2547,3 +2547,29 @@ describe("final review: imports never touch a shared branch or local work", () =
     expect(t.approvedHead).toBe("f".repeat(40));
   });
 });
+
+describe("final review: rounds catch up with the PR and push with an explicit lease", () => {
+  it("a rebase round catches up first, and its force push leases the tip it saw", async () => {
+    await new IntegrationsStore(home).write({ autoResolveConflicts: false });
+    const caught: string[] = []; const pushes: Array<{ b: string; o: unknown }> = [];
+    gitFake.git.catchUp = async (_d, b) => { caught.push(b); return "c".repeat(40); };
+    gitFake.git.push = async (_d, b, o) => { pushes.push({ b, o }); };
+    const h = await onMonitoringTask();
+    await engine.onPrFinding({ taskId: "bt1", pr: h.gitState.pr, event: { type: "conflicting" } });
+    await engine.approve("bt1");
+    expect(caught).toEqual(["bugfix/PAY-42"]);
+    h.gitState.head = "ddd"; h.gitState.commitsAhead = 1;
+    await finishStage(fake);
+    await engine.approve("bt1");
+    await until(() => pushes.length > 1, 2000);
+    expect(pushes.at(-1)!.o).toMatchObject({ force: true, lease: "c".repeat(40) });
+  });
+  it("a round whose branch diverged fails, saying so, before any agent runs", async () => {
+    gitFake.git.catchUp = async () => { throw new Error("the pull request's branch and the worktree have diverged"); };
+    const h = await onMonitoringTask();
+    const n = fake.calls.length;
+    await engine.onPrFinding({ taskId: "bt1", pr: h.gitState.pr, event: { type: "review-changes-requested", comments: "x", source: "forge" } });
+    expect(bugs.get("bt1")).toMatchObject({ stage: "failed", error: expect.stringMatching(/diverged/) });
+    expect(fake.calls.length).toBe(n);
+  });
+});

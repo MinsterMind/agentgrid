@@ -762,6 +762,11 @@ export class BugFixEngine {
     // A restart cannot reset a task's feedback-round budget against the cap (`feedbackRounds`
     // is durable), so this has to land before dispatch, not after — a stage that failed after
     // dispatching still counts as one round spent, not a free retry of the cap itself.
+    // A round starts from what is on the pull request: someone may have pushed to it (an imported PR is shared).
+    if (stage === "review-feedback" || stage === "rebase") {
+      const tip = await this.deps.git.catchUp(task.worktree, task.branch);
+      await this.deps.bugs.patch(task.id, { leaseHead: tip });
+    }
     if (stage === "review-feedback") await this.deps.bugs.patch(task.id, { feedbackRounds: task.feedbackRounds + 1 });
     let assumptionsPath: string | undefined;
     if (ASSUMPTION_STAGES.includes(stage)) {
@@ -923,7 +928,7 @@ export class BugFixEngine {
     // means a plain push.
     const lastRound = [...task.history].reverse().find(h => h.stage === "review-feedback" || h.stage === "rebase");
     const force = lastRound?.stage === "rebase";
-    await git.push(task.worktree, task.branch, { force });
+    await git.push(task.worktree, task.branch, force ? { force, ...(task.leaseHead ? { lease: task.leaseHead } : {}) } : {});
     if (!forge || !task.pr) return;
     // Verify rather than trust: confirm the PR actually carries what was just pushed.
     const readAt = new Date().toISOString();

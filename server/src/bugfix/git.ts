@@ -212,6 +212,23 @@ export class GitOps {
     return this.run(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).then(() => true, () => false);
   }
 
+  /**
+   * Bring the worktree up to what is on the pull request before a round (spec 2026-10-09 §3: a shared PR's branch moves).
+   * Fast-forwards to origin's tip; refuses when both have moved. Returns origin's tip — the lease a later force-push may
+   * replace — or null when origin has no such branch.
+   */
+  async catchUp(dir: string, branch: string): Promise<string | null> {
+    await this.run(dir, ["fetch", "--quiet", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+    const tip = (await this.run(dir, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`]).catch(() => "")).trim();
+    if (!tip) return null;
+    const head = (await this.run(dir, ["rev-parse", "HEAD"])).trim();
+    if (head === tip) return tip;
+    const anc = (a: string, b: string) => this.run(dir, ["merge-base", "--is-ancestor", a, b]).then(() => true, () => false);
+    if (await anc(head, tip)) { await this.run(dir, ["merge", "--ff-only", "--quiet", tip]); return tip; }
+    if (await anc(tip, head)) return tip;
+    throw new Error(`the pull request's branch ${branch} and the worktree have diverged — someone pushed to it while this worktree has commits it doesn't. Reconcile them in ${dir}, then Retry.`);
+  }
+
   /** The local branch has commits origin's copy doesn't — resetting it to origin would lose them. False when there is no local branch. */
   async localBranchAhead(repo: string, branch: string): Promise<boolean> {
     const exists = await this.run(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).then(() => true, () => false);
@@ -269,8 +286,10 @@ export class GitOps {
     });
   }
 
-  async push(dir: string, branch: string, opts: { force?: boolean } = {}): Promise<void> {
-    const args = ["push", ...(opts.force ? ["--force-with-lease"] : []), "origin", `${branch}:${branch}`];
+  /** `lease`: the remote tip this force-push may replace, and nothing else — a bare lease checks the tracking ref, which
+   *  any background fetch moves, so it would wave a teammate's newer commits away. */
+  async push(dir: string, branch: string, opts: { force?: boolean; lease?: string } = {}): Promise<void> {
+    const args = ["push", ...(opts.force ? [opts.lease ? `--force-with-lease=${branch}:${opts.lease}` : "--force-with-lease"] : []), "origin", `${branch}:${branch}`];
     await this.run(dir, args);
   }
 

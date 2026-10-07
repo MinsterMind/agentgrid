@@ -417,3 +417,41 @@ describe("final review: a local branch ahead of origin", () => {
     expect(await g.localBranchAhead(clone, "no-such-branch")).toBe(false);
   });
 });
+
+describe("final review: a round starts from what is on the PR", () => {
+  async function shared() {
+    const { clone, origin } = await gitflowClone();
+    await sh(clone, ["checkout", "-q", "-b", "feature/PAY-7"]);
+    await writeFile(path.join(clone, "h.txt"), "1\n"); await sh(clone, ["add", "."]); await sh(clone, ["commit", "-qm", "mine"]);
+    await sh(clone, ["push", "-q", "origin", "feature/PAY-7"]);
+    // A teammate's clone pushes on top.
+    const mate = await mkdtemp(path.join(tmpdir(), "mate-"));
+    await sh(mate, ["clone", "-q", origin, "m"]); const m = path.join(mate, "m");
+    await sh(m, ["config", "user.email", "t@t"]); await sh(m, ["config", "user.name", "T"]);
+    await sh(m, ["checkout", "-q", "feature/PAY-7"]);
+    await writeFile(path.join(m, "t.txt"), "mate\n"); await sh(m, ["add", "."]); await sh(m, ["commit", "-qm", "teammate"]);
+    await sh(m, ["push", "-q", "origin", "feature/PAY-7"]);
+    return { clone, m };
+  }
+  it("fast-forwards to a teammate's push and returns origin's tip as the lease", async () => {
+    const { clone } = await shared();
+    const g = new GitOps();
+    const tip = await g.catchUp(clone, "feature/PAY-7");
+    expect((await sh(clone, ["log", "-1", "--format=%s"])).trim()).toBe("teammate");
+    expect(tip).toBe((await sh(clone, ["rev-parse", "HEAD"])).trim());
+  });
+  it("refuses when the worktree and the PR have both moved", async () => {
+    const { clone } = await shared();
+    await writeFile(path.join(clone, "h.txt"), "2\n"); await sh(clone, ["commit", "-qam", "local only"]);
+    await expect(new GitOps().catchUp(clone, "feature/PAY-7")).rejects.toThrow(/diverged/);
+  });
+  it("a force push with a lease refuses when origin moved past it", async () => {
+    const { clone, m } = await shared();
+    const g = new GitOps();
+    const lease = await g.catchUp(clone, "feature/PAY-7");
+    await writeFile(path.join(m, "t.txt"), "again\n"); await sh(m, ["commit", "-qam", "teammate 2"]); await sh(m, ["push", "-q", "origin", "feature/PAY-7"]);
+    await sh(clone, ["fetch", "-q", "origin"]);                                          // a watcher's fetch moves the tracking ref
+    await sh(clone, ["commit", "-q", "--amend", "-m", "rewritten"]);
+    await expect(g.push(clone, "feature/PAY-7", { force: true, lease: lease! })).rejects.toThrow();
+  });
+});
