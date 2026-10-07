@@ -274,3 +274,13 @@ describe("conflicts resolve themselves (spec 2026-10-09 §4)", () => {
     expect(nextStage(task("monitoring"), { type: "conflicting", files: ["a.ts"] })).toMatchObject({ stage: "conflict", gate: { kind: "conflict" } });
   });
 });
+
+describe("a feedback round with no change (final review I5)", () => {
+  it("goes back to the merge gate when the round started there, else to watching", () => {
+    const fromGate = task("review-feedback", { history: [{ stage: "monitoring", at: "a", note: "" }, { stage: "approved", at: "b", note: "" }, { stage: "review-feedback", at: "c", note: "" }] });
+    expect(nextStage(fromGate, { type: "feedback-no-change", note: "n" })).toMatchObject({ stage: "approved", gate: { kind: "merge" }, note: "n" });
+    const fromWatch = task("review-feedback", { history: [{ stage: "monitoring", at: "a", note: "" }, { stage: "review-feedback", at: "c", note: "" }] });
+    expect(nextStage(fromWatch, { type: "feedback-no-change", note: "n" })).toMatchObject({ stage: "monitoring", gate: null });
+    expect(() => nextStage(task("monitoring"), { type: "feedback-no-change", note: "n" })).toThrow();
+  });
+});

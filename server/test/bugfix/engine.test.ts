@@ -990,9 +990,24 @@ describe("a feedback round", () => {
     expect(t.approvedHead).toBe("bbb");                                  // re-pinned for this round
   });
 
-  it("fails the round when the agent produced no new commits", async () => {
+  it("a round that answers without changing anything goes back to watching, with the agent's answer (final review I5)", async () => {
     const { engine, bugs, fake, gitState } = await onMonitoringTask();
-    gitState.prHead = "aaa"; gitState.head = "aaa";                      // nothing new
+    gitState.prHead = "aaa"; gitState.head = "aaa";                      // nothing new, nothing uncommitted
+    await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "review-changes-requested", comments: "why X?" } });
+    const n = fake.calls.length;
+    fake.emit(success("X is needed because of Y; no change made.")); fake.end();
+    await until(() => bugs.get("bt1").stage === "monitoring", 2000);
+    const t = bugs.get("bt1");
+    expect(t.history.at(-1)!.note).toMatch(/No change.*X is needed because of Y/s);
+    expect(t.stageModel["review-feedback"]).toBeUndefined();            // nothing to step up
+    expect(t.error).toBeNull();
+    await new Promise(r => setTimeout(r, 50));
+    expect(fake.calls.length).toBe(n);                                   // and no retry
+  });
+
+  it("fails the round when the agent left changes uncommitted", async () => {
+    const { engine, bugs, fake, gitState } = await onMonitoringTask();
+    gitState.prHead = "aaa"; gitState.head = "aaa"; gitState.uncommitted = ["a.ts"];   // edited, never committed
     await engine.onPrFinding({ taskId: "bt1", pr: gitState.pr, event: { type: "review-changes-requested", comments: "fix it" } });
     // The round retries once on a stronger model by itself (spec 2026-10-09 §6.3); the second failure fails it.
     const n = fake.calls.length;
@@ -2359,6 +2374,7 @@ describe("a failed check steps up the model (spec 2026-10-09 §6.3)", () => {
   });
   it("an auto-retried feedback round still carries the reviewers' comments", async () => {
     const h = await onMonitoringTask();
+    h.gitState.uncommitted = ["w.ts"];                   // edited but not committed → the check fails
     await engine.onPrFinding({ taskId: "bt1", pr: h.gitState.pr, event: { type: "review-changes-requested", comments: "please rename widget", source: "forge" } });
     const before = fake.calls.length;
     endRun();                                            // head unchanged → "no new commits" → retry on Opus

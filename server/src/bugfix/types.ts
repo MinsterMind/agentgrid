@@ -170,6 +170,7 @@ export type BugEvent =
   | { type: "retry" }
   /** Nothing to change: the human closes at the plan gate, or the change step ended with no commits and a clean tree. */
   | { type: "no-change"; report: string }
+  | { type: "feedback-no-change"; note: string }
   /** `source` says whose words `comments` are, and therefore whether the agent may obey them:
    *  "forge" is reviewer/CI text pulled off the pull request (data, fenced in the prompt);
    *  "operator" is the human at the console typing into this app. The watcher only ever

@@ -1090,6 +1090,16 @@ export class BugFixEngine {
     }
     // Nothing committed and nothing changed: the change step found there was nothing to do (the fix
     // is already on the base). End here, honestly, rather than walk on to a PR step with no commit.
+    // A feedback round that rightly changed nothing — the comment was a question or a "thanks" — is not a failure.
+    if (task.stage === "review-feedback") {
+      const t = bugs.get(task.id);
+      const unchanged = await (async () => (await this.deps.git.revParse(t.worktree)) === t.approvedHead && (await this.deps.git.uncommitted(t.worktree)).length === 0)().catch(() => false);
+      if (unchanged) {
+        this.autoRetried.delete(task.id);
+        await this.advance(task.id, { type: "feedback-no-change", note: `No change made for this round. ${a.outcome?.trim() || ""}`.trim() });
+        return;
+      }
+    }
     if (task.stage === "implementing") {
       const empty = await this.emptyChange(bugs.get(task.id)).catch(() => false);
       if (empty) {
