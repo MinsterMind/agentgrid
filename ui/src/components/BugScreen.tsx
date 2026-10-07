@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bug, Check, CheckCircle2, CircleDashed, CircleDot, History, Lightbulb, MessageCircleQuestion, OctagonAlert, Radio, TriangleAlert, ClipboardList, Code2, Copy, ExternalLink, FileDiff, GitMerge, GitPullRequest, Hand, Inbox, Loader, Minus, MinusCircle, Radar, ScrollText, Search, RefreshCw, X, XCircle, Clock } from "lucide-react";
 import { api } from "../api";
-import { blockersFor, isNew, listStatus, nowFor, orderAssumptions, pipelineFor, stageLabel, type Blocker, type ListStatus, type StepState } from "../bugView";
+import { blockersFor, isNew, listStatus, nowFor, orderAssumptions, pipelineFor, stageLabel, type Blocker, type ListStatus, type StepState, costByStep } from "../bugView";
 import { elapsed, relativeTime, usd } from "../format";
 import { activityFor, assignmentFor, permissionFor, type UiState } from "../state/reducer";
 import type { BugTask, Decision, IssueList, IssueSummary, SetupReport } from "../types";
@@ -98,6 +98,19 @@ function useMyIssues(live: IssueList | null) {
     err: err ?? cur?.error ?? null, refresh };
 }
 
+/** Today's bug-fix spend, against the daily limit when one is set (spec 2026-10-09 §6.4). Re-read when a run finishes, and every 30 s. */
+function Spend({ runs }: { runs: number }) {
+  const [spend, setSpend] = useState<{ today: number; limit: number | null } | null>(null);
+  useEffect(() => {
+    let live = true;
+    const load = () => api.spend().then(s => { if (live) setSpend(s); }).catch(() => {});
+    void load(); const t = setInterval(load, 30_000);
+    return () => { live = false; clearInterval(t); };
+  }, [runs]);
+  if (!spend) return null;
+  return <span className="help spend" title="Bug-fix spending today">{`Today ${usd(spend.today)}${spend.limit !== null ? ` of ${usd(spend.limit)}` : ""}`}</span>;
+}
+
 export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscript, onOpenSettings, onFixBug, onDecide, selectedTicket = null, onSelectTicket, onStarted }: {
   state: UiState; selectedId: string | null; onSelect: (id: string, opts?: { replace?: boolean }) => void; onBugChanged: (t: BugTask) => void;
   onTranscript: (agentId: string) => void; onOpenSettings: () => void; onFixBug: () => void;
@@ -119,7 +132,7 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
   [state.bugTasks, state.assignments, state.agents, state.permissions]);
   const rows = useMemo(() => mergeRows(mine.issues, tasks), [mine.issues, tasks]);
   // Place in line under the agents-at-once limit, oldest first (spec 2026-10-07 §5).
-  const queued = useMemo(() => Object.values(state.bugTasks).filter(t => t.queuedAt && !TERMINAL.includes(t.stage)).sort((a, b) => a.queuedAt!.localeCompare(b.queuedAt!)), [state.bugTasks]);
+  const queued = useMemo(() => Object.values(state.bugTasks).filter(t => t.queuedAt && !t.queuedReason && !TERMINAL.includes(t.stage)).sort((a, b) => a.queuedAt!.localeCompare(b.queuedAt!)), [state.bugTasks]);
   const queueOf = (t: BugTask) => { const i = queued.findIndex(q => q.id === t.id); return i === -1 ? undefined : { position: i + 1, of: queued.length }; };
   const conflicts = tasks.filter(x => x.t.stage === "conflict").length;
   // Bugs ticked for "start many" (spec 2026-10-08 §5.1): only assigned ones not started yet.
@@ -177,6 +190,7 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
         <div className="lh"><span>My bugs</span><span className="mono">{rows.length}</span>
           {mine.fetchedAt && <span className="help updated" title={new Date(mine.fetchedAt).toLocaleString()}>updated {relativeTime(mine.fetchedAt, now)}</span>}
           <button className="btn sm" aria-label={mine.refreshing ? "Refreshing…" : "Refresh from the tracker"} title={mine.refreshing ? "Refreshing…" : "Refresh from the tracker"} disabled={mine.refreshing} onClick={mine.refresh}><RefreshCw className={mine.refreshing ? "spin" : ""} /></button>
+          <Spend runs={Object.values(state.bugTasks).reduce((n, t) => n + (t.runs?.length ?? 0), 0)} />
           <button className="btn sm" title="Pick up tickets already being worked on — their PRs and branches" onClick={() => setImporting(true)}>Import tickets…</button></div>
         {startable.length > 0 && (
           <div className="row pick-row">
@@ -209,7 +223,9 @@ export function BugScreen({ state, selectedId, onSelect, onBugChanged, onTranscr
                 className="bugrow" data-status={r.status} onClick={() => open(r)} onKeyDown={e => { if (e.key === "Enter") open(r); }}>
                 <span className="k">{t.issue.key}</span>
                 <span className="t" title={t.issue.title}>{t.issue.title}</span>
-                {queueOf(t)
+                {t.queuedReason && t.queuedAt
+                  ? <span className="s queued" title={t.queuedReason}><Clock /> Held · daily limit · {stageLabel(t.stage)}</span>
+                  : queueOf(t)
                   ? <span className="s queued"><Clock /> Queued ({queueOf(t)!.position} of {queueOf(t)!.of}) · {stageLabel(t.stage)}</span>
                   : <span className={`s ${r.status}`}><Icon /> {word} · {stageLabel(t.stage === "failed" || t.stage === "cancelled" ? lastRealStage(t) : t.stage)}</span>}
               </li>
@@ -285,7 +301,9 @@ function BugDetail({ task, state, now, onBugChanged, onTranscript, onOpenSetting
           </div>
         </div>
         <div className="dcounters">
-          <div className="counter"><span className="num">{usd(task.costUsd)}</span><span className="lbl">Cost</span></div>
+          <div className="counter"><span className="num">{usd(task.costUsd)}</span><span className="lbl">Cost</span>
+            {(task.runs?.length ?? 0) > 0 && <details className="cost-steps"><summary>By step</summary><ul>
+              {costByStep(task).map(r => <li key={r.stage}>{`${r.label} · ${r.models.join(" → ")} · ${usd(r.usd)}`}</li>)}</ul></details>}</div>
           <div className={`counter ${task.feedbackRounds ? "" : "zero"}`}><span className="num">{task.feedbackRounds}</span><span className="lbl">Review rounds</span></div>
         </div>
       </header>

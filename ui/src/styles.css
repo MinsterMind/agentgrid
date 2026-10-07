@@ -452,3 +452,7 @@ textarea.input { resize:none; }
 .spending .stage-models th { text-align: left; font-weight: 500; color: var(--muted, inherit); padding: 4px 6px; }
 .spending .stage-models td { padding: 3px 6px; }
 .spending .stage-models .input { width: 100%; min-width: 0; }
+/* Cost per step under the Cost counter (spec 2026-10-09 §6.5) */
+.cost-steps { font-size: 11px; margin-top: 4px; }
+.cost-steps ul { margin: 4px 0 0; padding-left: 14px; }
+.buglist .lh .spend { white-space: nowrap; }

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BugScreen, mergeRows } from "../src/components/BugScreen";
+import { api } from "../src/api";
 import type { BugTask } from "../src/types";
 
 const { ApiError } = vi.hoisted(() => {
@@ -57,6 +58,18 @@ const renderScreen = (tasks: BugTask[], selectedId: string | null = tasks[0]?.id
 };
 
 describe("BugScreen", () => {
+  it("shows today's bug-fix spend against the limit, and the cost per step", async () => {
+    vi.mocked(api.spend).mockResolvedValue({ today: 4.2, limit: 20 });
+    renderScreen([task("diff-review", { runs: [{ stage: "analyzing", model: "claude-opus-5", costUsd: 1.1, at: "a", ok: true }] })]);
+    expect(await screen.findByText("Today $4.20 of $20.00")).toBeTruthy();
+    expect(screen.getByText(/Plan.*Opus.*\$1\.10|Analy.*Opus.*\$1\.10/)).toBeTruthy();
+  });
+  it("with no limit, just today's spend; a held task says so in the list", async () => {
+    vi.mocked(api.spend).mockResolvedValue({ today: 4.2, limit: null });
+    renderScreen([task("analyzing", { queuedAt: "2026-10-09T10:00:00Z", queuedReason: "Daily limit reached ($20.00 of $20.00)" })]);
+    expect(await screen.findByText("Today $4.20")).toBeTruthy();
+    expect(screen.getByText(/Held · daily limit/)).toBeTruthy();
+  });
   it("opens Import tickets from the list header", async () => {
     renderScreen([task("implementing")]);
     await userEvent.click(screen.getByRole("button", { name: "Import tickets…" }));
