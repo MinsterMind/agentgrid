@@ -218,6 +218,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     // Tickets move through the user's workflow as the fix goes on (spec 2026-10-08 §4).
     engine.setTrackerSync(new TrackerSync({ tracker, bugs: bugStore, statusMap: async () => (await integrations.read()).statusMap }));
     engine.attach();
+    wiredBugFix?.engine.detach();
     wiredWatcher?.stop();
     wiredWatcher = forge
       ? new PrWatcher({ bugs: bugStore, forge, onFinding: f => engine.onPrFinding(f).catch(err => log(`bugfix: watcher finding failed: ${(err as Error).message}`)),

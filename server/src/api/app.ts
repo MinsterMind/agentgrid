@@ -467,6 +467,7 @@ export function createApp(deps: AppDeps) {
     if (!st) throw new NotFound(`batch ${req.params.batchId}`);
     res.json(st);
   }));
+  app.get("/api/bugfix/spend", wrap(async (_req, res) => res.json(bugs().engine.spend())));
   app.post("/api/bugtasks/resolve-conflicts", wrap(async (_req, res) => res.json({ ids: await bugs().engine.resolveConflicts() })));
   app.post("/api/bugtasks/:id/override-tests", wrap(async (req, res) => {
     const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
@@ -633,6 +634,7 @@ export function createApp(deps: AppDeps) {
     // A different tracker: its bugs aren't the old one's — never show those (Review Focus 4).
     if (patch.tracker !== undefined) wired?.trackerCache?.clear();
     if (patch.maxConcurrentRuns !== undefined) wired?.engine.setMaxConcurrentRuns(patch.maxConcurrentRuns);
+    if (patch.dailyBudgetUsd !== undefined) wired?.engine.setDailyBudget(patch.dailyBudgetUsd ?? null);
     await tryWire();
     res.json(redactIntegrations(saved));
   }));

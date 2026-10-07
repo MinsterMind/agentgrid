@@ -75,6 +75,8 @@ export interface BugTask {
   /** The instructions a queued stage will run with (a request-changes note, reviewer comments) — kept on
    *  the task while it waits, so a restart can't start it without them. Null otherwise. */
   queuedNote: { text: string; trusted: boolean } | null;
+  /** Why a queued task is held rather than waiting for a slot — the daily spending limit (spec 2026-10-09 §6.4). */
+  queuedReason: string | null;
   /** The last status move on the tracker that failed (shown on the card); cleared by the next success. */
   trackerSyncError: string | null;
   agentId: string;

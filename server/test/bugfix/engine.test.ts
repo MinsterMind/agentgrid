@@ -61,6 +61,10 @@ function fakeGit(state: { commits: number; ticketCommits?: string[]; uncommitted
   return { git: g, calls };
 }
 
+/** What `bugs.create` needs, for a task made directly in the store. */
+const minimalCreateInput = () => ({ issue: ISSUE, trackerProject: "PAY", sourceRepo: repo, worktree: repo, branch: "bugfix/PAY-1", baseBranch: "develop", baseRef: "origin/develop",
+  ticketCommits: [] as string[], agentId: "a", mergePolicy: "ask" as const, mergeMethod: "squash" as const });
+
 const forge = {
   name: "github",
   // Mutable merge-tracking state, reset in `beforeEach` below — shared by every test that
@@ -2370,5 +2374,49 @@ describe("hand-off files on disk (spec 2026-10-09 §6.1)", () => {
     await engine.onPrFinding({ taskId: "bt1", pr: h.gitState.pr, event: { type: "review-changes-requested", comments: "rename it", source: "forge" } });
     expect(await bugs.readArtifact("bt1", "feedback-1.md")).toContain("rename it");
     expect(fake.calls.at(-1)!.prompt).toContain("feedback-1.md");
+  });
+});
+
+describe("the daily limit (spec 2026-10-09 §6.4)", () => {
+  it("holds new runs once today's spend reaches the limit, and releases them when it rises", async () => {
+    const t1 = await engine.intake({ issueRef: "PAY-42", repo });
+    await bugs.patch(t1.id, { runs: [{ stage: "analyzing", model: "m", costUsd: 5, at: new Date().toISOString(), ok: true }] });
+    engine.setDailyBudget(5);
+    const t2 = await engine.intake({ issueRef: "PAY-43", repo });
+    expect(bugs.get(t2.id)).toMatchObject({ stage: "analyzing", queuedReason: "Daily limit reached ($5.00 of $5.00)" });
+    expect(bugs.get(t2.id).queuedAt).not.toBeNull();
+    const before = fake.calls.length;
+    engine.setDailyBudget(20);
+    await until(() => fake.calls.length > before, 2000);
+    await until(() => bugs.get(t2.id).queuedAt === null, 2000);
+    expect(bugs.get(t2.id)).toMatchObject({ queuedAt: null, queuedReason: null });
+  });
+  it("tasks already queued for a slot are held too, and start in order when the limit rises", async () => {
+    engine.setMaxConcurrentRuns(1);
+    const t1 = await engine.intake({ issueRef: "PAY-42", repo });           // runs
+    const t2 = await engine.intake({ issueRef: "PAY-43", repo });           // waits for a slot
+    expect(bugs.get(t2.id).queuedAt).not.toBeNull();
+    await bugs.patch(t1.id, { runs: [{ stage: "analyzing", model: "m", costUsd: 9, at: new Date().toISOString(), ok: true }] });
+    engine.setDailyBudget(5);
+    await writeFile(path.join(bugs.dir(t1.id), "plan.md"), "# plan\n");
+    const n = fake.calls.length;
+    fake.emit(success("done")); fake.end();                                 // t1's run ends: frees the slot — but over the limit
+    await until(() => bugs.get(t1.id).stage === "plan-review", 2000);
+    await new Promise(r => setTimeout(r, 50));
+    expect(fake.calls.length).toBe(n);
+    expect(bugs.get(t2.id).queuedReason).toMatch(/Daily limit reached/);
+    engine.setDailyBudget(null);
+    await until(() => fake.calls.length > n, 2000);
+  });
+  it("counts only today's runs", async () => {
+    const yesterday = new Date(Date.now() - 36 * 3600_000).toISOString();
+    const t = await bugs.create(minimalCreateInput());
+    await bugs.patch(t.id, { runs: [{ stage: "analyzing", model: "m", costUsd: 9, at: yesterday, ok: true }, { stage: "implementing", model: "m", costUsd: 1.25, at: new Date().toISOString(), ok: true }] });
+    expect(engine.spentToday()).toBeCloseTo(1.25);
+  });
+  it("no limit set: nothing is held", async () => {
+    engine.setDailyBudget(null);
+    const t = await engine.intake({ issueRef: "PAY-42", repo });
+    expect(bugs.get(t.id).queuedReason).toBeNull();
   });
 });

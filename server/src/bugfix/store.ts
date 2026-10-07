@@ -70,6 +70,7 @@ export class BugTaskStore extends EventEmitter {
       t.queuedNote ??= null;
       t.trackerSyncError ??= null;
       t.runs ??= [];
+      t.queuedReason ??= null;
       t.stageModel ??= {};
       this.tasks.set(t.id, t);
       const n = Number(t.id.slice(2));
@@ -120,7 +121,7 @@ export class BugTaskStore extends EventEmitter {
       id: `bt${this.next++}`, ...input, stage: "intake", gate: null, approvedHead: null, outcome: null, checksRoundHead: null, pr: null, prCheckedAt: null,
       costUsd: 0, history: [{ stage: "intake", at: now, note: "" }], error: null,
       createdAt: now, updatedAt: now, feedbackRounds: 0,
-      assumptions: [], assumptionsProblem: null, assumptionsToken: null, verdict: null, report: null, plannedTests: [], testsInDiff: null, testOverride: null, conflict: null, conflictCheckError: null, queuedAt: null, queuedNote: null, trackerSyncError: null, runs: [], stageModel: {},
+      assumptions: [], assumptionsProblem: null, assumptionsToken: null, verdict: null, report: null, plannedTests: [], testsInDiff: null, testOverride: null, conflict: null, conflictCheckError: null, queuedAt: null, queuedNote: null, trackerSyncError: null, queuedReason: null, runs: [], stageModel: {},
     };
     await mkdir(this.dir(task.id), { recursive: true });
     return withWriteChain(this.file(task.id), () => this.save(task));

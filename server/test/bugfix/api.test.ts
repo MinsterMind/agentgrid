@@ -24,6 +24,8 @@ const fakeEngine = (bugs: BugTaskStore, calls: string[]) => ({
   closeNoChange: async (id: string) => { calls.push(`no-change ${id}`); return bugs.get(id); },
   setMaxConcurrentRuns: (n: number) => { calls.push(`cap ${n}`); },
   resolveConflicts: async () => { calls.push("resolve-all"); return ["bt1"]; },
+  setDailyBudget: (n: number | null) => { calls.push(`budget ${n}`); },
+  spend: () => ({ today: 1.5, limit: null }),
   overrideTests: async (id: string, reason: string) => { calls.push(`override ${id} ${reason}`); return bugs.get(id); },
   intake: async (input: { issueRef: string; repo: string; baseBranch?: string; startAnyway?: boolean }) => { calls.push(`intake ${input.issueRef}${input.baseBranch ? ` base=${input.baseBranch}` : ""}${input.startAnyway ? " anyway" : ""}`);
     if (input.issueRef === "PAY-1") throw Object.assign(new Error("PAY-1 may already be fixed"), { status: 409, code: "already-on-base" });
@@ -156,6 +158,12 @@ describe("bug task routes", () => {
     expect((await request(app).put("/api/integrations").send({ stageModels: { implementing: { model: "nope" } } })).status).toBe(400);
     // null clears the daily limit
     expect((await request(app).put("/api/integrations").send({ dailyBudgetUsd: null })).body.dailyBudgetUsd).toBeNull();
+  });
+
+  it("today's spend, and a saved daily limit applies at once", async () => {
+    expect((await request(app).get("/api/bugfix/spend").expect(200)).body).toEqual({ today: 1.5, limit: null });
+    await request(app).put("/api/integrations").send({ dailyBudgetUsd: 25 }).expect(200);
+    expect(calls).toContain("budget 25");
   });
 
   it("Resolve all approves every bug waiting at the conflict gate", async () => {

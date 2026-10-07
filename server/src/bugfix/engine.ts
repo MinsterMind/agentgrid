@@ -150,10 +150,49 @@ export class BugFixEngine {
     for (const id of this.queue.drain()) this.startQueuedDetached(id);
   }
 
+  private dailyBudget: number | null = null;
+  private midnight: NodeJS.Timeout | null = null;
+
+  /** Bug-fix spend today (local day), over every task's runs. */
+  spentToday(now = new Date()): number {
+    const day = now.toDateString();
+    let sum = 0;
+    for (const t of this.deps.bugs.list()) for (const r of t.runs ?? []) if (new Date(r.at).toDateString() === day) sum += r.costUsd;
+    return Number(sum.toFixed(4));
+  }
+  spend(): { today: number; limit: number | null } { return { today: this.spentToday(), limit: this.dailyBudget }; }
+  /** Today's limit (null = none). Raising or clearing it starts what it was holding (spec 2026-10-09 §6.4). */
+  setDailyBudget(usd: number | null): void { this.dailyBudget = usd ?? null; this.releaseBudgetHeld(); }
+  private overBudget(): string | null {
+    if (this.dailyBudget === null) return null;
+    const spent = this.spentToday();
+    return spent >= this.dailyBudget ? `Daily limit reached ($${spent.toFixed(2)} of $${this.dailyBudget.toFixed(2)})` : null;
+  }
+  /** Under the limit again: held tasks line up for slots, oldest first. */
+  private releaseBudgetHeld(): void {
+    if (this.overBudget()) return;
+    const held = this.deps.bugs.list().filter(t => t.queuedReason && t.queuedAt && AGENT_STAGES.includes(t.stage)).sort((a, b) => a.queuedAt!.localeCompare(b.queuedAt!));
+    for (const t of held) {
+      if (this.queue.tryStart(t.id)) this.startQueuedDetached(t.id);
+      void this.deps.bugs.patch(t.id, { queuedReason: null }).catch(() => {});
+    }
+  }
+  private scheduleMidnight(): void {
+    const now = new Date(); const next = new Date(now); next.setHours(24, 0, 5, 0);
+    this.midnight = setTimeout(() => { this.releaseBudgetHeld(); this.scheduleMidnight(); }, next.getTime() - now.getTime());
+    this.midnight.unref?.();
+  }
+  /** Stop the engine's own timers — a rewire replaces it. */
+  detach(): void { if (this.midnight) clearTimeout(this.midnight); this.midnight = null; }
+
   attach(): void {
     if (this.attached) return;
     this.attached = true;
-    void this.deps.integrations.read().then(c => { if (c.maxConcurrentRuns) this.setMaxConcurrentRuns(c.maxConcurrentRuns); }).catch(() => {}).finally(() => this.resumeQueued());
+    this.scheduleMidnight();
+    void this.deps.integrations.read().then(c => {
+      if (c.maxConcurrentRuns) this.setMaxConcurrentRuns(c.maxConcurrentRuns);
+      if (c.dailyBudgetUsd !== undefined) this.dailyBudget = c.dailyBudgetUsd ?? null;
+    }).catch(() => {}).finally(() => this.resumeQueued());
     this.deps.store.on("event", e => {
       if (e?.type !== "assignment") return;
       const a = e.assignment as Assignment;
@@ -575,6 +614,9 @@ export class BugFixEngine {
     // detached from the store's event listener rather than awaited there).
     if (SERVER_STAGES.includes(task.stage)) { void this.runServerStage(task); return task; }
     if (!t.run) return task;
+    // Over today's limit: held, holding no slot, until the limit rises or the day turns.
+    const held = this.overBudget();
+    if (held) return this.deps.bugs.patch(taskId, { queuedAt: new Date().toISOString(), queuedNote: this.pendingNote.get(taskId) ?? null, queuedReason: held });
     // Over the cap: wait in line. The slot's release (any way a run ends) starts the next in line.
     if (!this.queue.tryStart(task.id)) return this.deps.bugs.patch(taskId, { queuedAt: new Date().toISOString(), queuedNote: this.pendingNote.get(taskId) ?? null });
     return this.dispatchLocked(taskId, task, t.run);
@@ -1122,15 +1164,18 @@ export class BugFixEngine {
     let task: BugTask;
     try { task = this.deps.bugs.get(id); } catch { this.releaseRun(id); throw new NotFound(id); }
     if (!task.queuedAt || !AGENT_STAGES.includes(task.stage)) { this.releaseRun(id); return task; }
+    const held = this.overBudget();
+    if (held) { this.releaseRun(id); return this.deps.bugs.patch(id, { queuedReason: held }); }
     // The note it was queued with, if this engine doesn't hold it (a restart since).
     if (task.queuedNote && !this.pendingNote.has(id)) this.pendingNote.set(id, task.queuedNote);
-    task = await this.deps.bugs.patch(id, { queuedAt: null, queuedNote: null });
+    task = await this.deps.bugs.patch(id, { queuedAt: null, queuedNote: null, queuedReason: null });
     return this.dispatchLocked(id, task, task.stage);
   }
   /** After a restart: tasks that were waiting for a slot line up again, oldest first. */
   private resumeQueued(): void {
-    const waiting = this.deps.bugs.list().filter(t => t.queuedAt && AGENT_STAGES.includes(t.stage)).sort((a, b) => a.queuedAt!.localeCompare(b.queuedAt!));
+    const waiting = this.deps.bugs.list().filter(t => t.queuedAt && !t.queuedReason && AGENT_STAGES.includes(t.stage)).sort((a, b) => a.queuedAt!.localeCompare(b.queuedAt!));
     for (const t of waiting) if (this.queue.tryStart(t.id)) this.startQueuedDetached(t.id);
+    this.releaseBudgetHeld();
   }
 
   private async settleTerminal(task: BugTask): Promise<void> {
